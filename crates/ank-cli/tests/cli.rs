@@ -13974,13 +13974,18 @@ fn config_refuses_an_unknown_key_by_name_and_writes_nothing() {
     }
     assert_eq!(r.config_text(), AWKWARD);
 
-    // Known to the parser, structured, and refused by name rather than guessed
-    // at -- a different message from "no such key".
-    for key in ["roles", "identities", "roles.agent.can"] {
+    // Known to the parser, a mapping or a list given none, and refused by name
+    // rather than guessed at -- a different message from "no such key".
+    for (key, says) in [
+        ("roles", "two lists"),
+        ("identities", "address one identity"),
+        ("roles.agent.can", "list of role words"),
+    ] {
         let out = r.ank("claude-code@ank", &["config", key, "x"]);
         assert_eq!(out.status.code(), Some(1), "{key}");
-        assert!(erred(&out).contains("structured"), "{key}: {}", erred(&out));
+        assert!(erred(&out).contains(says), "{key}: {}", erred(&out));
     }
+    assert_eq!(r.config_text(), AWKWARD);
 
     // A timeout cannot declare a verifier, and the refusal names what can.
     let out = r.ank(
@@ -28142,4 +28147,206 @@ fn the_config_keys_page_publishes_the_role_vocabulary_and_permissions_enforce() 
             "{word} not listed"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// ank config writes roles and identities (ADR-ddbe024ca7f2, GitHub #784)
+// ---------------------------------------------------------------------------
+
+const ROLES_BASE: &str = "\
+schema: 1
+default_branch: main
+# who does what
+roles:
+  agent:
+    can: [context, find]   # the agent's acts
+    cannot: [delete]
+  human:
+    can: [\"*\"]
+identities: {}
+weight:
+  hot_files: 3000
+";
+
+#[test]
+fn config_writes_and_unsets_an_identity_and_touches_nothing_else() {
+    let r = Repo::new();
+    r.set_config(ROLES_BASE);
+
+    let out = r.ank("claude-code@ank", &["config", "identities.marie@laptop"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert_eq!(said(&out).trim(), "(unset)");
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "identities.marie@laptop", "human"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert_eq!(
+        r.config_text(),
+        ROLES_BASE.replace("identities: {}\n", "identities:\n  marie@laptop: human\n")
+    );
+
+    // An identity carrying dots is one key, and one carrying a colon is
+    // written quoted so that it reads back as itself.
+    for (who, role) in [("claude-code/opus-5.5+w", "agent"), ("ci:bot", "agent")] {
+        let key = format!("identities.{who}");
+        let out = r.ank("claude-code@ank", &["config", &key, role]);
+        assert_eq!(code(&out), 0, "{who}: {}", erred(&out));
+        let out = r.ank("claude-code@ank", &["config", &key]);
+        assert_eq!(said(&out).trim(), role, "{who}: {}", r.config_text());
+    }
+    assert_eq!(
+        r.config_text(),
+        ROLES_BASE.replace(
+            "identities: {}\n",
+            "identities:\n  marie@laptop: human\n  claude-code/opus-5.5+w: agent\n  \"ci:bot\": agent\n"
+        )
+    );
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "the file still loads: {}", erred(&out));
+
+    // Rewritten in place.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "identities.claude-code/opus-5.5+w", "human"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(
+        r.config_text()
+            .contains("  claude-code/opus-5.5+w: human\n"),
+        "{}",
+        r.config_text()
+    );
+
+    // A role roles does not declare is refused, naming it, and nothing moves.
+    let written = r.config_text();
+    let out = r.ank("claude-code@ank", &["config", "identities.eve", "ghost"]);
+    assert_eq!(code(&out), 1, "{}", said(&out));
+    let err = erred(&out);
+    assert!(err.contains("ghost"), "{err}");
+    assert!(err.contains("roles.ghost.can"), "{err}");
+    assert_eq!(r.config_text(), written);
+
+    // --unset removes the mapping, and the last one leaves the `{}` it found.
+    for who in ["claude-code/opus-5.5+w", "ci:bot", "marie@laptop"] {
+        let out = r.ank(
+            "claude-code@ank",
+            &["config", "--unset", &format!("identities.{who}")],
+        );
+        assert_eq!(code(&out), 0, "{who}: {}", erred(&out));
+    }
+    assert_eq!(r.config_text(), ROLES_BASE);
+}
+
+#[test]
+fn config_reads_and_writes_a_role_list_as_one_flow_sequence() {
+    let r = Repo::new();
+    r.set_config(ROLES_BASE);
+
+    let out = r.ank("claude-code@ank", &["config", "roles.agent.can"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert_eq!(said(&out).trim(), "[context, find]");
+    let out = r.ank("claude-code@ank", &["config", "roles.human.can", "--json"]);
+    let doc: serde_yaml::Value = serde_yaml::from_str(&said(&out)).unwrap();
+    assert_eq!(doc["type"].as_str(), Some("list"), "{doc:?}");
+    assert_eq!(doc["typed"][0].as_str(), Some("*"), "{doc:?}");
+    let out = r.ank("claude-code@ank", &["config", "roles.human.cannot"]);
+    assert_eq!(said(&out).trim(), "[] (default)", "{}", erred(&out));
+
+    // The value is spliced where it was; the comment beside it stays.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "roles.agent.can", "[context, \"find\", new:task]"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "roles.agent.cannot", "[delete, task:close]"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let edited = ROLES_BASE
+        .replace("[context, find]   #", "[context, find, new:task]   #")
+        .replace("cannot: [delete]", "cannot: [delete, task:close]");
+    assert_eq!(r.config_text(), edited);
+
+    // A role nobody declared is declared by its first list, at the end of
+    // roles and not at the end of the file.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "roles.reviewer.cannot", "[\"*\"]"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let declared = edited.replace(
+        "    can: [\"*\"]\nidentities",
+        "    can: [\"*\"]\n  reviewer:\n    cannot: [\"*\"]\nidentities",
+    );
+    assert_eq!(r.config_text(), declared);
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "identities.rita", "reviewer"],
+    );
+    assert_eq!(
+        code(&out),
+        0,
+        "a declared role is mappable: {}",
+        erred(&out)
+    );
+    let out = r.ank("claude-code@ank", &["config", "--unset", "identities.rita"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "the file still loads: {}", erred(&out));
+
+    // A word outside the vocabulary, and a value that is no list, are refused
+    // and nothing moves.
+    for bad in ["[context, fly]", "context", "[\"*\", bogus-verb]"] {
+        let out = r.ank("claude-code@ank", &["config", "roles.agent.can", bad]);
+        assert_eq!(code(&out), 1, "{bad}: {}", said(&out));
+        assert_eq!(r.config_text(), declared, "{bad} wrote");
+    }
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "roles.agent.can", "[context, fly]"],
+    );
+    let err = erred(&out);
+    assert!(
+        err.contains("fly") && err.contains("docs/config-keys.md"),
+        "{err}"
+    );
+
+    // --unset takes the list out and nothing beside it; the role stays
+    // declared, as an empty mapping, so an identity mapped to it still names a
+    // role.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "--unset", "roles.agent.cannot"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert_eq!(
+        r.config_text(),
+        declared.replace("    cannot: [delete, task:close]\n", "")
+    );
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "--unset", "roles.reviewer.cannot"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(
+        r.config_text().contains("  reviewer: {}\n"),
+        "{}",
+        r.config_text()
+    );
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "the file still loads: {}", erred(&out));
+}
+
+#[test]
+fn the_config_keys_page_no_longer_says_roles_are_edited_by_hand() {
+    let page = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/config-keys.md"),
+    )
+    .unwrap();
+    assert!(!page.contains("edited by hand"), "{page}");
+    assert!(page.contains("ank config roles.<name>.can"), "{page}");
+    assert!(page.contains("ank config identities.<identity>"), "{page}");
 }
