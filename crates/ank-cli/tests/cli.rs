@@ -27746,3 +27746,113 @@ fn help_adds_no_verb_and_no_flag() {
         }
     }
 }
+
+/// The keys a zero turns into a configuration nobody means, each with the
+/// spellings of zero `ank config` is handed (GitHub #783).
+const ZERO_BOUNDED: &[(&str, &[&str])] = &[
+    ("claim_ttl_max", &["0s", "0m", "0h"]),
+    ("claim_ttl_default", &["0s", "0m", "0h"]),
+    ("verifiers.fmt-check.timeout", &["0s", "0m", "0h"]),
+    ("proof.reuse_max_age", &["0s", "0m", "0h"]),
+    ("context_budget", &["0"]),
+];
+
+#[test]
+fn config_refuses_a_zero_where_verifier_jobs_does_and_writes_nothing() {
+    let r = Repo::new();
+    r.set_config(AWKWARD);
+
+    // The refusal every zero is held to: the one verifier_jobs already earns.
+    let jobs = r.ank("claude-code@ank", &["config", "verifier_jobs", "0"]);
+    assert_eq!(code(&jobs), 1, "{}", erred(&jobs));
+    let shape = erred(&jobs);
+    assert!(shape.contains("unreadable"), "{shape}");
+    assert!(shape.contains("verifier_jobs: 0 "), "{shape}");
+    assert_eq!(r.config_text(), AWKWARD);
+
+    for (key, zeros) in ZERO_BOUNDED {
+        for zero in *zeros {
+            let out = r.ank("claude-code@ank", &["config", key, zero]);
+            let err = erred(&out);
+            assert_eq!(code(&out), 1, "{key} {zero}: {err}");
+            assert!(
+                err.contains("refused: the write would leave") && err.contains("unreadable"),
+                "{key} {zero}: {err}"
+            );
+            assert!(
+                err.contains(&format!("{key}: {zero} ")),
+                "{key} {zero}: {err}"
+            );
+            assert!(err.contains("is required"), "{key} {zero}: {err}");
+            assert_eq!(r.config_text(), AWKWARD, "{key} {zero} wrote");
+        }
+    }
+
+    // One above the bound is a value like any other.
+    for (key, value) in [("claim_ttl_max", "1s"), ("context_budget", "1")] {
+        let out = r.ank("claude-code@ank", &["config", key, value]);
+        assert!(out.status.success(), "{key}: {}", erred(&out));
+    }
+}
+
+#[test]
+fn check_faults_a_zero_written_into_config_by_hand() {
+    for (key, zeros) in ZERO_BOUNDED {
+        let zero = zeros[0];
+        let r = Repo::new();
+        let line = match *key {
+            "verifiers.fmt-check.timeout" => {
+                "verifiers:\n  fmt-check:\n    run: cargo fmt --check\n    timeout: 0s\n"
+                    .to_string()
+            }
+            "proof.reuse_max_age" => "proof:\n  reuse_max_age: 0s\n".to_string(),
+            top => format!("{top}: {zero}\n"),
+        };
+        r.set_config(&format!("schema: 1\ndefault_branch: main\n{line}"));
+
+        let out = r.ank("claude-code@ank", &["check"]);
+        let text = said(&out);
+        assert_eq!(code(&out), 8, "{key}: {text}\n{}", erred(&out));
+        assert!(text.contains(".ank/config.yml"), "{key}: {text}");
+        assert!(text.contains(&format!("{key}: {zero} ")), "{key}: {text}");
+
+        let out = r.ank("claude-code@ank", &["check", "--json"]);
+        assert_eq!(code(&out), 8, "{key}: {}", erred(&out));
+        let json = said(&out);
+        assert!(json.contains("\"kind\":\"config-bound\""), "{key}: {json}");
+        assert!(json.contains("\"level\":\"fault\""), "{key}: {json}");
+        assert!(json.contains(".ank/config.yml"), "{key}: {json}");
+
+        // Every other verb refuses the file rather than run on it: a claim
+        // dead a second after it is taken is the defect.
+        let out = r.ank("claude-code@ank", &["status"]);
+        assert_eq!(code(&out), 1, "{key}: status ran on a zero");
+        assert!(
+            erred(&out).contains(&format!("{key}: {zero} ")),
+            "{}",
+            erred(&out)
+        );
+    }
+}
+
+#[test]
+fn config_keys_page_states_the_lower_bound_of_each_zero_bounded_key() {
+    let page = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/config-keys.md"),
+    )
+    .unwrap();
+    for key in [
+        "claim_ttl_max",
+        "claim_ttl_default",
+        "verifiers.<name>.timeout",
+        "proof.reuse_max_age",
+        "context_budget",
+        "verifier_jobs",
+    ] {
+        let row = page
+            .lines()
+            .find(|l| l.starts_with(&format!("| `{key}` |")))
+            .unwrap_or_else(|| panic!("{key} has no row"));
+        assert!(row.contains("at least"), "{key} states no bound: {row}");
+    }
+}

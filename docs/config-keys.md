@@ -11,16 +11,16 @@ This build reads `schema: 1` through `schema: 2`; a file carrying `requires_ank`
 |---|---|---|---|
 | `schema` | integer | required | the version of this file's format |
 | `requires_ank` | version | none | `MAJOR.MINOR.PATCH`: the oldest ank this corpus needs, compared with the running binary and never with a release; a file carrying it declares `schema: 2`; absent, no requirement; moved by `ank config requires_ank` |
-| `context_budget` | integer | `8000` | what `context` hands a reader, in characters |
-| `claim_ttl_max` | duration | `2h` | the longest lease a claim is granted, whatever `--ttl` asks |
-| `claim_ttl_default` | duration | `30m` | the lease `claim` grants without `--ttl`, capped by `claim_ttl_max` |
+| `context_budget` | integer | `8000` | what `context` hands a reader, in characters; at least 1 |
+| `claim_ttl_max` | duration | `2h` | the longest lease a claim is granted, whatever `--ttl` asks; at least `1s` |
+| `claim_ttl_default` | duration | `30m` | the lease `claim` grants without `--ttl`, capped by `claim_ttl_max`; at least `1s` |
 | `default_branch` | string | none | the branch carrying the reference state; absent, `refs/remotes/origin/HEAD` names it |
 | `peers.<name>` | path | none | a peer corpus a scope entry reaches by name: a path to a checkout on disk, relative to this root or absolute, and never a URL; a reader whose layout differs overrides it in their own corpora.yml with `ank config --user peers.<identity>.<name> <path>` |
 | `verifiers.<name>.run` | command | required | what `done` runs through `sh`; required in a declared verifier |
-| `verifiers.<name>.timeout` | duration | `10m` | how long `done` lets the command run |
+| `verifiers.<name>.timeout` | duration | `10m` | how long `done` lets the command run; at least `1s` |
 | `verifiers.<name>.default` | boolean | `false` | `true` writes the verifier into every task `ank new task` creates |
 | `verifiers.<name>.inputs` | list of globs | none | the files whose content can change the result, relative to the root; absent, the whole tree; written as one flow sequence, never empty |
-| `proof.reuse_max_age` | duration | `24h` | how old a passing run recorded under `<git-common-dir>/ank/runs/` may be for `done` to reuse it rather than run the verifier again; `done --fresh` reuses nothing |
+| `proof.reuse_max_age` | duration | `24h` | how old a passing run recorded under `<git-common-dir>/ank/runs/` may be for `done` to reuse it rather than run the verifier again, at least `1s`; `done --fresh` reuses nothing |
 | `verifier_jobs` | integer | none | how many verifiers one `done` runs at once, at least 1; absent, the machine's available parallelism |
 | `verifier_lock` | boolean | `true` | whether `done` waits for the verifiers another `done` of the repository is running, in any of its worktrees, before it starts its own; `false` lets them run at the same time (ADR-eab130f731f3) |
 | `roles.<name>.can` | list of strings | `[]` | what the role may do, declared |

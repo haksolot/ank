@@ -540,6 +540,22 @@ pub fn parse_duration(text: &str) -> std::result::Result<Duration, String> {
 }
 
 pub fn parse(text: &str, path: &Path) -> Result<Config> {
+    let (config, bounds) = read(text, path)?;
+    match bounds.into_iter().next() {
+        Some(first) => Err(CliError::new(ExitCode::Generic, first)),
+        None => Ok(config),
+    }
+}
+
+/// [`parse`], answering past the bounds a value is held to rather than
+/// refusing on the first: the configuration as written, and one sentence per
+/// value below its bound (GitHub #783), each naming the file and the key.
+///
+/// Every verb but `check` refuses such a file through [`parse`], since a
+/// claim granted a lease of zero is dead before the agent's next command.
+/// `check` reads it through here, so the bound is a fault in a full report
+/// rather than an error standing in for one.
+pub fn read(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
     // **The version first, and the fields afterwards.** A file newer than this
     // binary is refused on its version, so the sentence a reader gets names
     // the cause — this tool is old — instead of the first key that happens to
@@ -611,21 +627,56 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         })
     };
 
-    // Zero would be a `done` that runs nothing and waits forever, which no
-    // reader means by writing it.
-    if raw.verifier_jobs == Some(0) {
-        return Err(CliError::new(
-            ExitCode::Generic,
-            format!(
-                "{}: verifier_jobs: 0 runs no verifier, a positive integer is required",
-                path.display()
-            ),
+    // A zero no reader means by writing it: a `done` that runs nothing and
+    // waits forever, a claim dead a second after it is taken, a `context` that
+    // hands over nothing. Each sentence keeps the shape `verifier_jobs: 0`
+    // always had, the file, the key, what was written and why it is no value.
+    let mut bounds = Vec::new();
+    let mut bound = |field: &str, written: &str, why: &str, required: &str| {
+        bounds.push(format!(
+            "{}: {field}: {written} {why}, a positive {required} is required",
+            path.display(),
         ));
+    };
+    if raw.verifier_jobs == Some(0) {
+        bound("verifier_jobs", "0", "runs no verifier", "integer");
+    }
+    if raw.context_budget == 0 {
+        bound(
+            "context_budget",
+            "0",
+            "hands a reader no constraint",
+            "integer",
+        );
     }
 
     let claim_ttl_max = dur(&raw.claim_ttl_max, "claim_ttl_max")?;
     let claim_ttl_default = dur(&raw.claim_ttl_default, "claim_ttl_default")?;
     let reuse_max_age = dur(&raw.proof.reuse_max_age, "proof.reuse_max_age")?;
+    for (field, written, value, why) in [
+        (
+            "claim_ttl_max",
+            &raw.claim_ttl_max,
+            claim_ttl_max,
+            "grants a claim no lease",
+        ),
+        (
+            "claim_ttl_default",
+            &raw.claim_ttl_default,
+            claim_ttl_default,
+            "grants a claim no lease",
+        ),
+        (
+            "proof.reuse_max_age",
+            &raw.proof.reuse_max_age,
+            reuse_max_age,
+            "reuses no run, which is what done --fresh asks for",
+        ),
+    ] {
+        if value.is_zero() {
+            bound(field, written.trim(), why, "duration");
+        }
+    }
     let signers = parse_signers(raw.signers, path)?;
     let in_file = |e: CliError| {
         CliError::new(
@@ -658,6 +709,14 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
             )
         })?;
         let timeout = dur(&v.timeout, &format!("verifiers.{name}.timeout"))?;
+        if timeout.is_zero() {
+            bound(
+                &format!("verifiers.{name}.timeout"),
+                v.timeout.trim(),
+                "lets the verifier no time to run",
+                "duration",
+            );
+        }
         if v.default {
             default_verifiers.push(name.clone());
         }
@@ -702,7 +761,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         .map(|b| b.trim().to_string())
         .filter(|b| !b.is_empty());
 
-    Ok(Config {
+    let config = Config {
         schema: raw.schema,
         requires_ank,
         context_budget: raw.context_budget,
@@ -727,7 +786,8 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         guard,
         reuse_max_age,
         signers,
-    })
+    };
+    Ok((config, bounds))
 }
 
 /// The refusal a `requires_ank` not of the form `MAJOR.MINOR.PATCH` earns.
@@ -758,15 +818,24 @@ fn requires_ank(value: &serde_yaml::Value, path: &Path) -> Result<crate::update:
 }
 
 pub fn load(path: &Path) -> Result<Config> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
+    parse(&read_file(path)?, path)
+}
+
+/// [`load`] past the bounds a value is held to, for `check` alone: see
+/// [`read`].
+pub fn load_unbounded(path: &Path) -> Result<(Config, Vec<String>)> {
+    read(&read_file(path)?, path)
+}
+
+fn read_file(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             CliError::new(ExitCode::Generic, format!("{} not found", path.display()))
                 .with_hint("ank init")
         } else {
             CliError::new(ExitCode::Generic, format!("{}: {e}", path.display()))
         }
-    })?;
-    parse(&text, path)
+    })
 }
 
 /// Content written by `ank init`. The canonical form of the file.
