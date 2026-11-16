@@ -540,6 +540,22 @@ pub fn parse_duration(text: &str) -> std::result::Result<Duration, String> {
 }
 
 pub fn parse(text: &str, path: &Path) -> Result<Config> {
+    let (config, bounds) = read(text, path)?;
+    match bounds.into_iter().next() {
+        Some(first) => Err(CliError::new(ExitCode::Generic, first)),
+        None => Ok(config),
+    }
+}
+
+/// [`parse`], answering past the bounds a value is held to rather than
+/// refusing on the first: the configuration as written, and one sentence per
+/// value below its bound (GitHub #783), each naming the file and the key.
+///
+/// Every verb but `check` refuses such a file through [`parse`], since a
+/// claim granted a lease of zero is dead before the agent's next command.
+/// `check` reads it through here, so the bound is a fault in a full report
+/// rather than an error standing in for one.
+pub fn read(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
     // **The version first, and the fields afterwards.** A file newer than this
     // binary is refused on its version, so the sentence a reader gets names
     // the cause — this tool is old — instead of the first key that happens to
@@ -611,21 +627,56 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         })
     };
 
-    // Zero would be a `done` that runs nothing and waits forever, which no
-    // reader means by writing it.
-    if raw.verifier_jobs == Some(0) {
-        return Err(CliError::new(
-            ExitCode::Generic,
-            format!(
-                "{}: verifier_jobs: 0 runs no verifier, a positive integer is required",
-                path.display()
-            ),
+    // A zero no reader means by writing it: a `done` that runs nothing and
+    // waits forever, a claim dead a second after it is taken, a `context` that
+    // hands over nothing. Each sentence keeps the shape `verifier_jobs: 0`
+    // always had, the file, the key, what was written and why it is no value.
+    let mut bounds = Vec::new();
+    let mut bound = |field: &str, written: &str, why: &str, required: &str| {
+        bounds.push(format!(
+            "{}: {field}: {written} {why}, a positive {required} is required",
+            path.display(),
         ));
+    };
+    if raw.verifier_jobs == Some(0) {
+        bound("verifier_jobs", "0", "runs no verifier", "integer");
+    }
+    if raw.context_budget == 0 {
+        bound(
+            "context_budget",
+            "0",
+            "hands a reader no constraint",
+            "integer",
+        );
     }
 
     let claim_ttl_max = dur(&raw.claim_ttl_max, "claim_ttl_max")?;
     let claim_ttl_default = dur(&raw.claim_ttl_default, "claim_ttl_default")?;
     let reuse_max_age = dur(&raw.proof.reuse_max_age, "proof.reuse_max_age")?;
+    for (field, written, value, why) in [
+        (
+            "claim_ttl_max",
+            &raw.claim_ttl_max,
+            claim_ttl_max,
+            "grants a claim no lease",
+        ),
+        (
+            "claim_ttl_default",
+            &raw.claim_ttl_default,
+            claim_ttl_default,
+            "grants a claim no lease",
+        ),
+        (
+            "proof.reuse_max_age",
+            &raw.proof.reuse_max_age,
+            reuse_max_age,
+            "reuses no run, which is what done --fresh asks for",
+        ),
+    ] {
+        if value.is_zero() {
+            bound(field, written.trim(), why, "duration");
+        }
+    }
     let signers = parse_signers(raw.signers, path)?;
     let in_file = |e: CliError| {
         CliError::new(
@@ -658,6 +709,14 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
             )
         })?;
         let timeout = dur(&v.timeout, &format!("verifiers.{name}.timeout"))?;
+        if timeout.is_zero() {
+            bound(
+                &format!("verifiers.{name}.timeout"),
+                v.timeout.trim(),
+                "lets the verifier no time to run",
+                "duration",
+            );
+        }
         if v.default {
             default_verifiers.push(name.clone());
         }
@@ -702,7 +761,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         .map(|b| b.trim().to_string())
         .filter(|b| !b.is_empty());
 
-    Ok(Config {
+    let config = Config {
         schema: raw.schema,
         requires_ank,
         context_budget: raw.context_budget,
@@ -727,7 +786,8 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         guard,
         reuse_max_age,
         signers,
-    })
+    };
+    Ok((config, bounds))
 }
 
 /// The refusal a `requires_ank` not of the form `MAJOR.MINOR.PATCH` earns.
@@ -758,15 +818,24 @@ fn requires_ank(value: &serde_yaml::Value, path: &Path) -> Result<crate::update:
 }
 
 pub fn load(path: &Path) -> Result<Config> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
+    parse(&read_file(path)?, path)
+}
+
+/// [`load`] past the bounds a value is held to, for `check` alone: see
+/// [`read`].
+pub fn load_unbounded(path: &Path) -> Result<(Config, Vec<String>)> {
+    read(&read_file(path)?, path)
+}
+
+fn read_file(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             CliError::new(ExitCode::Generic, format!("{} not found", path.display()))
                 .with_hint("ank init")
         } else {
             CliError::new(ExitCode::Generic, format!("{}: {e}", path.display()))
         }
-    })?;
-    parse(&text, path)
+    })
 }
 
 /// Content written by `ank init`. The canonical form of the file.
@@ -1774,6 +1843,138 @@ impl Value {
     }
 }
 
+impl Value {
+    /// The value in the JSON type `ty` names, `null` for an unset value and
+    /// for one the file wrote in a form its type does not read: the string
+    /// beside it still says what was written (GitHub #784).
+    fn typed(&self, ty: &str) -> String {
+        let (Value::Set(v) | Value::Default(v)) = self else {
+            return "null".to_string();
+        };
+        let v = v.trim();
+        match ty {
+            "integer" => v
+                .parse::<u64>()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| "null".to_string()),
+            "boolean" => match v {
+                "true" | "false" => v.to_string(),
+                _ => "null".to_string(),
+            },
+            "list" => serde_yaml::from_str::<Vec<String>>(v)
+                .map(crate::json::strings)
+                .unwrap_or_else(|_| "null".to_string()),
+            _ => crate::json::string(v),
+        }
+    }
+}
+
+/// The JSON type a key's value is read as, from the type the key table
+/// declares (`ank_core::config::KEYS`): `integer`, `boolean`, `list` for a
+/// list of anything, and `string` for every other word, a duration, a path, a
+/// version and a closed set of words among them.
+fn json_type(key: &Key) -> &'static str {
+    let template = match key {
+        Key::Top { name, .. } => (*name).to_string(),
+        Key::Under { map: "peers", .. } => "peers.<name>".to_string(),
+        Key::Under { map, name, .. } => format!("{map}.{name}"),
+        Key::Field { field, .. } => format!("verifiers.<name>.{field}"),
+        Key::Inputs { .. } => "verifiers.<name>.inputs".to_string(),
+        Key::Block { .. } => return "string",
+    };
+    let declared = ank_core::config::KEYS
+        .iter()
+        .find(|k| k.path == template)
+        .map_or("string", |k| k.ty);
+    match declared {
+        "integer" => "integer",
+        "boolean" => "boolean",
+        d if d.starts_with("list") => "list",
+        _ => "string",
+    }
+}
+
+/// The names declared directly under the top-level mapping `map`, in file
+/// order: the verifiers, or the peers.
+fn declared_under(lines: &[Line], map: &str) -> Vec<String> {
+    let Some((_, block)) = named_block(lines, map) else {
+        return Vec::new();
+    };
+    let Some(child) = block.indent else {
+        return Vec::new();
+    };
+    lines[block.range]
+        .iter()
+        .filter(|l| content_indent(&l.text) == Some(child))
+        .filter_map(|l| key_of(&l.text).map(|(k, _)| k))
+        .collect()
+}
+
+/// Every key `ank config <key>` reads, resolved against the file: the
+/// templates of [`KEYS`] in their order, `<name>` expanded into each declared
+/// peer and each declared verifier, a verifier's fields kept together.
+fn listed_keys(lines: &[Line]) -> Vec<String> {
+    let fields: Vec<&str> = KEYS
+        .iter()
+        .filter_map(|k| k.strip_prefix("verifiers.<name>."))
+        .collect();
+    let mut keys = Vec::new();
+    for template in KEYS {
+        if *template == "peers.<name>" {
+            keys.extend(
+                declared_under(lines, "peers")
+                    .into_iter()
+                    .map(|p| format!("peers.{p}")),
+            );
+        } else if let Some(field) = template.strip_prefix("verifiers.<name>.") {
+            // Expanded once, at the first field, so each verifier's fields
+            // stay together rather than interleave with another's.
+            if fields.first() == Some(&field) {
+                for v in declared_under(lines, "verifiers") {
+                    keys.extend(fields.iter().map(|f| format!("verifiers.{v}.{f}")));
+                }
+            }
+        } else {
+            keys.push((*template).to_string());
+        }
+    }
+    keys
+}
+
+/// `ank config --list`: every key [`listed_keys`] names, with its value in
+/// force and its source, read from the text as `ank config <key>` reads one,
+/// so it answers on a file that does not parse too.
+fn list(inv: &Invocation, lines: &[Line], out: &mut dyn Write) -> Result<ExitCode> {
+    let mut entries = Vec::new();
+    let mut human = Vec::new();
+    for name in listed_keys(lines) {
+        let key = resolve_key(&name)?;
+        let value = read_key(lines, &key)?;
+        let ty = json_type(&key);
+        human.push(format!("{name} {}", value.display()));
+        entries.push(
+            crate::json::Obj::new()
+                .str("key", &name)
+                .raw("value", &value.json())
+                .str("source", value.source())
+                .str("type", ty)
+                .raw("typed", &value.typed(ty))
+                .finish(),
+        );
+    }
+    if inv.json() {
+        let doc = crate::json::Obj::document()
+            .array("entries", entries)
+            .finish();
+        let _ = writeln!(out, "{doc}");
+    } else if !inv.quiet() {
+        for line in human {
+            let _ = writeln!(out, "{line}");
+        }
+    }
+    Ok(ExitCode::Ok)
+}
+
 fn from_default(d: &Option<String>) -> Value {
     match d {
         Some(v) => Value::Default(v.clone()),
@@ -2763,7 +2964,21 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
     let path = repo.config_path();
     let unset = inv.has("--unset");
 
+    let listing = inv.has("--list");
+    if listing && (unset || !inv.positionals.is_empty()) {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            "--list answers every key, and takes no key, value or --unset",
+        )
+        .with_hint("ank config --list   or   ank config <key>"));
+    }
     let Some(raw_key) = inv.positionals.first() else {
+        if listing {
+            let text = std::fs::read_to_string(&path).map_err(|e| {
+                CliError::new(ExitCode::Generic, format!("{}: {e}", path.display()))
+            })?;
+            return list(inv, &split_lines(&text), out);
+        }
         return Err(CliError::new(ExitCode::Generic, "config expects a key")
             .with_hint(format!("keys: {}", KEYS.join(" "))));
     };
@@ -2835,10 +3050,13 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
         // value is not a thing, and only `--unset` addresses it.
         let before = read_key(&lines, &key)?;
         if inv.json() {
+            let ty = json_type(&key);
             let doc = crate::json::Obj::document()
                 .str("key", raw_key)
                 .raw("value", &before.json())
                 .str("source", before.source())
+                .str("type", ty)
+                .raw("typed", &before.typed(ty))
                 .finish();
             let _ = writeln!(out, "{doc}");
         } else if !inv.quiet() {
