@@ -47,8 +47,6 @@
 
 #![cfg(unix)]
 
-use crate::terminal;
-
 use crate::terminal::{ids_of, printed_at_a_terminal, Live, Repo, ONE_AT_A_TIME};
 
 /// The window every session here opens on. Wide enough that the two panels in
