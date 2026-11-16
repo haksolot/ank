@@ -422,6 +422,7 @@ welcome_wanted() {
 supported_lines() {
   cat <<'EOF'
   Linux  x86_64        x86_64-unknown-linux-musl
+  Linux  arm64         aarch64-unknown-linux-musl
   Darwin arm64         aarch64-apple-darwin
   Darwin x86_64        x86_64-apple-darwin
 EOF
@@ -495,6 +496,7 @@ detect_target() {
 
   case "${detect_os}/${detect_arch}" in
     Linux/x86_64) target=x86_64-unknown-linux-musl ;;
+    Linux/arm64) target=aarch64-unknown-linux-musl ;;
     Darwin/arm64) target=aarch64-apple-darwin ;;
     Darwin/x86_64) target=x86_64-apple-darwin ;;
     *)

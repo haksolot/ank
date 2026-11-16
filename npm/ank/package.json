@@ -35,6 +35,7 @@
   },
   "optionalDependencies": {
     "@haksolot/ank-darwin-arm64": "0.9.4",
+    "@haksolot/ank-linux-arm64-musl": "0.9.4",
     "@haksolot/ank-linux-x64-musl": "0.9.4",
     "@haksolot/ank-win32-x64": "0.9.4"
   }

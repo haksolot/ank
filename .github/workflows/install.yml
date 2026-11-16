@@ -51,17 +51,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       # A refusal that is wrong on one architecture is exactly the information
-      # this workflow exists to produce. Without fail-fast, the other two rows
+      # this workflow exists to produce. Without fail-fast, the other rows
       # still say whether it is architecture-specific.
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
+          # Linux arm64, on the runner release.yml builds that row on. uname
+          # answers aarch64 there and arm64 on some distributions, and the
+          # script folds both into one target.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
           - os: macos-latest
             target: aarch64-apple-darwin
-          # The Intel row, and the reason this workflow exists on three rows
-          # rather than two: half the Mac install base is x86_64, and a script
+          # The Intel row, and the reason this workflow exists beside ci.yml: half the Mac install base is x86_64, and a script
           # that resolves the wrong target there installs a binary that cannot
           # run. `macos-15-intel` is the same label release.yml builds on, and
           # goes away in August 2027 with that row.
@@ -82,7 +86,7 @@ jobs:
           set -e
           sh install.sh --help
           out=$(sh install.sh --help 2>&1)
-          for t in x86_64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin; do
+          for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin; do
             printf '%s' "$out" | grep -q -- "$t" || {
               echo "--help does not name $t"
               exit 1
@@ -125,7 +129,7 @@ jobs:
               exit 1
             }
           done
-          echo "--help names all three targets, the flag that draws nothing, and the one file it places"
+          echo "--help names all four targets, the flag that draws nothing, and the one file it places"
 
       # The first of the two failures that matter. A fake `uname` on PATH is
       # what makes this testable on a machine that is one of the supported
@@ -162,7 +166,7 @@ jobs:
           }
           # And what does exist, so the caller can tell a missing build from a
           # machine nobody builds for.
-          for t in x86_64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin; do
+          for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin; do
             printf '%s' "$out" | grep -q -- "$t" || {
               echo "the refusal does not list $t"
               exit 1
@@ -174,8 +178,8 @@ jobs:
 
       # A release the script has never seen, served from localhost. This is
       # what lets the whole path -- resolve, fetch the checksum, fetch the
-      # archive, verify, unpack, install, report the PATH -- run on all three
-      # architectures, including the one no published release carries yet.
+      # archive, verify, unpack, install, report the PATH -- run on all four
+      # rows, including the one no published release carries yet.
       #
       # The payload is a stand-in and not the ank binary, deliberately. What is
       # under test here is the script; whether a real binary runs on a given

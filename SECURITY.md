@@ -151,9 +151,10 @@ actually reach for:
   outside the directory asked for, or an argument that reaches a command
   unquoted;
 - the npm packages: `@haksolot/ank`, whose `bin/wrapper.js` resolves and spawns
-  a binary out of one of the three platform packages
-  (`@haksolot/ank-linux-x64-musl`, `@haksolot/ank-darwin-arm64`,
-  `@haksolot/ank-win32-x64`) selected through `optionalDependencies`. The
+  a binary out of one of the four platform packages
+  (`@haksolot/ank-linux-x64-musl`, `@haksolot/ank-linux-arm64-musl`,
+  `@haksolot/ank-darwin-arm64`, `@haksolot/ank-win32-x64`) selected through
+  `optionalDependencies`. The
   wrapper downloads nothing and runs no install script, so what is in scope is
   the resolution: a path where it can be made to spawn something other than the
   platform package npm installed, or to pass arguments to it other than the ones

@@ -1,7 +1,9 @@
 # Every tool this repository runs besides Rust, pinned here and locked with a
 # checksum per platform in mise.lock (ADR-9c69bd47ce23). Rust itself is pinned
 # by rust-toolchain.toml, which rustup reads. A bump changes this file and the
-# lockfile together: `mise lock --platform linux-x64,macos-arm64,macos-x64,windows-x64`.
+# lockfile together: `mise lock --platform linux-x64,macos-arm64,macos-x64,windows-x64`,
+# then `mise lock --platform linux-arm64 node`, the one tool release.yml installs
+# on its arm64 row.
 #
 # Tasks here are the ones every contributor can run. A recipe that depends on
 # one machine's keys or shell goes in mise.local.toml, which git ignores.

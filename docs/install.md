@@ -36,8 +36,8 @@ The binary is inside the package: one package per platform, installed through
 `postinstall` download would die behind the very firewall this channel exists
 to cross, after the install looked like it had worked.
 
-It covers `linux x64`, `darwin arm64` and `win32 x64`. On anything else, an
-Intel Mac or a linux arm64 box, the wrapper exits 9 and names `cargo install`.
+It covers `linux x64`, `linux arm64`, `darwin arm64` and `win32 x64`. On
+anything else, an Intel Mac for one, the wrapper exits 9 and names `cargo install`.
 
 **`curl | sh`**, on Linux and macOS:
 

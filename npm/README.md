@@ -1,15 +1,16 @@
 # The npm channel
 
-Four packages, and the shape is the one esbuild uses.
+Five packages, and the shape is the one esbuild uses.
 
     @haksolot/ank                    the wrapper, and the only name anyone installs
     @haksolot/ank-linux-x64-musl     the binaries, one package per target
+    @haksolot/ank-linux-arm64-musl
     @haksolot/ank-darwin-arm64
     @haksolot/ank-win32-x64
 
-The wrapper declares the three as `optionalDependencies`, each carrying `os` and
+The wrapper declares the four as `optionalDependencies`, each carrying `os` and
 `cpu`. npm installs the one that matches the machine and silently skips the
-other two, so a `linux x64` install downloads one binary and not three.
+other three, so a `linux x64` install downloads one binary and not four.
 
 **The binaries are inside the packages, and nothing is fetched at install time.**
 That is the whole point of this channel rather than a detail of it. The driving
@@ -26,10 +27,11 @@ arrive from a different build, or fail to arrive at all. The wrapper declares
 one `bin` -- `bin/ank` is two lines, and `bin/wrapper.js` is the resolution,
 the diagnostics and the exit code behind it.
 
-**The Linux package declares no `libc`.** The build is `x86_64-unknown-linux-musl`
-and statically linked, so it runs on a glibc distribution just as well; declaring
-`"libc": ["musl"]` would make npm skip it on Debian and Ubuntu, which is most of
-the installs. The target is in the package name because that is what was built,
+**The Linux packages declare no `libc`.** The builds are `x86_64-unknown-linux-musl`
+and `aarch64-unknown-linux-musl`, statically linked, so they run on a glibc
+distribution just as well; declaring `"libc": ["musl"]` would make npm skip them
+on Debian and Ubuntu, which is most of the installs. The target is in the package
+name because that is what was built,
 not because it restricts where it runs.
 
 **The wrapper forwards the exit code unchanged.** Section 4 of the specification
@@ -47,7 +49,7 @@ run and ignored in the tree, and between them they are every file in a published
 tarball that is not committed here:
 
     npm/ank-*/bin/ank, ank.exe   the executable, one per platform package
-    npm/*/LICENSE                copied from the repository root into all four
+    npm/*/LICENSE                copied from the repository root into all five
     npm/*/*.tgz                  what npm pack produced
 
 The binaries come from the same artefacts the GitHub release publishes: one
@@ -57,8 +59,8 @@ and `ank skills --install` places them (ADR-33f2888f4ac7).
 
 ## Versions
 
-All four carry one version. The assembly stamps it across the four
-`package.json` and pins the three platform packages in the wrapper's
+All five carry one version. The assembly stamps it across the five
+`package.json` and pins the four platform packages in the wrapper's
 `optionalDependencies` exactly, from the tag `release.yml` passes it, so the
 copy committed here is only ever the last released one.
 
@@ -73,9 +75,9 @@ carries no such gate, so it runs on both: the pipeline is rehearsed on a
 dispatch before a tag depends on it, and a tag is the one thing here that is
 awkward to take back.
 
-That job runs on `ubuntu-latest`, `macos-latest` and `windows-latest`, since a
-wrapper is exactly the kind of code that is right on one platform and wrong on
-another, and on each of the three it:
+That job runs on `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest` and
+`windows-latest`, since a wrapper is exactly the kind of code that is right on
+one platform and wrong on another, and on each of the four it:
 
 - takes `npm@latest`, because the npm inside a pinned node is the part that moves;
 - assembles that runner's platform package from the artefact `build` uploaded;
