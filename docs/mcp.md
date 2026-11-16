@@ -120,7 +120,12 @@ tool per verb, whatever the table carries, named `ank_<verb>` because a bare
 `context` collides with every other server a client has loaded and `ank context`
 is not a legal tool name. Positionals arrive as `arguments`, an array of strings,
 exactly as they sit on the command line; flags arrive under their own names with
-the leading dashes stripped. What a call gets back is the document `--json`
+the leading dashes stripped. Where a verb takes a fixed word first, as `hooks`,
+`signers` and `new` do, the schema holds the first item to those words with
+`prefixItems` and types every later item as a plain string, so
+`["install", "claude"]` is a call the schema accepts. Where a verb refuses to
+run without a positional, `arguments` is `required` and `minItems` counts what
+it needs. What a call gets back is the document `--json`
 returns, with the exit code beside it. Nothing in the server names a verb, so
 the two surfaces cannot disagree about what exists.
 
