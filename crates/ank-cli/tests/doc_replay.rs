@@ -1188,3 +1188,62 @@ fn a_page_naming_one_value_twice_is_caught() {
     assert!(p.learn("at 9c45c50", "at 2222222").is_err());
     assert_eq!(p.translate("ank show 9c45"), "ank show 1111");
 }
+
+// ---------------------------------------------------------------------------
+// The pages the installers name (GitHub #778)
+// ---------------------------------------------------------------------------
+
+/// Every `docs/<page>.md` a text names, bare or inside a
+/// `github.com/haksolot/ank/blob/main/` URL, each once and in order.
+///
+/// An occurrence counts when `docs/` opens a word or follows a `/`: the bare
+/// path and the URL both qualify, and `mydocs/x.md` does not. The page runs over
+/// the characters a path in this tree is spelled with and has to end on `.md`.
+fn docs_pages_named(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for (at, _) in text.match_indices("docs/") {
+        let before = text[..at].chars().next_back();
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.') {
+            continue;
+        }
+        let rest = &text[at..];
+        let len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || "/_.-".contains(c)))
+            .unwrap_or(rest.len());
+        let path = rest[..len].trim_end_matches('.');
+        if path.ends_with(".md") && !found.iter().any(|p| p == path) {
+            found.push(path.to_string());
+        }
+    }
+    found
+}
+
+/// The installers hand a new install a page, and an update prints it again;
+/// a page the documentation no longer has is the first link a reader follows
+/// and finds missing. Nothing replays an installer's prose, so this holds it to
+/// the tree instead.
+#[test]
+fn every_docs_page_an_installer_names_is_a_file_of_the_tree() {
+    let mut missing = Vec::new();
+    for script in ["install.sh", "install.ps1"] {
+        let text = std::fs::read_to_string(workspace().join(script)).unwrap();
+        for page in docs_pages_named(&text) {
+            if !workspace().join(&page).is_file() {
+                missing.push(format!("{script} names {page}, which is not in the tree"));
+            }
+        }
+    }
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
+}
+
+/// The detector the test above rests on sees both spellings and nothing else.
+#[test]
+fn a_docs_page_is_found_bare_and_inside_the_blob_url() {
+    let text = "they are in docs/gone.md too\n  \
+                https://github.com/haksolot/ank/blob/main/docs/also-gone.md\n\
+                not mydocs/x.md, and docs/dir/ alone is no page.";
+    assert_eq!(
+        docs_pages_named(text),
+        vec!["docs/gone.md".to_string(), "docs/also-gone.md".to_string()]
+    );
+}

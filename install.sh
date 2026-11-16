@@ -470,7 +470,7 @@ the two questions:
     ank skills --install
   which teaches an agent how to use ank. The second offers to print three
   prompts that adopt ank in a repository that already has code and no
-  .ank; they are in docs/getting-started.md too, and printing them writes
+  .ank; they are in docs/quickstart.md too, and printing them writes
   nothing anywhere.
   Enter accepts each, declining either does nothing at all, and nothing
   either does can change any of the codes below.
@@ -1035,7 +1035,7 @@ offer_skills() {
 # criterion; and check what came out. The first one is the one the reader
 # judges the tool on, which is why it is first.
 #
-# The same three prose blocks live in install.ps1 and in docs/getting-started.md,
+# The same three prose blocks live in install.ps1 and in docs/quickstart.md,
 # and a test holds the three copies character for character
 # (crates/ank-cli/tests/adopt.rs). Prose duplicated in three files diverges, and
 # this is the prose where divergence is worst: an installer teaching a prompt
@@ -1073,10 +1073,10 @@ one produces before you send the next.
     already breaks and which scopes match no file, and change nothing
     until I have read your answer.
 
-The same three are in docs/getting-started.md, which says what to expect
+The same three are in docs/quickstart.md, which says what to expect
 from each:
 
-  https://github.com/haksolot/ank/blob/main/docs/getting-started.md
+  https://github.com/haksolot/ank/blob/main/docs/quickstart.md
 ADOPT_EOF
 }
 # adopt-prompts:end
