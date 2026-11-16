@@ -223,19 +223,19 @@ pub static KEYS: &[ConfigKey] = &[
         "roles.<name>.can",
         "list of strings",
         Absent::Text("[]"),
-        "what the role may do, each entry a word of the role vocabulary below",
+        "what the role may do, each entry a word of the role vocabulary below; written as one flow sequence by `ank config roles.<name>.can`, which declares the role when it is absent",
     ),
     key(
         "roles.<name>.cannot",
         "list of strings",
         Absent::Text("[]"),
-        "what the role may not do, each entry a word of the role vocabulary below",
+        "what the role may not do, each entry a word of the role vocabulary below; written by `ank config roles.<name>.cannot`",
     ),
     key(
         "identities.<identity>",
         "string",
         Absent::None,
-        "the role of an identity; one absent from the table is an `agent`",
+        "the role of an identity, one `roles` declares; one absent from the table is an `agent`; written by `ank config identities.<identity> <role>` and removed by `--unset`",
     ),
     key(
         "permissions.enforce",

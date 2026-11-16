@@ -140,8 +140,8 @@ pub fn config_keys_page() -> String {
         "This build reads `schema: {}` through `schema: {}`; a file carrying `requires_ank` \
          declares `schema: {}`, and one without it may stay at `schema: {}`. A duration \
          is `<n><unit>`, the unit one of `s`, `m`, `h` or `d`. `<name>` stands for a key \
-         the file chooses; `ank config <key>` reads and writes the scalar keys, and \
-         `roles` and `identities` are edited by hand.\n\n",
+         the file chooses; `ank config <key>` reads and writes each key, `signers` \
+         aside, which `ank signers` writes.\n\n",
         config::MIN_SCHEMA,
         config::SCHEMA,
         config::REQUIRES_ANK_SCHEMA,

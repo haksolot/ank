@@ -24,7 +24,7 @@
 //! `remove` could not know whether to take the container out with the entry.
 
 use crate::cli::{CliError, Invocation, Result};
-use crate::config::{GuardCorpus, GuardEdit};
+use crate::config::{Enforce, GuardCorpus, GuardEdit};
 use crate::json::Obj;
 use ank_contract::ExitCode;
 use std::io::{Read, Write};
@@ -37,17 +37,40 @@ const AGENTS: &[&str] = &["claude"];
 /// Claude Code's events, each with the event `run` is called with and the tools
 /// its entry is matched against, if any.
 ///
-/// `PreToolUse` is matched to the file tools: they are what the two guards look
-/// at, and a shell line is out of the decision's scope, so an entry matching
-/// every tool would start this binary on every shell call to say nothing.
+/// `PreToolUse` is matched to the file tools, which the two file guards look
+/// at, and to `Bash`, which the permissions guard looks at (ADR-ddbe024ca7f2).
+/// Still a list and never every tool: a tool none of the guards reads would
+/// start this binary to say nothing.
 const EVENTS: &[(&str, &str, Option<&str>)] = &[
     ("SessionStart", "session-start", None),
     (
         "PreToolUse",
         "pre-tool-use",
-        Some("Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep"),
+        Some("Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|Bash"),
     ),
 ];
+
+/// The matchers an earlier install wrote, by event: install moves one to the
+/// current matcher in place, and remove recognises it as install's, so an entry
+/// written before shell calls were guarded is upgraded and taken out whole
+/// (ADR-43cbb20dcbf1).
+const PREVIOUS_MATCHERS: &[(&str, &str)] = &[(
+    "PreToolUse",
+    "Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep",
+)];
+
+/// The matchers `event`'s entry may carry and still be install's: the current
+/// one first, then the earlier ones.
+fn matchers_of(name: &str, current: Option<&'static str>) -> Vec<Option<&'static str>> {
+    let mut all = vec![current];
+    all.extend(
+        PREVIOUS_MATCHERS
+            .iter()
+            .filter(|(n, _)| *n == name)
+            .map(|(_, m)| Some(*m)),
+    );
+    all
+}
 
 pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
     let sub = inv.subcommand.as_deref().unwrap_or_default();
@@ -216,6 +239,11 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| cwd.to_path_buf());
+    // A shell call is the permissions guard's alone: the two file guards have
+    // no path to confront it with, and say nothing about it, as before.
+    if tool == "Bash" {
+        return shell_call(input, &base);
+    }
     let repo = crate::repo::resolve(None, None, &base, &mut Vec::new()).ok()?;
     let cfg = crate::config::load(&repo.config_path()).ok()?;
     let targets = targets(tool, input, &base);
@@ -291,6 +319,194 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
             .obj("hookSpecificOutput", output)
             .finish(),
     )
+}
+
+/// What a shell call meets under the permissions guard (ADR-ddbe024ca7f2):
+/// refused under `deny` when one of the ank verbs it runs performs an act the
+/// identity's role forbids, naming the entry and the command a human runs
+/// instead; `None` otherwise, which lets it run.
+///
+/// **A command that runs no ank costs nothing.** It is split and read before
+/// any corpus is resolved, so `cargo test` or `git status` starts no git and
+/// reads no file. The verb the call runs is read from the invocation
+/// `cli::parse` makes of it, and the acts from [`crate::cli::acts_of`], the
+/// table the verb itself warns from.
+///
+/// **The identity is the session's**, the `ANK_AGENT` the hook runs under,
+/// and never a prefix the command sets: `ANK_AGENT=human:me ank accept` is
+/// judged as the agent that typed it.
+fn shell_call(input: &Node, base: &Path) -> Option<String> {
+    let command = input.member("command")?.text()?;
+    let calls = ank_calls(command);
+    if calls.is_empty() {
+        return None;
+    }
+    let repo = crate::repo::resolve(None, None, base, &mut Vec::new()).ok()?;
+    let cfg = crate::config::load(&repo.config_path()).ok()?;
+    let (level, note) = tightened(
+        cfg.enforce,
+        ank_contract::env::ANK_PERMISSIONS_ENFORCE,
+        "permissions.enforce",
+        Enforce::parse,
+    );
+    let suffix = note.as_ref().map(|n| format!(" {n}")).unwrap_or_default();
+    if level == Enforce::Deny {
+        let (identity, _) = crate::identity::resolved();
+        for (typed, argv) in &calls {
+            let Ok(inv) = crate::cli::parse(argv) else {
+                continue;
+            };
+            for act in crate::cli::acts_of(&inv) {
+                if let Some(f) = cfg.forbids(&identity, &act) {
+                    let reason = format!(
+                        "permissions.enforce is deny, and role '{}' of {identity} forbids \
+                         {act} ({}): `{typed}` is a human's to run, from their own terminal \
+                         under an identity whose role allows it.{suffix}",
+                        f.role, f.entry
+                    );
+                    return Some(deny(&reason));
+                }
+            }
+        }
+        return None;
+    }
+    // Nothing refused, and a value the launcher set was ignored: said, as the
+    // file guards say it.
+    let note = note?;
+    let output = Obj::new()
+        .str("hookEventName", "PreToolUse")
+        .str("additionalContext", &note);
+    Some(
+        Obj::new()
+            .str("systemMessage", &note)
+            .obj("hookSpecificOutput", output)
+            .finish(),
+    )
+}
+
+/// The ank invocations a shell command runs, each as it was typed and as the
+/// argument list after the program: the command split on `&&`, `||`, `;`,
+/// `|`, `&` and newlines outside quotes, each part split into words the way
+/// `sh` splits them for quotes and backslashes, leading `NAME=value`
+/// assignments and the wrappers `env`, `command`, `exec`, `nohup` and `time`
+/// passed over, and the program kept when its last path component is `ank`.
+///
+/// **Not a shell.** What runs ank through another program, `sh -c`, `xargs`,
+/// `$(...)`, an alias or a script, is not read here and is let through; the
+/// verb still warns when it runs.
+fn ank_calls(command: &str) -> Vec<(String, Vec<String>)> {
+    if !command.contains("ank") {
+        return Vec::new();
+    }
+    let mut calls = Vec::new();
+    for part in shell_parts(command) {
+        let words = shell_words(&part);
+        let mut rest = words.iter().map(String::as_str).peekable();
+        while let Some(w) = rest.peek() {
+            let assignment = w.split_once('=').is_some_and(|(k, _)| {
+                !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            });
+            if assignment || matches!(*w, "env" | "command" | "exec" | "nohup" | "time") {
+                rest.next();
+            } else {
+                break;
+            }
+        }
+        let Some(program) = rest.next() else { continue };
+        let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+        if name == "ank" || name == "ank.exe" {
+            calls.push((part.trim().to_string(), rest.map(str::to_string).collect()));
+        }
+    }
+    calls
+}
+
+/// `command` cut at the separators of [`ank_calls`] that stand outside quotes.
+fn shell_parts(command: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => {
+                quote = None;
+                current.push(c);
+            }
+            (Some('"'), '\\') => {
+                current.push(c);
+                if let Some(n) = chars.next() {
+                    current.push(n);
+                }
+            }
+            (Some(_), c) => current.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                current.push(c);
+            }
+            (None, '\\') => {
+                current.push(c);
+                if let Some(n) = chars.next() {
+                    current.push(n);
+                }
+            }
+            (None, ';' | '|' | '&' | '\n') => {
+                if matches!(chars.peek(), Some('|' | '&')) && c != ';' && c != '\n' {
+                    chars.next();
+                }
+                parts.push(std::mem::take(&mut current));
+            }
+            (None, c) => current.push(c),
+        }
+    }
+    parts.push(current);
+    parts.retain(|p| !p.trim().is_empty());
+    parts
+}
+
+/// One part of a command split into words: whitespace outside quotes
+/// separates, quotes are taken off, a backslash keeps the character after it.
+fn shell_words(part: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut started = false;
+    let mut quote: Option<char> = None;
+    let mut chars = part.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some('"'), '\\') => {
+                if let Some(n) = chars.next() {
+                    word.push(n);
+                }
+            }
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                started = true;
+            }
+            (None, '\\') => {
+                if let Some(n) = chars.next() {
+                    word.push(n);
+                }
+                started = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if started || !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+                started = false;
+            }
+            (None, c) => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if started || !word.is_empty() {
+        words.push(word);
+    }
+    words
 }
 
 /// The answer that refuses the tool call, with the reason Claude Code shows the
@@ -567,10 +783,23 @@ fn install(text: &str, commands: &[String]) -> Edit<(String, Vec<&'static str>)>
             let Kind::Array(items) = &array.kind else {
                 return Err(format!("its hooks.{name} is not an array"));
             };
-            if items
+            if let Some(entry) = items
                 .iter()
-                .any(|i| ours(i, event).as_deref() == Some(command))
+                .find(|i| ours(i, event).as_deref() == Some(command))
             {
+                // An earlier matcher, moved to the current one in place: the
+                // one string of the entry that changed meaning.
+                let stale = entry.member("matcher").filter(|m| {
+                    matches!(&m.kind, Kind::Str(v) if Some(v.as_str()) != *matcher
+                        && PREVIOUS_MATCHERS.contains(&(name, v.as_str())))
+                });
+                if let (Some(node), Some(current)) = (stale, matcher) {
+                    let replaced = crate::json::string(current);
+                    text = format!("{}{replaced}{}", &text[..node.start], &text[node.end..]);
+                    if !added.contains(name) {
+                        added.push(*name);
+                    }
+                }
                 break;
             }
             // In place, so whatever form the entry was written in survives it,
@@ -579,7 +808,8 @@ fn install(text: &str, commands: &[String]) -> Edit<(String, Vec<&'static str>)>
                 let replaced = crate::json::string(command);
                 text = format!("{}{replaced}{}", &text[..stale.start], &text[stale.end..]);
                 added.push(*name);
-                break;
+                // Once more, for the matcher the moved entry may also carry.
+                continue;
             }
             let indent = child_indent(&text, array.start);
             let entry = pretty(command, *matcher, &indent, &unit(&text), eol(&text));
@@ -603,7 +833,8 @@ fn remove(text: &str) -> Edit<(String, Vec<&'static str>)> {
         return Err("its hooks is not an object".into());
     }
     if let Some(commands) = created_by_install(hooks) {
-        if created_hooks(&commands) == text[hooks.start..hooks.end] {
+        let found = &text[hooks.start..hooks.end];
+        if created_hooks(&commands) == found || created_hooks_earlier(&commands) == found {
             let index = root.index_of("hooks").expect("present above");
             text = remove_item(&text, &root, index);
             return Ok((text, EVENTS.iter().map(|(n, _, _)| *n).collect()));
@@ -625,7 +856,9 @@ fn remove(text: &str) -> Edit<(String, Vec<&'static str>)> {
             };
             let command = ours(&items[index], event).unwrap_or_default();
             if items.len() == 1
-                && text[array.start..array.end] == format!("[{}]", compact(&command, *matcher))
+                && matchers_of(name, *matcher)
+                    .iter()
+                    .any(|m| text[array.start..array.end] == format!("[{}]", compact(&command, *m)))
             {
                 let index = hooks.index_of(name).expect("present above");
                 text = remove_item(&text, hooks, index);
@@ -702,6 +935,20 @@ fn created_hooks(commands: &[String]) -> String {
                 crate::json::string(name),
                 compact(command, *matcher)
             )
+        })
+        .collect();
+    format!("{{{}}}", members.join(", "))
+}
+
+/// [`created_hooks`] as an earlier install wrote it, with the matchers of
+/// [`PREVIOUS_MATCHERS`].
+fn created_hooks_earlier(commands: &[String]) -> String {
+    let members: Vec<String> = EVENTS
+        .iter()
+        .zip(commands)
+        .map(|((name, _, matcher), command)| {
+            let m = matchers_of(name, *matcher).last().copied().flatten();
+            format!("{}: [{}]", crate::json::string(name), compact(command, m))
         })
         .collect();
     format!("{{{}}}", members.join(", "))

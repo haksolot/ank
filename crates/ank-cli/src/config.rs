@@ -338,6 +338,14 @@ pub enum Enforce {
 }
 
 impl Enforce {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Enforce::Off => "off",
+            Enforce::Warn => "warn",
+            Enforce::Deny => "deny",
+        }
+    }
+
     pub fn parse(text: &str) -> Option<Enforce> {
         match text {
             "off" => Some(Enforce::Off),
@@ -553,7 +561,73 @@ pub struct Config {
     pub signers: Vec<Signer>,
 }
 
+/// Why an act is forbidden to an identity (ADR-ddbe024ca7f2): the role it
+/// has, and the entry of that role that forbids the act.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Forbidden {
+    pub role: String,
+    /// `roles.<role>.cannot lists it`, or `.can omits it`, the way a reader
+    /// finds it in the file.
+    pub entry: String,
+}
+
 impl Config {
+    /// The role of `identity`: the one `identities` maps it to, `agent` when
+    /// the table does not name it.
+    pub fn role_of(&self, identity: &str) -> &str {
+        self.identities
+            .get(identity)
+            .map_or("agent", String::as_str)
+    }
+
+    /// Whether the role of `identity` forbids `act`, whatever the level:
+    /// its `cannot` lists the act or `*`, or its `can` is a list that is not
+    /// `["*"]` and omits the act. An empty `can` is a list nobody wrote, since
+    /// the parser reads an absent one as empty, and restricts nothing; a role
+    /// nobody declared forbids nothing either.
+    pub fn forbids(&self, identity: &str, act: &str) -> Option<Forbidden> {
+        let name = self.role_of(identity);
+        let role = self.roles.get(name)?;
+        let entry = if role.cannot.iter().any(|w| w == act || w == "*") {
+            format!("roles.{name}.cannot lists it")
+        } else if !role.can.is_empty()
+            && !role.can.iter().any(|w| w == "*")
+            && !role.can.iter().any(|w| w == act)
+        {
+            format!("roles.{name}.can omits it")
+        } else {
+            return None;
+        };
+        Some(Forbidden {
+            role: name.to_string(),
+            entry,
+        })
+    }
+
+    /// [`Config::forbids`], under `warn` or `deny` only: off, roles apply to
+    /// nothing.
+    pub fn forbidding(&self, identity: &str, act: &str) -> Option<Forbidden> {
+        if self.enforce == Enforce::Off {
+            return None;
+        }
+        self.forbids(identity, act)
+    }
+
+    /// What a verb that performed `act` says when the role of `identity`
+    /// forbids it: on stderr, and never a refusal (ADR-ddbe024ca7f2). The act
+    /// is done; the line is so that it does not go unnoticed.
+    pub fn warn_forbidden(&self, identity: &str, act: &str) {
+        if let Some(f) = self.forbidding(identity, act) {
+            eprintln!(
+                "warning: role '{}' of {identity} forbids {act} ({}); performed, \
+                 since permissions.enforce {} warns and never refuses at the verb",
+                f.role,
+                f.entry,
+                self.enforce.as_str()
+            );
+        }
+    }
+
     /// What bounds a `done`: the key when the file sets it, the machine's
     /// available parallelism when it does not, and one when even that cannot
     /// be read.
@@ -1237,21 +1311,15 @@ enum Key {
         verbatim: bool,
         default: Option<String>,
     },
+    /// `roles.<name>.can` or `.cannot` (ADR-ddbe024ca7f2): a list of words of
+    /// the role vocabulary, typed and read back as one flow sequence the way
+    /// [`Key::Inputs`] is. Writing one declares the role when it is absent.
+    RoleList { role: String, field: &'static str },
 }
 
 fn unknown_key(path: &str) -> CliError {
     CliError::new(ExitCode::Generic, format!("unknown key '{path}'"))
         .with_hint(format!("keys: {}", KEYS.join(" ")))
-}
-
-fn structured(name: &str) -> CliError {
-    CliError::new(
-        ExitCode::Generic,
-        format!("'{name}' has a structured value, which ank config does not address"),
-    )
-    .with_hint(format!(
-        "edit .ank/config.yml by hand: {name} is a mapping of lists, not a scalar"
-    ))
 }
 
 /// A `run` written as a block or folded scalar. Refused rather than rewritten:
@@ -1293,6 +1361,19 @@ fn whole_block(verifier: &str) -> CliError {
 }
 
 fn resolve_key(path: &str) -> Result<Key> {
+    // An identity is whatever `ANK_AGENT` holds, dots included
+    // (`claude-code/opus-5.5`), so everything after the map's name is the
+    // one key, and splitting it on '.' would address a key nobody wrote.
+    if let Some(identity) = path.strip_prefix("identities.") {
+        if !identity.is_empty() {
+            return Ok(Key::Under {
+                map: "identities",
+                name: identity.to_string(),
+                verbatim: false,
+                default: None,
+            });
+        }
+    }
     let segs: Vec<&str> = path.split('.').collect();
     if segs.iter().any(|s| s.is_empty()) {
         return Err(unknown_key(path));
@@ -1445,8 +1526,20 @@ fn resolve_key(path: &str) -> Result<Key> {
             format!("'{path}': who may ratify is written by ank signers, not by ank config"),
         )
         .with_hint("ank help signers")),
-        ["roles", ..] => Err(structured("roles")),
-        ["identities", ..] => Err(structured("identities")),
+        ["roles", role, field @ ("can" | "cannot")] => Ok(Key::RoleList {
+            role: (*role).to_string(),
+            field: if *field == "can" { "can" } else { "cannot" },
+        }),
+        ["roles", ..] => Err(CliError::new(
+            ExitCode::Generic,
+            format!("'{path}': a role is two lists, addressed one at a time"),
+        )
+        .with_hint("ank config roles.<name>.can   or   roles.<name>.cannot")),
+        ["identities", ..] => Err(CliError::new(
+            ExitCode::Generic,
+            "'identities' is a mapping: address one identity by name",
+        )
+        .with_hint("ank config identities.<identity> <role>")),
         ["verifiers"] => Err(CliError::new(
             ExitCode::Generic,
             "'verifiers' is a mapping: address one by name",
@@ -1957,6 +2050,10 @@ fn json_type(key: &Key) -> &'static str {
     let template = match key {
         Key::Top { name, .. } => (*name).to_string(),
         Key::Under { map: "peers", .. } => "peers.<name>".to_string(),
+        Key::Under {
+            map: "identities", ..
+        } => "identities.<identity>".to_string(),
+        Key::RoleList { field, .. } => format!("roles.<name>.{field}"),
         Key::Under { map, name, .. } => format!("{map}.{name}"),
         Key::Field { field, .. } => format!("verifiers.<name>.{field}"),
         Key::Inputs { .. } => "verifiers.<name>.inputs".to_string(),
@@ -2081,6 +2178,7 @@ fn read_key(lines: &[Line], key: &Key) -> Result<Value> {
     match key {
         Key::Block { verifier } => Err(whole_block(verifier)),
         Key::Inputs { verifier } => read_inputs(lines, verifier),
+        Key::RoleList { role, field } => read_role_list(lines, role, field),
         Key::Top { name, default, .. } => match find_key(lines, 0..lines.len(), 0, name) {
             Some(i) => scalar_at(&lines[i], name),
             None => Ok(from_default(default)),
@@ -2135,6 +2233,7 @@ fn write_key(lines: &mut Vec<Line>, key: &Key, value: &str) -> Result<()> {
     match key {
         Key::Block { verifier } => Err(whole_block(verifier)),
         Key::Inputs { verifier } => write_inputs(lines, verifier, value),
+        Key::RoleList { role, field } => write_role_list(lines, role, field, value),
         Key::Top { name, verbatim, .. } => match find_key(lines, 0..lines.len(), 0, name) {
             Some(i) => {
                 let (_, after) = key_of(&lines[i].text).expect("found by its key");
@@ -2187,6 +2286,7 @@ fn write_under(
 ) -> Result<()> {
     let eol = dominant_eol(lines);
     let rendered = render_value(value, verbatim, None);
+    let written = key_text(name);
 
     let Some(pi) = find_key(lines, 0..lines.len(), 0, map) else {
         terminate_last(lines, &eol);
@@ -2195,7 +2295,7 @@ fn write_under(
             eol: eol.clone(),
         });
         lines.push(Line {
-            text: format!("  {name}: {rendered}"),
+            text: format!("  {written}: {rendered}"),
             eol,
         });
         return Ok(());
@@ -2217,7 +2317,7 @@ fn write_under(
         lines.insert(
             pi + 1,
             Line {
-                text: format!("  {name}: {rendered}"),
+                text: format!("  {written}: {rendered}"),
                 eol,
             },
         );
@@ -2245,7 +2345,7 @@ fn write_under(
             lines.insert(
                 at,
                 Line {
-                    text: format!("{}{name}: {rendered}", " ".repeat(child)),
+                    text: format!("{}{written}: {rendered}", " ".repeat(child)),
                     eol,
                 },
             );
@@ -2548,6 +2648,210 @@ fn write_inputs(lines: &mut Vec<Line>, verifier: &str, value: &str) -> Result<()
     write_nested(lines, verifier, &path, true, &render_inputs(&globs))
 }
 
+/// A key as a line declares it: plain where [`key_of`] reads it back as
+/// itself, double-quoted otherwise. An identity is any string `ANK_AGENT`
+/// held, and one carrying a colon written plain would be read as a shorter key.
+fn key_text(name: &str) -> String {
+    if plain_safe(name) && !name.contains(':') {
+        name.to_string()
+    } else {
+        double_quoted(name)
+    }
+}
+
+/// A list of role words as `roles.<name>.can` is stored: one flow sequence,
+/// each word plain where YAML reads it as itself, which is every word but `*`.
+fn render_words(words: &[String]) -> String {
+    let items: Vec<String> = words.iter().map(|w| render_value(w, false, None)).collect();
+    format!("[{}]", items.join(", "))
+}
+
+fn role_name(role: &str, field: &str) -> String {
+    format!("roles.{role}.{field}")
+}
+
+/// The line declaring `path` below the top-level mapping `map`, one mapping per
+/// segment, and the indentation it sits at.
+fn locate_path(lines: &[Line], map: &str, path: &[&str]) -> Option<(usize, usize)> {
+    let (mut at, mut block) = named_block(lines, map)?;
+    let mut indent = 0;
+    for seg in path {
+        let g = block.indent?;
+        at = find_key(lines, block.range.clone(), g, seg)?;
+        indent = g;
+        block = block_under(lines, at, g);
+    }
+    Some((at, indent))
+}
+
+/// A role list as the file holds it, flow or block sequence, in the form
+/// [`render_words`] writes; `[]` resolved for a declared role that omits it,
+/// which is the default the parser applies, and nothing for a role nobody
+/// declared.
+fn read_role_list(lines: &[Line], role: &str, field: &str) -> Result<Value> {
+    let Some((j, indent)) = locate_path(lines, "roles", &[role, field]) else {
+        return Ok(match locate_path(lines, "roles", &[role]) {
+            Some(_) => Value::Default("[]".to_string()),
+            None => Value::Unset,
+        });
+    };
+    let (_, after) = key_of(&lines[j].text).expect("found by its key");
+    let span = value_span(&lines[j].text, after);
+    let block = block_under(lines, j, indent);
+    let mut text = format!("list: {}\n", &lines[j].text[span.start..]);
+    for line in &lines[block.range] {
+        text.push_str(&line.text);
+        text.push('\n');
+    }
+    let parsed: BTreeMap<String, Vec<String>> =
+        serde_yaml::from_str(&text).map_err(|_| not_role_words(&role_name(role, field)))?;
+    Ok(Value::Set(render_words(&parsed["list"])))
+}
+
+fn not_role_words(name: &str) -> CliError {
+    CliError::new(
+        ExitCode::Generic,
+        format!("'{name}' takes a list of role words, written as one YAML flow sequence"),
+    )
+    .with_hint(format!("ank config {name} '[context, find, claim]'"))
+}
+
+/// The words a role list may hold, and the page that publishes them.
+fn not_a_role_word(name: &str, word: &str) -> CliError {
+    let words: Vec<&str> = ank_core::config::ROLE_WORDS
+        .iter()
+        .map(|(w, _)| *w)
+        .collect();
+    CliError::new(
+        ExitCode::Generic,
+        format!(
+            "{name}: '{word}' is not a word of the role vocabulary, which docs/config-keys.md publishes: {}",
+            words.join(", ")
+        ),
+    )
+    .with_hint(format!("ank config {name} '[context, find, claim]'"))
+}
+
+/// `roles.<role>.<field>` written, the role declared on the way when absent:
+/// at the end of `roles`, indented as the roles already there are.
+fn write_role_list(lines: &mut Vec<Line>, role: &str, field: &str, value: &str) -> Result<()> {
+    let name = role_name(role, field);
+    let words: Vec<String> = serde_yaml::from_str(value).map_err(|_| not_role_words(&name))?;
+    if let Some(bad) = words.iter().find(|w| !ank_core::config::is_role_word(w)) {
+        return Err(not_a_role_word(&name, bad));
+    }
+    let rendered = render_words(&words);
+    let eol = dominant_eol(lines);
+
+    // The root first: absent, it is appended; written `{}`, promoted to a
+    // block, the parent's byte a write may move (§4).
+    let root = match find_key(lines, 0..lines.len(), 0, "roles") {
+        Some(i) => {
+            let (_, after) = key_of(&lines[i].text).expect("found by its key");
+            let span = value_span(&lines[i].text, after);
+            if span.blocky {
+                return Err(blocky("roles"));
+            }
+            if span.value == "{}" {
+                let head = lines[i].text[..span.start].trim_end().to_string();
+                let tail = lines[i].text[span.end..].to_string();
+                lines[i].text = format!("{head}{tail}");
+            } else if !span.value.is_empty() {
+                return Err(flow_mapping("roles"));
+            }
+            i
+        }
+        None => {
+            terminate_last(lines, &eol);
+            lines.push(Line {
+                text: "roles:".to_string(),
+                eol: eol.clone(),
+            });
+            lines.len() - 1
+        }
+    };
+
+    // A block sequence gives way to the flow one, as `inputs` does.
+    if let Some((j, indent)) = locate_path(lines, "roles", &[role, field]) {
+        let block = block_under(lines, j, indent);
+        if block.indent.is_some() {
+            remove_lines(lines, block.range);
+        }
+    }
+
+    let path = [role.to_string(), field.to_string()];
+    let (mut parent, mut parent_indent) = (root, 0);
+    for (k, seg) in path.iter().enumerate() {
+        let leaf = k + 1 == path.len();
+        let block = block_under(lines, parent, parent_indent);
+        let indent = block.indent.unwrap_or(parent_indent + 2);
+        let found = block
+            .indent
+            .and_then(|g| find_key(lines, block.range.clone(), g, seg));
+        let Some(j) = found else {
+            let mut at = block.range.end;
+            if at == lines.len() {
+                terminate_last(lines, &eol);
+            }
+            for (m, s) in path[k..].iter().enumerate() {
+                let pad = " ".repeat(indent + 2 * m);
+                let text = if k + m + 1 == path.len() {
+                    format!("{pad}{s}: {rendered}")
+                } else {
+                    format!("{pad}{}:", key_text(s))
+                };
+                lines.insert(
+                    at,
+                    Line {
+                        text,
+                        eol: eol.clone(),
+                    },
+                );
+                at += 1;
+            }
+            return Ok(());
+        };
+        let (_, after) = key_of(&lines[j].text).expect("found by its key");
+        let span = value_span(&lines[j].text, after);
+        if span.blocky {
+            return Err(blocky(&name));
+        }
+        if leaf {
+            splice(&mut lines[j], &span, &rendered);
+            return Ok(());
+        }
+        if span.value == "{}" {
+            let head = lines[j].text[..span.start].trim_end().to_string();
+            let tail = lines[j].text[span.end..].to_string();
+            lines[j].text = format!("{head}{tail}");
+        } else if !span.value.is_empty() {
+            return Err(flow_mapping(&format!("roles.{role}")));
+        }
+        parent = j;
+        parent_indent = indent;
+    }
+    Ok(())
+}
+
+/// Takes one list out of a role and nothing beside it. A role left with no
+/// list stays declared, written `{}`: an identity mapped to it still names a
+/// role, and removing the role would leave that mapping dangling.
+fn unset_role_list(lines: &mut Vec<Line>, role: &str, field: &str) {
+    let Some((j, indent)) = locate_path(lines, "roles", &[role, field]) else {
+        return;
+    };
+    let end = block_under(lines, j, indent).range.end.max(j + 1);
+    remove_lines(lines, j..end);
+    let Some((p, indent)) = locate_path(lines, "roles", &[role]) else {
+        return;
+    };
+    let (_, after) = key_of(&lines[p].text).expect("found by its key");
+    let span = value_span(&lines[p].text, after);
+    if block_under(lines, p, indent).indent.is_none() && span.value.is_empty() {
+        splice(&mut lines[p], &span, "{}");
+    }
+}
+
 fn first_grandchild_indent(lines: &[Line], block: &Block, child: usize) -> Option<usize> {
     for i in block.range.clone() {
         if content_indent(&lines[i].text) == Some(child) && key_of(&lines[i].text).is_some() {
@@ -2561,6 +2865,10 @@ fn unset_key(lines: &mut Vec<Line>, key: &Key) -> Result<()> {
     match key {
         Key::Inputs { verifier } => {
             unset_nested(lines, verifier, &["inputs".to_string()]);
+            Ok(())
+        }
+        Key::RoleList { role, field } => {
+            unset_role_list(lines, role, field);
             Ok(())
         }
         Key::Top { name, .. } => {
@@ -3136,6 +3444,32 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
         }
     })?;
     let lines = split_lines(&text);
+
+    // An identity names a role the file declares, or it names nothing and
+    // the mapping would read as a rule (ADR-ddbe024ca7f2).
+    if let (
+        Key::Under {
+            map: "identities", ..
+        },
+        Some(role),
+    ) = (&key, value)
+    {
+        let declared = declared_under(&lines, "roles");
+        if !declared.iter().any(|r| r == role) {
+            return Err(CliError::new(
+                ExitCode::Generic,
+                format!(
+                    "{raw_key}: role '{role}' is not declared under roles; declared: {}",
+                    if declared.is_empty() {
+                        "none".to_string()
+                    } else {
+                        declared.join(", ")
+                    }
+                ),
+            )
+            .with_hint(format!("ank config roles.{role}.can '[context, find]'")));
+        }
+    }
 
     if !unset && value.is_none() {
         // `read_key` is what refuses a whole verifier here: reading one as a
@@ -4896,11 +5230,16 @@ identities: {}
             assert!(hint.contains(key), "{key} missing from: {hint}");
         }
 
-        // Structured, and known to the parser: refused by name rather than
+        // A mapping, and a list given no list: refused by name rather than
         // guessed at, which is a different message from "no such key".
-        for key in ["roles", "roles.agent.can", "identities"] {
+        for (key, says) in [
+            ("roles", "two lists"),
+            ("roles.agent", "two lists"),
+            ("roles.agent.can", "list of role words"),
+            ("identities", "address one identity"),
+        ] {
             let err = edit(FIXTURE, key, Some("x")).unwrap_err();
-            assert!(err.message.contains("structured"), "{}", err.message);
+            assert!(err.message.contains(says), "{key}: {}", err.message);
         }
 
         // A whole verifier is addressable by --unset alone.
