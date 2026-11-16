@@ -565,6 +565,26 @@ fn in_this_runs_root(command: &mut Command) {
         .env("TEMP", root);
 }
 
+/// A reader held by [`Live::stopped`], continued when this drops.
+#[cfg(unix)]
+pub struct Stopped(String);
+
+#[cfg(unix)]
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        signalled("-CONT", &self.0);
+    }
+}
+
+#[cfg(unix)]
+fn signalled(signal: &str, pid: &str) {
+    let status = Command::new("kill")
+        .args([signal, pid])
+        .status()
+        .expect("kill must run");
+    assert!(status.success(), "kill {signal} {pid}: {status}");
+}
+
 /// Waits until the wall clock has moved to a later second than the one it
 /// is in now, so that what is written next carries a `created` later than
 /// everything written before the call.
@@ -1931,6 +1951,16 @@ impl Live {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         panic!("the screen never stopped moving:\n{last}");
+    }
+
+    /// The reader stopped where it stands, as a machine under load stops it
+    /// (TASK-fffdeed7bd70): `SIGSTOP`, and `SIGCONT` when the guard drops. A
+    /// key sent meanwhile waits in the terminal, unanswered, and the screen
+    /// holds still -- which is exactly what a settled screen looks like.
+    pub fn stopped(&self) -> Stopped {
+        let pid = self.child.id().to_string();
+        signalled("-STOP", &pid);
+        Stopped(pid)
     }
 
     /// The screen as it is at this instant, settled or not.
