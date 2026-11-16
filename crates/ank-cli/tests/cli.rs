@@ -28000,3 +28000,146 @@ fn config_reading_one_key_keeps_value_a_string_and_adds_its_type() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// permissions.enforce and the role vocabulary (ADR-ddbe024ca7f2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn permissions_enforce_reads_off_when_absent_and_writes_only_the_three_levels() {
+    let r = Repo::new();
+    let before = r.config_text();
+    assert!(!before.contains("permissions"), "{before}");
+
+    let out = r.ank("claude-code@ank", &["config", "permissions.enforce"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert_eq!(said(&out).trim(), "off (default)");
+    assert_eq!(r.config_text(), before, "a read materialised the default");
+
+    for level in ["warn", "deny", "off"] {
+        let out = r.ank("claude-code@ank", &["config", "permissions.enforce", level]);
+        assert_eq!(code(&out), 0, "{level}: {}", erred(&out));
+        let out = r.ank("claude-code@ank", &["config", "permissions.enforce"]);
+        assert_eq!(said(&out).trim(), level, "{}", r.config_text());
+        // The file still loads for a verb that parses it.
+        let out = r.ank("claude-code@ank", &["status"]);
+        assert_eq!(code(&out), 0, "{level}: {}", erred(&out));
+    }
+    let written = r.config_text();
+    assert!(written.contains("permissions:\n"), "{written}");
+
+    for bad in ["strict", "on", "true", "claim"] {
+        let out = r.ank("claude-code@ank", &["config", "permissions.enforce", bad]);
+        assert_eq!(code(&out), 1, "{bad}: {}", said(&out));
+        let err = erred(&out);
+        for level in ["off", "warn", "deny"] {
+            assert!(err.contains(level), "{bad}: refusal names {level}: {err}");
+        }
+        assert_eq!(r.config_text(), written, "{bad} wrote");
+    }
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "--unset", "permissions.enforce"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let out = r.ank("claude-code@ank", &["config", "permissions.enforce"]);
+    assert_eq!(said(&out).trim(), "off (default)");
+
+    // A level written by hand outside the set is refused by every verb that
+    // loads the file, naming the key.
+    r.set_config("schema: 1\ndefault_branch: main\npermissions:\n  enforce: strict\n");
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 1, "{}", said(&out));
+    assert!(
+        erred(&out).contains("permissions.enforce"),
+        "{}",
+        erred(&out)
+    );
+}
+
+#[test]
+fn check_faults_a_role_word_outside_the_vocabulary_and_not_one_inside_it() {
+    let r = Repo::new();
+    let base = "schema: 1\ndefault_branch: main\n";
+    // Every word this repository's own config.yml and init's default block
+    // use, and the one the permissions decision adds.
+    r.set_config(&format!(
+        "{base}roles:\n  agent:\n    can: [context, find, claim, log, done, new:task, new:adr:proposed]\n    \
+         cannot: [adr:accept, adr:edit-constraint, task:close, delete, config:permissions]\n  \
+         human:\n    can: [\"*\"]\n"
+    ));
+    let out = r.ank("claude-code@ank", &["check", "--kind", "role-word"]);
+    assert!(!said(&out).contains("role-word"), "{}", said(&out));
+    let out = r.ank("claude-code@ank", &["check", "--json"]);
+    assert!(
+        !said(&out).contains("\"kind\":\"role-word\""),
+        "{}",
+        said(&out)
+    );
+
+    r.set_config(&format!(
+        "{base}roles:\n  agent:\n    can: [context, bogus-verb]\n    cannot: [fly]\n"
+    ));
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 8, "{}\n{}", said(&out), erred(&out));
+    let text = said(&out);
+    assert!(text.contains(".ank/config.yml"), "{text}");
+    assert!(
+        text.contains("roles.agent.can") && text.contains("bogus-verb"),
+        "{text}"
+    );
+    assert!(
+        text.contains("roles.agent.cannot") && text.contains("fly"),
+        "{text}"
+    );
+    assert!(text.contains("docs/config-keys.md"), "{text}");
+
+    let out = r.ank("claude-code@ank", &["check", "--json"]);
+    assert_eq!(code(&out), 8);
+    let doc: serde_yaml::Value = serde_yaml::from_str(&said(&out)).unwrap();
+    let words: Vec<_> = doc["findings"]
+        .as_sequence()
+        .expect("findings")
+        .iter()
+        .filter(|f| f["kind"].as_str() == Some("role-word"))
+        .collect();
+    assert_eq!(words.len(), 2, "{doc:?}");
+    for f in words {
+        assert_eq!(f["level"].as_str(), Some("fault"));
+        assert_eq!(f["subject"].as_str(), Some(".ank/config.yml"));
+    }
+
+    // Other verbs still run on the file: the vocabulary is check's to judge.
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+}
+
+#[test]
+fn the_config_keys_page_publishes_the_role_vocabulary_and_permissions_enforce() {
+    let page = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/config-keys.md"),
+    )
+    .unwrap();
+    assert!(page.contains("| `permissions.enforce` |"), "{page}");
+    for word in [
+        "*",
+        "context",
+        "find",
+        "claim",
+        "log",
+        "done",
+        "new:task",
+        "new:adr:proposed",
+        "adr:accept",
+        "adr:edit-constraint",
+        "task:close",
+        "delete",
+        "config:permissions",
+    ] {
+        assert!(
+            page.contains(&format!("\n- `{word}`: ")),
+            "{word} not listed"
+        );
+    }
+}

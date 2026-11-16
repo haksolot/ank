@@ -34,7 +34,8 @@ pub const DEFAULT_WEIGHT_HOT_FILES: u64 = ank_core::config::DEFAULT_WEIGHT_HOT_F
 pub const DEFAULT_WEIGHT_PLANE_BYTES: u64 = ank_core::config::DEFAULT_WEIGHT_PLANE_BYTES;
 pub const DEFAULT_PROOF_REUSE_MAX_AGE: &str = ank_core::config::DEFAULT_PROOF_REUSE_MAX_AGE;
 use ank_core::config::{
-    DEFAULT_GUARD_CORPUS, DEFAULT_GUARD_EDIT, GUARD_CORPUS_VALUES, GUARD_EDIT_VALUES,
+    DEFAULT_GUARD_CORPUS, DEFAULT_GUARD_EDIT, DEFAULT_PERMISSIONS_ENFORCE, GUARD_CORPUS_VALUES,
+    GUARD_EDIT_VALUES, INIT_PERMISSIONS_ENFORCE, PERMISSIONS_ENFORCE_VALUES,
 };
 
 pub type Result<T> = std::result::Result<T, CliError>;
@@ -92,6 +93,9 @@ struct ConfigFile {
     roles: BTreeMap<String, Role>,
     #[serde(default)]
     identities: BTreeMap<String, String>,
+    /// `permissions:`, how roles apply (ADR-ddbe024ca7f2).
+    #[serde(default)]
+    permissions: PermissionsFile,
     #[serde(default)]
     weight: Weight,
     /// `proof:`, how `done` treats what it already ran (ADR-a2faf59f6ce0).
@@ -303,6 +307,62 @@ fn default_guard_edit() -> String {
     DEFAULT_GUARD_EDIT.to_string()
 }
 
+/// `permissions:` as written, read as a string and resolved by [`parse`] for
+/// the reason [`GuardFile`] is.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PermissionsFile {
+    #[serde(default = "default_permissions_enforce")]
+    enforce: String,
+}
+
+impl Default for PermissionsFile {
+    fn default() -> PermissionsFile {
+        PermissionsFile {
+            enforce: default_permissions_enforce(),
+        }
+    }
+}
+
+fn default_permissions_enforce() -> String {
+    DEFAULT_PERMISSIONS_ENFORCE.to_string()
+}
+
+/// How roles apply (ADR-ddbe024ca7f2). Ordered loosest first, so a launch
+/// environment can only tighten it by taking the greater of two levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Enforce {
+    Off,
+    Warn,
+    Deny,
+}
+
+impl Enforce {
+    pub fn parse(text: &str) -> Option<Enforce> {
+        match text {
+            "off" => Some(Enforce::Off),
+            "warn" => Some(Enforce::Warn),
+            "deny" => Some(Enforce::Deny),
+            _ => None,
+        }
+    }
+}
+
+/// The refusal a `permissions.enforce` outside its closed set earns.
+fn not_an_enforce_level(written: &str) -> CliError {
+    CliError::new(
+        ExitCode::Generic,
+        format!(
+            "permissions.enforce: '{written}' is not a level; accepted: {}",
+            PERMISSIONS_ENFORCE_VALUES.join(", ")
+        ),
+    )
+    .with_hint(format!(
+        "ank config permissions.enforce {}",
+        PERMISSIONS_ENFORCE_VALUES.join("|")
+    ))
+}
+
 /// What a file tool aimed under the corpus directory meets (ADR-43cbb20dcbf1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GuardCorpus {
@@ -484,6 +544,8 @@ pub struct Config {
     pub verifier_lock: bool,
     /// What `ank hooks run` applies before a tool call (ADR-43cbb20dcbf1).
     pub guard: Guard,
+    /// How roles apply, `permissions.enforce` (ADR-ddbe024ca7f2).
+    pub enforce: Enforce,
     /// How old a passing run of the local registry may be for `done` to
     /// reuse it, `proof.reuse_max_age` (ADR-a2faf59f6ce0).
     pub reuse_max_age: Duration,
@@ -690,6 +752,8 @@ pub fn read(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
         edit: GuardEdit::parse(&raw.guard.edit)
             .ok_or_else(|| in_file(not_a_guard("guard.edit", &raw.guard.edit)))?,
     };
+    let enforce = Enforce::parse(&raw.permissions.enforce)
+        .ok_or_else(|| in_file(not_an_enforce_level(&raw.permissions.enforce)))?;
     let mut verifiers = BTreeMap::new();
     let mut default_verifiers = Vec::new();
     for (name, value) in raw.verifiers {
@@ -784,6 +848,7 @@ pub fn read(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
         verifier_jobs: raw.verifier_jobs,
         verifier_lock: raw.verifier_lock.unwrap_or(true),
         guard,
+        enforce,
         reuse_max_age,
         signers,
     };
@@ -861,6 +926,8 @@ roles:
   human:
     can: [\"*\"]
 identities: {{}}
+permissions:
+  enforce: {INIT_PERMISSIONS_ENFORCE}
 weight:
   hot_files: {DEFAULT_WEIGHT_HOT_FILES}
   plane_bytes: {DEFAULT_WEIGHT_PLANE_BYTES}
@@ -1343,6 +1410,19 @@ fn resolve_key(path: &str) -> Result<Key> {
                 .to_string(),
             ),
         }),
+        // Off when absent (ADR-ddbe024ca7f2), and read as such: a corpus that
+        // predates the key is one whose roles nothing applies.
+        ["permissions", "enforce"] => Ok(Key::Under {
+            map: "permissions",
+            name: "enforce".to_string(),
+            verbatim: false,
+            default: Some(DEFAULT_PERMISSIONS_ENFORCE.to_string()),
+        }),
+        ["permissions", ..] => Err(CliError::new(
+            ExitCode::Generic,
+            format!("'{path}': permissions has one key"),
+        )
+        .with_hint("ank config permissions.enforce")),
         ["guard", ..] => Err(CliError::new(
             ExitCode::Generic,
             format!("'{path}': the guard has two levels"),
@@ -3032,6 +3112,18 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
         };
         if !known {
             return Err(not_a_guard(&format!("guard.{name}"), v));
+        }
+    }
+
+    if let (
+        Key::Under {
+            map: "permissions", ..
+        },
+        Some(v),
+    ) = (&key, value)
+    {
+        if Enforce::parse(v).is_none() {
+            return Err(not_an_enforce_level(v));
         }
     }
 
@@ -4971,6 +5063,11 @@ mod reference_table {
                         .into_iter()
                         .map(|f| format!("proof.{f}")),
                 ),
+                "permissions" => accepted.extend(
+                    fields_of::<PermissionsFile>()
+                        .into_iter()
+                        .map(|f| format!("permissions.{f}")),
+                ),
                 "guard" => accepted.extend(
                     fields_of::<GuardFile>()
                         .into_iter()
@@ -4990,7 +5087,7 @@ mod reference_table {
             }
         }
         let table: BTreeSet<String> = KEYS.iter().map(|k| k.path.to_string()).collect();
-        assert_eq!(accepted.len(), 24, "{accepted:?}");
+        assert_eq!(accepted.len(), 25, "{accepted:?}");
         assert_eq!(table, accepted);
         // What `ank config` addresses is a subset of the table, never a key
         // of its own.

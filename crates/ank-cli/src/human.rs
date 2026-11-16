@@ -171,6 +171,7 @@ kinds! {
     Weight => "weight",
     RequiresAnk => "requires-ank",
     ConfigBound => "config-bound",
+    RoleWord => "role-word",
     NoConstraint => "no-constraint",
     EnforcedBy => "enforced-by",
     Reference => "reference",
@@ -348,6 +349,9 @@ const OWES: &[(Kind, Owes)] = &[
     // `ank config <key> <value>` names the repair, and the value is the
     // reader's to choose.
     (Kind::ConfigBound, Owes::Fault),
+    // A word outside the role vocabulary: the role means something other than
+    // what it reads as, and only its author knows which word was meant.
+    (Kind::RoleWord, Owes::Fault),
 ];
 
 impl Kind {
@@ -1588,6 +1592,7 @@ pub fn inspect_with(
 
     check_weight(cfg, &mut report);
     check_requires_ank(cfg, &mut report);
+    check_role_words(repo, cfg, &mut report);
     check_peer_halves(repo, cfg, &entities, &mut report);
 
     settle_owed(&mut report, &entities, &coord);
@@ -3620,6 +3625,39 @@ fn check_config_bounds(repo: &Repo, bounds: &[String], report: &mut Report) {
             Finding::fault(Kind::ConfigBound, &subject, message)
                 .with_note(vec![format!("ank config {key} <value>")]),
         );
+    }
+}
+
+/// Every `roles.<name>.can` and `.cannot` entry outside the vocabulary
+/// `docs/config-keys.md` publishes, one fault each (ADR-ddbe024ca7f2).
+///
+/// **A fault in `check` and not a refusal at load**: the words are read by no
+/// verb but this one, and a typo in a role must not stop an agent from
+/// running `context`. Whatever the perimeter, since the roles are the
+/// corpus's and not a path's.
+fn check_role_words(repo: &Repo, cfg: &Config, report: &mut Report) {
+    let file = repo.config_path();
+    let subject = file
+        .strip_prefix(&repo.corpus)
+        .unwrap_or(&file)
+        .to_string_lossy()
+        .replace('\\', "/");
+    for (name, role) in &cfg.roles {
+        for (list, words) in [("can", &role.can), ("cannot", &role.cannot)] {
+            for word in words {
+                if ank_core::config::is_role_word(word) {
+                    continue;
+                }
+                report.findings.push(Finding::fault(
+                    Kind::RoleWord,
+                    &subject,
+                    format!(
+                        "roles.{name}.{list}: '{word}' is not a word of the role vocabulary, \
+                         so it declares nothing (the words are listed in docs/config-keys.md)"
+                    ),
+                ));
+            }
+        }
     }
 }
 

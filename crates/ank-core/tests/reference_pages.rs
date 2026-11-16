@@ -285,6 +285,7 @@ fn every_config_key_is_printed_with_its_type_and_default() {
             ("`roles.<name>.can`", "list of strings", "`[]`"),
             ("`roles.<name>.cannot`", "list of strings", "`[]`"),
             ("`identities.<identity>`", "string", "none"),
+            ("`permissions.enforce`", "`off`, `warn` or `deny`", "`off`"),
             ("`weight.hot_files`", "integer", "`3000`"),
             ("`weight.plane_bytes`", "integer", "`4000000`"),
             ("`guard.corpus`", "`deny` or `off`", "`deny`"),

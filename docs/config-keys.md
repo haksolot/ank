@@ -23,9 +23,10 @@ This build reads `schema: 1` through `schema: 2`; a file carrying `requires_ank`
 | `proof.reuse_max_age` | duration | `24h` | how old a passing run recorded under `<git-common-dir>/ank/runs/` may be for `done` to reuse it rather than run the verifier again, at least `1s`; `done --fresh` reuses nothing |
 | `verifier_jobs` | integer | none | how many verifiers one `done` runs at once, at least 1; absent, the machine's available parallelism |
 | `verifier_lock` | boolean | `true` | whether `done` waits for the verifiers another `done` of the repository is running, in any of its worktrees, before it starts its own; `false` lets them run at the same time (ADR-eab130f731f3) |
-| `roles.<name>.can` | list of strings | `[]` | what the role may do, declared |
-| `roles.<name>.cannot` | list of strings | `[]` | what the role may not do, declared |
+| `roles.<name>.can` | list of strings | `[]` | what the role may do, each entry a word of the role vocabulary below |
+| `roles.<name>.cannot` | list of strings | `[]` | what the role may not do, each entry a word of the role vocabulary below |
 | `identities.<identity>` | string | none | the role of an identity; one absent from the table is an `agent` |
+| `permissions.enforce` | `off`, `warn` or `deny` | `off` | how roles apply: `off` not at all, `warn` and `deny` as ADR-ddbe024ca7f2 sets; `ank init` writes `warn` into the corpus it creates; moved by `ank config permissions.enforce` |
 | `weight.hot_files` | integer | `3000` | `check` signals a hot corpus holding more entity files |
 | `weight.plane_bytes` | integer | `4000000` | `check` signals claim and proof records weighing more bytes |
 | `guard.corpus` | `deny` or `off` | `deny` | what `ank hooks run` does with a file tool aimed under the corpus directory: `deny` refuses it, `off` lets it through; a launch environment may set `ANK_GUARD_CORPUS` tighter, never looser (ADR-43cbb20dcbf1) |
@@ -33,3 +34,23 @@ This build reads `schema: 1` through `schema: 2`; a file carrying `requires_ank`
 | `signers.<principal>.keys[].key` | string | required | a key allowed to ratify, `gpg <fingerprint>` or `<ssh key type> <base64>`; the block is written by `ank signers`, never by `ank config` (ADR-5c6db7a161b8) |
 | `signers.<principal>.keys[].note` | string | none | what the key is, for the reader; `ank signers migrate` puts the comments of a former `.ank/allowed_signers` here |
 | `signers.<principal>.keys[].valid_before` | date | none | `YYYY-MM-DD`: the key ratifies nothing committed from that day on, UTC, and what it signed before stays verified; absent, the key has no end |
+
+## The role vocabulary
+
+Every entry of `roles.<name>.can` and `roles.<name>.cannot` is one of these words, and `ank check` faults `config.yml` on a word outside them. An act is forbidden to an identity when its role lists it under `cannot`, or has a `can` list other than `["*"]` that omits it; an identity absent from `identities` has the role `agent`.
+
+- `*`: every act; `can: ["*"]` is the only list that allows everything
+- `context`: `ank context`
+- `find`: `ank find`
+- `claim`: `ank claim`
+- `log`: `ank log`, which writes an entry
+- `done`: `ank done`
+- `new:task`: `ank new task`
+- `new:adr:proposed`: `ank new adr`, which writes a proposed ADR
+- `new:spec:proposed`: `ank new spec`, which writes a proposed spec
+- `adr:accept`: `ank accept` on an ADR
+- `spec:accept`: `ank accept` on a spec
+- `adr:edit-constraint`: a change to the constraint of an ADR
+- `task:close`: `ank close`
+- `delete`: removing an entity
+- `config:permissions`: a write to `roles`, `identities`, `permissions`, `check` or `ratify` in this file
