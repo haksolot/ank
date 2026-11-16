@@ -1131,12 +1131,13 @@ fn mcp(inv: &Invocation, cwd: &std::path::Path, out: &mut dyn std::io::Write) ->
 /// the whole of the dispatch's knowledge of it: nothing above reads a watcher's
 /// state, nothing below waits for one.
 ///
-/// **The corpus is not resolved here, and that is the difference from `tui` and
+/// **The corpus is not required here, and that is the difference from `tui` and
 /// `mcp`.** Those two speak for the corpus the caller is standing in. This one
 /// speaks for the corpora the reader declared, in a file outside every
 /// repository (ADR-96174f1ac2b7) -- so requiring a `.ank/` under the working
 /// directory would make starting the watcher depend on where it was started
 /// from, and refuse it in the one place a person is most likely to type it.
+/// Where there is one, it is added to that declaration (ADR-f6b8e6539335).
 ///
 /// **`current_exe` and not a search**, for the reason `mcp` gives above: the
 /// binary a warming runs is the process already running, so the sibling's
@@ -1171,6 +1172,13 @@ fn watch(inv: &Invocation, out: &mut dyn std::io::Write) -> Result<ExitCode> {
     // from the remote that carries them and has no second answer of its own
     // (ADR-b6fe84504ff2). A repository git cannot answer about is one with no
     // remote, which the watcher already treats as nothing to report.
+    // The checkout the watcher is started in, found by the walk up every verb
+    // performs: it joins the declaration (ADR-f6b8e6539335). Outside one, the
+    // watcher starts on the declaration alone, as it always did.
+    let here = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| crate::repo::discover(&cwd).ok())
+        .map(|repo| repo.corpus);
     let address = ank_daemon::Address {
         exe,
         claims_remote: |root| {
@@ -1178,6 +1186,7 @@ fn watch(inv: &Invocation, out: &mut dyn std::io::Write) -> Result<ExitCode> {
                 .ok()
                 .flatten()
         },
+        here,
     };
     let options = ank_daemon::Options {
         list: inv.has("--list"),

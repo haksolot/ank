@@ -157,6 +157,8 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
     let mut report = init_at(&target)?;
     if let Some(pending) = pending {
         report.declared = Some(pending.write()?.to_string_lossy().to_string());
+    } else if ank_contract::env::watch_declare() {
+        watch_declare(&target, &mut report);
     }
     // `--json` is available on every command without exception (§4), and this
     // verb was the exception: it printed its prose and ignored the flag. The
@@ -171,6 +173,36 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
         }
     }
     Ok(ExitCode::Ok)
+}
+
+/// Adds the checkout just initialised to the reader's `watch.yml`, so `ank
+/// watch` keeps it warm with nobody copying a root commit by hand
+/// (ADR-f6b8e6539335).
+///
+/// **Never a reason for init to fail.** The watcher is optional and its absence
+/// is never an error, so a home the environment does not name, a `watch.yml`
+/// this build cannot read, or a repository with no commit to key it on is a
+/// line saying what was not done, and the exit code is the one init would have
+/// had without it. A detached corpus (`--at`) is not declared here: its
+/// declaration is `corpora.yml`'s.
+fn watch_declare(root: &Path, report: &mut Report) {
+    let root = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
+    match ank_daemon::declare_checkout(&root) {
+        Ok((ank_daemon::Added::Declared(_), file)) => {
+            report.watched = Some(file.to_string_lossy().to_string());
+        }
+        Ok((ank_daemon::Added::Already(_), _)) => {}
+        Ok((ank_daemon::Added::Unkeyed, _)) => {
+            report.watch_note = Some(
+                "not declared for ank watch: no commit yet, so no identity to key it on; \
+                 run ank watch here after the first commit"
+                    .to_string(),
+            );
+        }
+        Err(f) => {
+            report.watch_note = Some(format!("not declared for ank watch: {}", f.message));
+        }
+    }
 }
 
 /// What `init` writes into a corpus it creates: the canonical file, raised to
@@ -236,6 +268,11 @@ pub struct Report {
     /// verb wrote outside the directory the caller pointed at, and a reader who
     /// wants to see it or correct it needs its address.
     pub declared: Option<String>,
+    /// The `watch.yml` this run added the checkout to (ADR-f6b8e6539335).
+    /// Outside the repository, so it is named and is not a change to commit.
+    pub watched: Option<String>,
+    /// Why the checkout was not added to `watch.yml`, where it was not.
+    pub watch_note: Option<String>,
     pub wrote_config: bool,
     pub wrote_gitattributes: bool,
     pub wrote_gitignore: bool,
@@ -278,6 +315,9 @@ impl Report {
         // different kinds — a file and a git config key.
         let mut added: Vec<&str> = Vec::new();
         if let Some(file) = &self.declared {
+            added.push(file.as_str());
+        }
+        if let Some(file) = &self.watched {
             added.push(file.as_str());
         }
         if self.wrote_agents_pointer {
@@ -345,6 +385,9 @@ impl Report {
         if let Some(file) = &self.declared {
             v.push(format!("declared in {file}"));
         }
+        if let Some(file) = &self.watched {
+            v.push(format!("declared in {file}, so ank watch keeps it warm"));
+        }
         if v.is_empty() {
             v.push("already initialised, nothing to do".to_string());
         }
@@ -355,6 +398,9 @@ impl Report {
                 "refspec {REFSPEC} not added: no remote named origin yet, \
                  run this once it exists ({REFSPEC_REPAIR})"
             ));
+        }
+        if let Some(note) = &self.watch_note {
+            v.push(note.clone());
         }
         v
     }

@@ -1,0 +1,6 @@
+# Every process `cargo test` starts inherits this, and so does every `ank` a
+# test spawns: the suite runs `ank init` in hundreds of temporary repositories,
+# and none of them may land in the real reader's watch.yml (ADR-f6b8e6539335).
+# A test that asserts the declaration removes the variable for its own process.
+[env]
+ANK_WATCH_DECLARE = "off"

@@ -92,5 +92,6 @@ mod verifiers_per_crate;
 mod verify_verb;
 mod warm_readers;
 mod watch;
+mod watch_declare;
 mod watch_remote;
 mod writes;

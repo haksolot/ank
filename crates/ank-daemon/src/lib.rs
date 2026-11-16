@@ -103,12 +103,12 @@ const DEFAULT_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Where the watcher reaches, resolved by the dispatch and never here.
 ///
-/// One field, and it is the caller's foundation rather than this crate's: the
-/// verb names the binary a warming runs, so this crate has one road out of the
-/// process and no search to get it wrong. There is deliberately no corpus here
-/// -- the corpora are what the reader declared in [`declare::WATCH_FILE`], and
-/// a watcher that took one from the directory it was started in would be
-/// discovering a corpus, which is the thing ADR-4b45f344344f refuses first.
+/// The caller's foundation rather than this crate's: the verb names the binary
+/// a warming runs, so this crate has one road out of the process and no search
+/// to get it wrong. The corpora watched are what the reader declared in
+/// [`declare::WATCH_FILE`]. The checkout the verb was started in, `here`, is
+/// written into that declaration and is never watched around it
+/// (ADR-f6b8e6539335), so what the loop reads stays the one file.
 pub struct Address {
     /// The binary a warming runs. `std::env::current_exe()` of the process
     /// serving the verb -- see the note on [`warm`].
@@ -128,6 +128,23 @@ pub struct Address {
     /// ran before that remote could exist, and a watcher started before
     /// `git remote add ank` mirrors origin until it is restarted.
     pub claims_remote: fn(&Path) -> Option<&'static str>,
+    /// The checkout the verb was started in, found by the walk up every verb
+    /// performs, or `None` outside one.
+    ///
+    /// **Added to the declaration, never watched on its own account**
+    /// (ADR-f6b8e6539335). What the loop watches is still exactly what
+    /// `watch.yml` says; this is only who may write one line of it.
+    pub here: Option<PathBuf>,
+}
+
+pub use declare::Added;
+
+/// Adds the checkout at `root` to this reader's `watch.yml`, and names the file
+/// it was written in (ADR-f6b8e6539335). `ank init` calls this for the checkout
+/// it initialised.
+pub fn declare_checkout(root: &Path) -> Result<(Added, PathBuf)> {
+    let file = declare::watch_path()?;
+    Ok((declare::add(&file, root, &identity_of)?, file))
 }
 
 /// The four flags §4 gives this verb, as the dispatch parsed them.
@@ -197,6 +214,32 @@ pub fn run(
         return Ok(ExitCode::Ok);
     }
 
+    // **The checkout it was started in joins the declaration, and only that
+    // one** (ADR-f6b8e6539335). `--list` writes nothing: it prints what would be
+    // watched, and a listing that changed the answer it prints is not one.
+    if !opts.list && ank_contract::env::watch_declare() {
+        if let Some(root) = &address.here {
+            match declare::add(&path, root, &identity_of)? {
+                Added::Declared(identity) => {
+                    let _ = writeln!(
+                        err,
+                        "declared {identity} {} in {}",
+                        root.display(),
+                        path.display()
+                    );
+                }
+                Added::Unkeyed => {
+                    let _ = writeln!(
+                        err,
+                        "{} has no commit yet, so there is no identity to declare it under",
+                        root.display()
+                    );
+                }
+                Added::Already(_) => {}
+            }
+        }
+    }
+
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -223,7 +266,7 @@ pub fn run(
         return Ok(ExitCode::Ok);
     }
 
-    watch(&declared, address, opts.once, interval, err);
+    watch(declared, &path, text, address, opts.once, interval, err);
     Ok(ExitCode::Ok)
 }
 
@@ -336,7 +379,9 @@ fn identity_of(root: &Path) -> Option<String> {
 /// cannot see. Both go onto the stream under their own word, and neither says
 /// what to do about it.
 fn watch(
-    declared: &Declaration,
+    mut declared: Declaration,
+    file: &Path,
+    mut text: String,
     address: &Address,
     once: bool,
     interval: Duration,
@@ -367,17 +412,13 @@ fn watch(
             }
         );
         for root in &corpus.roots {
-            posts.push(Post {
-                identity: corpus.identity.clone(),
-                remote: mirrored_from(address.claims_remote, root),
-                root: root.clone(),
-                seen: None,
-                mirrored: None,
-                refs: None,
-            });
+            posts.push(Post::new(&corpus.identity, root, address));
         }
     }
     loop {
+        if !once {
+            reload(file, &mut text, &mut declared, &mut posts, address, err);
+        }
         for post in &mut posts {
             // **The mirror first, and on its own clock.** The warm poll is a
             // stat of a local directory twice a second; this is a round trip
@@ -441,6 +482,69 @@ fn watch(
     }
 }
 
+/// Reads the declaration again when its bytes moved, and watches what it now
+/// says (ADR-f6b8e6539335).
+///
+/// A whole read and a comparison rather than a timestamp: the file is a few
+/// lines, the poll already stats a directory per checkout, and bytes are the one
+/// answer no filesystem's clock granularity can get wrong.
+///
+/// **A declaration that stops resolving changes nothing.** It is a line on
+/// stderr, said once, and the last one that resolved stays in force -- the
+/// rule a failed fetch already follows, because nothing depends on this process
+/// and a typo in the middle of an edit is not a reason to go cold. A checkout
+/// kept from one declaration to the next keeps its state, so it is not warmed
+/// again or reported as changed for having been declared twice.
+fn reload(
+    file: &Path,
+    text: &mut String,
+    declared: &mut Declaration,
+    posts: &mut Vec<Post>,
+    address: &Address,
+    err: &mut dyn Write,
+) {
+    let now = std::fs::read_to_string(file).unwrap_or_default();
+    if now == *text {
+        return;
+    }
+    *text = now;
+    let next = match declare::resolve(text, file, &identity_of) {
+        Ok(next) => next,
+        Err(f) => {
+            let _ = writeln!(
+                err,
+                "{}; still watching what was declared before",
+                f.message
+            );
+            return;
+        }
+    };
+    let mut before = std::mem::take(posts);
+    for corpus in &next.watch {
+        for root in &corpus.roots {
+            let kept = before
+                .iter()
+                .position(|p| p.identity == corpus.identity && p.root == *root);
+            match kept {
+                Some(at) => posts.push(before.swap_remove(at)),
+                None => {
+                    let _ = writeln!(err, "watching {} {}", corpus.identity, root.display());
+                    posts.push(Post::new(&corpus.identity, root, address));
+                }
+            }
+        }
+    }
+    for gone in before {
+        let _ = writeln!(
+            err,
+            "no longer watching {} {}",
+            gone.identity,
+            gone.root.display()
+        );
+    }
+    *declared = next;
+}
+
 /// Says what changed, to the person reading the log and to the program that
 /// asked to be told.
 ///
@@ -489,6 +593,20 @@ struct Post {
     /// this process has not yet fetched for. A first reading is a sighting and
     /// not a change.
     refs: Option<Vec<String>>,
+}
+
+impl Post {
+    /// A checkout not yet looked at: due for a warming and a mirror at once.
+    fn new(identity: &str, root: &Path, address: &Address) -> Post {
+        Post {
+            identity: identity.to_string(),
+            remote: mirrored_from(address.claims_remote, root),
+            root: root.to_path_buf(),
+            seen: None,
+            mirrored: None,
+            refs: None,
+        }
+    }
 }
 
 #[cfg(test)]

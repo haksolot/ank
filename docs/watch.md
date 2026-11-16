@@ -52,7 +52,21 @@ ADR-621a7fd96ce1 rather than on a path:
       9c31ea77b04d5f2681ac3e095b7d4f60a8213ce5: /home/me/work/other
 
 Two worktrees of one repository are two paths under one key, and therefore one
-watched corpus -- which is the whole reason the key is not the path. A key that
+watched corpus -- which is the whole reason the key is not the path.
+
+**`init` and `watch` write it for you** (ADR-f6b8e6539335). `ank init` adds the
+checkout it initialises, once that checkout has a commit to be keyed on, and
+`ank watch` started inside a checkout adds that checkout before it reads the
+file. Each adds one line for the one checkout the caller is standing in and
+keeps your comments. `--list` and `--where` only read. `ANK_WATCH_DECLARE=off`
+turns both off: CI, containers, and this repository's own test suite (through
+`.cargo/config.toml`) set it.
+
+**A running watcher re-reads it.** When the file's bytes change, the watcher
+reads it again and watches what it now says, so a corpus `init` just declared
+is warmed straight away. If an edit leaves a declaration that fails to resolve,
+the watcher says so once on stderr and keeps watching the last one that
+resolved. A key that
 is not a root commit is refused by name, a checkout filed under another
 repository's identity is refused with both identities, and a directory carrying
 no `.ank/` is refused rather than searched around: `ank watch --list` prints
