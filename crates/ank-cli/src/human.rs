@@ -3659,7 +3659,8 @@ fn check_role_words(repo: &Repo, cfg: &Config, report: &mut Report) {
         .to_string_lossy()
         .replace('\\', "/");
     for (name, role) in &cfg.roles {
-        for (list, words) in [("can", &role.can), ("cannot", &role.cannot)] {
+        let can = role.can.as_deref().unwrap_or_default();
+        for (list, words) in [("can", can), ("cannot", role.cannot.as_slice())] {
             for word in words {
                 if ank_core::config::is_role_word(word) {
                     continue;

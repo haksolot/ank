@@ -491,8 +491,11 @@ struct VerifierFile {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Role {
+    /// `None` when the role writes no `can`, which restricts nothing; a written
+    /// list, `[]` included, forbids every act it omits unless it is `["*"]`
+    /// (ADR-ddbe024ca7f2). Two states, so the parser keeps them apart.
     #[serde(default)]
-    pub can: Vec<String>,
+    pub can: Option<Vec<String>>,
     #[serde(default)]
     pub cannot: Vec<String>,
 }
@@ -581,18 +584,19 @@ impl Config {
     }
 
     /// Whether the role of `identity` forbids `act`, whatever the level:
-    /// its `cannot` lists the act or `*`, or its `can` is a list that is not
-    /// `["*"]` and omits the act. An empty `can` is a list nobody wrote, since
-    /// the parser reads an absent one as empty, and restricts nothing; a role
-    /// nobody declared forbids nothing either.
+    /// its `cannot` lists the act or `*`, or it writes a `can` list that is not
+    /// `["*"]` and omits the act, `can: []` omitting every act. A role that
+    /// writes no `can` restricts nothing by it, and a role nobody declared
+    /// forbids nothing.
     pub fn forbids(&self, identity: &str, act: &str) -> Option<Forbidden> {
         let name = self.role_of(identity);
         let role = self.roles.get(name)?;
         let entry = if role.cannot.iter().any(|w| w == act || w == "*") {
             format!("roles.{name}.cannot lists it")
-        } else if !role.can.is_empty()
-            && !role.can.iter().any(|w| w == "*")
-            && !role.can.iter().any(|w| w == act)
+        } else if role
+            .can
+            .as_ref()
+            .is_some_and(|can| !can.iter().any(|w| w == "*" || w == act))
         {
             format!("roles.{name}.can omits it")
         } else {
@@ -2690,9 +2694,11 @@ fn locate_path(lines: &[Line], map: &str, path: &[&str]) -> Option<(usize, usize
 /// declared.
 fn read_role_list(lines: &[Line], role: &str, field: &str) -> Result<Value> {
     let Some((j, indent)) = locate_path(lines, "roles", &[role, field]) else {
+        // Absent, `cannot` is the empty list the parser applies; `can` is
+        // absent, which is a state of its own and no list at all.
         return Ok(match locate_path(lines, "roles", &[role]) {
-            Some(_) => Value::Default("[]".to_string()),
-            None => Value::Unset,
+            Some(_) if field == "cannot" => Value::Default("[]".to_string()),
+            _ => Value::Unset,
         });
     };
     let (_, after) = key_of(&lines[j].text).expect("found by its key");
@@ -4670,7 +4676,7 @@ identities:
         assert_eq!(cfg.schema, MIN_SCHEMA);
         assert_eq!(cfg.context_budget, DEFAULT_CONTEXT_BUDGET);
         assert_eq!(cfg.claim_ttl_max, Duration::from_secs(7200));
-        assert_eq!(cfg.roles["human"].can, vec!["*".to_string()]);
+        assert_eq!(cfg.roles["human"].can, Some(vec!["*".to_string()]));
     }
 
     // -----------------------------------------------------------------------
@@ -5141,7 +5147,7 @@ identities: {}
             "{with}"
         );
         // `roles` was directly below `verifiers: {}` and is untouched.
-        assert_eq!(cfg.roles["human"].can, vec!["*".to_string()]);
+        assert_eq!(cfg.roles["human"].can, Some(vec!["*".to_string()]));
 
         // And the demotion is its exact inverse: `verifiers:` with no children
         // is not an empty map but a parse error, so the key goes back to `{}`.
@@ -5476,12 +5482,12 @@ mod reference_table {
         assert_eq!(cfg.verifiers["t"].inputs, None);
         assert!(cfg.default_verifiers.is_empty());
         let roles = parse("schema: 1\nroles:\n  r: {}\n", p).unwrap().roles;
-        assert_eq!(row("roles.<name>.can"), Absent::Text("[]"));
+        assert_eq!(row("roles.<name>.can"), Absent::None);
         assert_eq!(row("roles.<name>.cannot"), Absent::Text("[]"));
         assert_eq!(
             roles["r"],
             Role {
-                can: vec![],
+                can: None,
                 cannot: vec![]
             }
         );
