@@ -120,8 +120,20 @@ tool per verb, whatever the table carries, named `ank_<verb>` because a bare
 `context` collides with every other server a client has loaded and `ank context`
 is not a legal tool name. Positionals arrive as `arguments`, an array of strings,
 exactly as they sit on the command line; flags arrive under their own names with
-the leading dashes stripped. What a call gets back is the document `--json`
-returns, with the exit code beside it. Nothing in the server names a verb, so
+the leading dashes stripped. Where a verb takes a fixed word first, as `hooks`,
+`signers` and `new` do, the schema holds the first item to those words with
+`prefixItems` and types every later item as a plain string, so
+`["install", "claude"]` is a call the schema accepts. Where a verb refuses to
+run without a positional, `arguments` is `required` and `minItems` counts what
+it needs. What a call gets back is the document `--json`
+returns, as `structuredContent` and as the text block beside it, with the exit
+code next to both; a refusal answers no document and carries none. Every tool
+also carries `readOnlyHint`, `destructiveHint` and `openWorldHint`, all three
+and always, derived from what `ank help --json` declares for the verb:
+read-only where `writes` and `outside` are both `nothing`, destructive where
+`destructive` is true, open world where `open_world` is true. `writes` counts
+the corpus and `outside` counts everything else, such as the harness settings
+`hooks install` rewrites. Nothing in the server names a verb, so
 the two surfaces cannot disagree about what exists.
 
 **One process may speak for several corpora, and never for a merged one.**
@@ -135,7 +147,7 @@ corpus at startup, answering out of another the reader declared:
 <!-- replay corpora -->
 
     --> {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ank_find","arguments":{"arguments":["--status","open"],"corpus":"bccc32d77d8a9a329f772f789dc5fb1054259d70"}}}
-    <-- {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"contract\":1,\"corpus\":\"bccc32d77d8a9a329f772f789dc5fb1054259d70\",\"total\":1,\"shown\":1,\"hidden\":0,\"results\":[{\"id\":\"TASK-6a3615347674\",\"kind\":\"task\",\"status\":\"open\",\"state\":\"open\",\"title\":\"The back answers a query\",\"created\":\"2026-08-26T00:22:04Z\",\"archived\":false,\"anchored_by\":null}]}"}],"isError":false,"exitCode":0}}
+    <-- {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"contract\":1,\"corpus\":\"bccc32d77d8a9a329f772f789dc5fb1054259d70\",\"total\":1,\"shown\":1,\"hidden\":0,\"results\":[{\"id\":\"TASK-6a3615347674\",\"kind\":\"task\",\"status\":\"open\",\"state\":\"open\",\"title\":\"The back answers a query\",\"created\":\"2026-08-26T00:22:04Z\",\"archived\":false,\"anchored_by\":null}]}"}],"isError":false,"exitCode":0,"structuredContent":{"contract":1,"corpus":"bccc32d77d8a9a329f772f789dc5fb1054259d70","total":1,"shown":1,"hidden":0,"results":[{"id":"TASK-6a3615347674","kind":"task","status":"open","state":"open","title":"The back answers a query","created":"2026-08-26T00:22:04Z","archived":false,"anchored_by":null}]}}}
 
 That permits multiplexing. It still forbids merging, and **telling those two
 apart is the whole of the decision**, so it is worth being exact about which one

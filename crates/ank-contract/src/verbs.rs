@@ -708,6 +708,10 @@ const HELP_OUT: &[Field] = &[f(
         f("group", Type::Str),
         // One of nothing, files, refs or both (ADR-3c8d94a0bbe0).
         f("writes", Type::Str),
+        // One of nothing or files: what the verb writes outside the corpus.
+        f("outside", Type::Str),
+        f("destructive", Type::Bool),
+        f("open_world", Type::Bool),
         f(
             "flags",
             Type::Array(&[
@@ -1131,6 +1135,14 @@ pub struct CommandSpec {
     /// is a kind of entity and those differ by kind. Empty for every verb but
     /// `new`, and `ank help <verb> <kind>` answers only where it is not.
     pub kinds: &'static [Kind],
+    /// How many positionals, after the subcommand, the verb refuses to run
+    /// without (GitHub #780). Not read off `positional_help`, because that line
+    /// is written for a reader and is not exact about it: `find` prints
+    /// `<query>` and lists everything without one, `log` prints `[<id>]
+    /// [<message>]` and refuses with neither. Measured against the binary by
+    /// `crates/ank-cli/tests/mcp.rs`, which calls every verb that takes a
+    /// positional without one and holds the answer to this number.
+    pub min_positionals: usize,
     pub max_positionals: usize,
     pub positional_help: &'static str,
     pub flags: &'static [FlagSpec],
@@ -1190,6 +1202,28 @@ pub struct CommandSpec {
     /// and the workspace suite runs every verb declaring [`Writes::Nothing`] on
     /// a scratch corpus and fails on what it leaves behind.
     pub writes: Writes,
+    /// What the verb writes outside the corpus, which [`Writes`] does not
+    /// answer for (GitHub #781): the harness's settings, the reader's
+    /// declarations, the binary. See [`crate::writes::Outside`].
+    pub outside: crate::writes::Outside,
+    /// Whether the verb **destroys or retires** what the corpus held, rather
+    /// than adding to it or changing what a later verb changes back: `accept`
+    /// makes a proposal binding and is undone by nothing but a supersession,
+    /// `close` ends a task no verb reopens, `archive` moves entities out of the
+    /// live corpus, and `migrate` rewrites the layout in place. A claim is
+    /// released, a field edited again, a criterion amended, a hook removed;
+    /// none of those is this.
+    ///
+    /// Declared rather than inferred from [`Writes`], because a claim and a
+    /// close both write `both` and only one of them is the act a client should
+    /// be asked twice about. `ank mcp` derives `destructiveHint` from it.
+    pub destructive: bool,
+    /// Whether the verb **reaches beyond the repository and its own
+    /// remotes**: a release service, a package registry, anything a reader did
+    /// not name as part of this corpus. A push to `origin` is not this; it is
+    /// the repository's own remote, which `claim` and `accept` already use.
+    /// `ank mcp` derives `openWorldHint` from it.
+    pub open_world: bool,
     /// The document the verb returns under `--json`, declared once and rendered
     /// by `help --json` (ADR-6fd69efb629c).
     ///
@@ -1357,10 +1391,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "run the loop",
         renews: Renews::Held,
         writes: Writes::Nothing,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "what binds this perimeter and what is claimable; with a claim held, the criterion and the constraints in full",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[flag("--limit"), switch("--since"), switch("--peers")],
@@ -1389,10 +1427,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "run the loop",
         renews: Renews::Never,
         writes: Writes::Both,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: true,
         summary: "takes the task and freezes its done_criteria by hash; refuses one held, blocked, or finished on another branch",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 1,
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--criteria"), flag("--ttl")],
@@ -1429,10 +1471,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "run the loop",
         renews: Renews::Named,
         writes: Writes::Nothing,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "the entity whole, frontmatter and body, byte for byte",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 1,
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
@@ -1455,6 +1501,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "run the loop",
         renews: Renews::Never,
         writes: Writes::Both,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: true,
         // **The claim is a condition on the subject, not on the write** (§4,
         // ADR-25f977377fa0). A claim arbitrates work, and only an `open` or
@@ -1471,6 +1520,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         summary: "an id alone reads the log; an id and a message appends one and renews the claim, needed where a claim arbitrates work and not on a done or closed task",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 1,
         max_positionals: 2,
         // Both optional, and what is given decides which of the two things the
         // verb does: an id alone reads, a message writes (§4).
@@ -1505,10 +1555,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "run the loop",
         renews: Renews::Never,
         writes: Writes::Nothing,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: true,
         summary: "runs the verifiers config.yml declares that a change touches, and records each run for the done that follows; needs no claim",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 0,
         positional_help: "",
         flags: &[],
@@ -1533,6 +1587,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "run the loop",
         renews: Renews::Never,
         writes: Writes::Both,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: true,
         // "the declared verifiers" left out who declares them, and a reader
         // filled the blank with config.yml -- which defines verifiers but never
@@ -1542,6 +1599,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         summary: "runs the verifiers the task's verify: list names, records what ran, and moves the task to done; needs the claim, and a proof when that list is empty",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 1,
         positional_help: "[<id>]",
         flags: &[flag("--proof"), switch("--fresh")],
@@ -1576,10 +1634,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "run the loop",
         renews: Renews::Never,
         writes: Writes::Both,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: true,
         summary: "hands the task back, with the reason recorded in its log",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 1,
         positional_help: "[<id>]",
         flags: &[flag("--reason")],
@@ -1607,10 +1669,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "shape the work",
         renews: Renews::Never,
         writes: Writes::Files,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "writes a task, an ADR or a spec that needs no hand finishing",
         subcommands: &["task", "adr", "spec"],
         kinds: NEW_KINDS,
+        min_positionals: 0,
         max_positionals: 0,
         positional_help: "",
         flags: &[
@@ -1652,10 +1718,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "look around",
         renews: Renews::Never,
         writes: Writes::Nothing,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "searches titles, scopes and criteria; --type spec reaches the specification, --status open lists what remains",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 1,
         positional_help: "<query>",
         flags: &[
@@ -1701,10 +1771,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "look around",
         renews: Renews::Never,
         writes: Writes::Nothing,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "where am I: branch, claim, perimeter, queue, findings",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 0,
         positional_help: "",
         flags: &[switch("--remote"), switch("--peers")],
@@ -1734,10 +1808,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "shape the work",
         renews: Renews::Never,
         writes: Writes::Nothing,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "the ratification queue and the health of the corpus: what is proposed, who may ratify it, and which scopes have gone dead",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
@@ -1762,12 +1840,16 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "shape the work",
         renews: Renews::Never,
         writes: Writes::Both,
+        outside: crate::writes::Outside::Nothing,
+        destructive: true,
+        open_world: false,
         coordinates: true,
         summary: "promotes proposed ADRs or specs to accepted, one ratification tag at refs/ank/ratify/<id> each, signed where the repository signs; commits nothing, on any branch",
         subcommands: &[],
         kinds: &[],
         // As many ids as the caller names, each its own tag: the ref is
         // `refs/ank/ratify/<id>`, so two ratifications never share one.
+        min_positionals: 1,
         max_positionals: usize::MAX,
         positional_help: "<id>...",
         // The one act on an anchor made before ADR-5e47007a75be: the tag and
@@ -1835,6 +1917,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         // entity you hold is work on it, and working is what keeps the lock.
         renews: Renews::Named,
         writes: Writes::Files,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         // Nothing here touches a ref, a branch or a remote. The reading is a
         // field on the entity and the write is the store's, so this verb answers
         // on the files alone (ADR-9307e5d214a7).
@@ -1842,6 +1927,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         summary: "records that a person read this entity and stands behind it",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 1,
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
@@ -1866,10 +1952,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "shape the work",
         renews: Renews::Never,
         writes: Writes::Both,
+        outside: crate::writes::Outside::Nothing,
+        destructive: true,
+        open_world: false,
         coordinates: true,
         summary: "closes a task that will never be done; --reason is mandatory",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 1,
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--reason")],
@@ -1900,10 +1990,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "shape the work",
         renews: Renews::Named,
         writes: Writes::Files,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "changes blocked_by, references, amends, enforced_by, scope, and a done_criteria no live claim freezes",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 1,
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[
@@ -1952,10 +2046,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "shape the work",
         renews: Renews::Named,
         writes: Writes::Both,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: true,
         summary: "appends a proof to a finished task: the one write allowed after done",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 1,
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--proof"), switch("--detached"), switch("--compact")],
@@ -2001,10 +2099,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "keep the corpus honest",
         renews: Renews::Named,
         writes: Writes::Files,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "changes the content field named, or opens the entity in $EDITOR",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 1,
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--title"), flag("--body"), flag("--constraint")],
@@ -2034,10 +2136,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "look around",
         renews: Renews::Never,
         writes: Writes::Nothing,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "the blocked_by DAG in readable text, indented under what blocks it",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
@@ -2052,10 +2158,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "look around",
         renews: Renews::Never,
         writes: Writes::Nothing,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "what covers a path: the constraints that bind it, the specifications that govern it, and the tasks that touch it",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 1,
         max_positionals: 1,
         positional_help: "<path>",
         flags: &[],
@@ -2078,6 +2188,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "look around",
         renews: Renews::Never,
         writes: Writes::Both,
+        outside: crate::writes::Outside::Files,
+        destructive: false,
+        open_world: false,
         // It runs the CLI, and the CLI checks git per verb (ADR-9307e5d214a7).
         // Requiring it here would refuse a reader over a corpus that four
         // read-only verbs answer about perfectly well.
@@ -2085,6 +2198,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         summary: "a full-screen reader over this corpus: every entity with its status, a body whole, what binds it, who holds what, and the blocked_by graph",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 0,
         positional_help: "",
         flags: &[],
@@ -2108,6 +2222,10 @@ pub const COMMANDS: &[CommandSpec] = &[
             // binary is read as the binary refusing, which is the failure §9
             // exists to prevent.
             "every command is one key; ? lists them, q leaves",
+            // Said in the table so that every surface reading it says it
+            // before the call (GitHub #781): through `ank mcp` the child has
+            // a pipe for stdin and stdout, and refuses at exit 9.
+            "it needs a terminal on stdin and stdout, and refuses at exit 9 without one, through ank mcp included",
             // **Six names stood here, and the sentence under them was true of
             // six** (TASK-a836fdb2fca2). It said the verbs *act on the entity
             // the focused panel names*, which is how the writing half works and
@@ -2148,6 +2266,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         // a client that left a session open all night has done no work.
         renews: Renews::Never,
         writes: Writes::Both,
+        outside: crate::writes::Outside::Files,
+        destructive: false,
+        open_world: false,
         // It runs this binary per call, and the CLI checks git per verb
         // (ADR-9307e5d214a7). Requiring it here would refuse the server before
         // a client had asked anything, over a corpus the read-only half of the
@@ -2156,6 +2277,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         summary: "every verb of this table as a tool, over MCP on stdio, for a client that has no shell",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 0,
         positional_help: "",
         flags: &[],
@@ -2167,6 +2289,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         ],
         notes: &[
             "JSON-RPC on stdio, one message per line: initialize, tools/list, tools/call, ping",
+            // GitHub #781: called as a tool, it starts a second server on an
+            // empty stdin, which answers nothing and exits 0.
+            "it is the server itself: called as one of its own tools it starts a second server on an empty stdin, which answers nothing",
             "every verb of this table is a tool, generated from it: no curated subset, and no second list kept in step by review",
             "a call runs `ank <verb> --repo <corpus> --json` as a child, so every refusal is the one this binary gives, carrying its exit code",
             "one process speaks for one corpus, the one --repo addressed at startup",
@@ -2201,6 +2326,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         // (ADR-0bb7ea8991bc).
         renews: Renews::Never,
         writes: Writes::Refs,
+        outside: crate::writes::Outside::Files,
+        destructive: false,
+        open_world: false,
         // **False, and this is the one verb where that is not about cost.**
         // `coordinates` makes the foundation check git in *the checkout's*
         // corpus, and this verb has no such corpus: what it watches is what the
@@ -2212,6 +2340,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         summary: "keeps the corpora you declared warm, so the ank you run answers sooner; it answers no verb and nothing depends on it",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 0,
         positional_help: "",
         // Exactly the four §4 lists, and the shape of that list is the
@@ -2277,6 +2406,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "keep the corpus honest",
         renews: Renews::Never,
         writes: Writes::Refs,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         // A verb called `check` reads as read-only, and this one writes: it is
         // the only command that prunes (§7). An agent ran it in a loop on that
@@ -2285,6 +2417,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         summary: "the mechanical invariants: parse, round-trip, references, frozen fields, orphaned claims; prunes the claim refs it finds stale, so it writes",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 1,
         positional_help: "[<path>]",
         // The command a folded signal names (ADR-df1035934387): a flag on the
@@ -2323,10 +2456,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "keep the corpus honest",
         renews: Renews::Never,
         writes: Writes::Files,
+        outside: crate::writes::Outside::Nothing,
+        destructive: true,
+        open_world: false,
         coordinates: false,
         summary: "rewrites the previous log directory as entries, one entity per entry, and removes what it read",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 0,
         positional_help: "",
         flags: &[],
@@ -2350,10 +2487,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "keep the corpus honest",
         renews: Renews::Never,
         writes: Writes::Files,
+        outside: crate::writes::Outside::Nothing,
+        destructive: true,
+        open_world: false,
         coordinates: false,
         summary: "moves what is cold into .ank/archive/entities/: superseded documents, and every entry whose subject is cold",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 0,
         positional_help: "",
         flags: &[switch("--dry-run")],
@@ -2379,10 +2520,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "set up a repository",
         renews: Renews::Never,
         writes: Writes::Files,
+        outside: crate::writes::Outside::Files,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "reads and writes .ank/config.yml: the key alone reads, a value writes, --unset removes",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 1,
         max_positionals: 2,
         positional_help: "<key> [<value>]",
         flags: &[switch("--unset"), switch("--user"), switch("--list")],
@@ -2416,10 +2561,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "set up a repository",
         renews: Renews::Never,
         writes: Writes::Files,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "writes who may ratify under signers: in .ank/config.yml: add declares a key, retire dates it, remove deletes it, migrate moves a former .ank/allowed_signers there",
         subcommands: &["add", "retire", "remove", "migrate"],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 1,
         positional_help: "[<key>]",
         flags: &[
@@ -2462,10 +2611,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "set up a repository",
         renews: Renews::Never,
         writes: Writes::Files,
+        outside: crate::writes::Outside::Files,
+        destructive: false,
+        open_world: false,
         coordinates: true,
         summary: "creates .ank/ here or at <path>, writes config.yml, adds the refs/ank/* refspec once origin exists; refuses --repo",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[flag("--at")],
@@ -2499,6 +2652,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "set up a repository",
         renews: Renews::Never,
         writes: Writes::Nothing,
+        outside: crate::writes::Outside::Files,
+        destructive: false,
+        open_world: false,
         // It reads no corpus and asks git nothing: the skills were read into
         // the binary at build time, and the installers run this verb straight
         // after unpacking, wherever the person happens to be.
@@ -2506,6 +2662,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         summary: "the skills this binary carries, one line each, and in a corpus how often each sibling is designated and fires; --install writes them to a directory and hands it to npx skills add",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 0,
         positional_help: "",
         flags: &[switch("--install")],
@@ -2555,11 +2712,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         // every repository, the way `skills --install` writes a directory
         // elsewhere (ADR-43cbb20dcbf1).
         writes: Writes::Nothing,
+        outside: crate::writes::Outside::Files,
+        destructive: false,
+        open_world: false,
         // It resolves no corpus to install or remove, and asks git nothing.
         coordinates: false,
         summary: "installs into an agent harness's user-level settings the entries that call ank hooks run at its events, removes exactly them, and runs them",
         subcommands: &["install", "remove", "run"],
         kinds: &[],
+        min_positionals: 1,
         max_positionals: 2,
         positional_help: "<agent> [<event>]",
         flags: &[],
@@ -2609,6 +2770,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         // still names (ADR-5e47007a75be, TASK-6e3f8f0049e9). Local, and it
         // installs nothing, which is what ADR-64f32c74a0f9 asks of it.
         writes: Writes::Refs,
+        outside: crate::writes::Outside::Files,
+        destructive: false,
+        open_world: true,
         // It coordinates nothing: the one git it runs for releases asks a
         // repository somewhere else which exist, and that needs no repository
         // here, let alone a signing-capable git.
@@ -2616,6 +2780,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         summary: "replaces this binary with a published release through the route that placed it; --check reports the running and the latest version and installs nothing",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 0,
         positional_help: "",
         flags: &[switch("--check"), flag("--version")],
@@ -2670,10 +2835,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "set up a repository",
         renews: Renews::Never,
         writes: Writes::Nothing,
+        outside: crate::writes::Outside::Nothing,
+        destructive: false,
+        open_world: false,
         coordinates: false,
         summary: "every verb grouped by the moment it is used, or one verb in full",
         subcommands: &[],
         kinds: &[],
+        min_positionals: 0,
         max_positionals: 2,
         positional_help: "[<verb> [<kind>]]",
         flags: &[],
