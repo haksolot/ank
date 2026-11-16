@@ -28577,3 +28577,103 @@ fn self_ratified_goes_quiet_when_the_ratifiers_role_allows_the_accept() {
     );
     assert!(text.contains("adr:accept"), "{text}");
 }
+
+// ---------------------------------------------------------------------------
+// A written can: [] forbids every act, and an absent can restricts nothing
+// (ADR-ddbe024ca7f2, TASK-a85d4a2325e7)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_written_empty_can_forbids_every_act_and_an_absent_can_restricts_nothing() {
+    let r = ready_to_ratify();
+    let mut config = r.config_text();
+    config.push_str(
+        "roles:\n  locked:\n    can: []\n  loose:\n    cannot: [task:close]\n  \
+         human:\n    can: [\"*\"]\n\
+         identities:\n  human:marie: human\n  bot/locked: locked\n  bot/loose: loose\n\
+         permissions:\n  enforce: warn\n",
+    );
+    r.set_config(&config);
+
+    let task = |who: &str, title: &str| -> (String, String) {
+        let out = r.ank(
+            who,
+            &[
+                "new", "task", "--title", title, "--scope", "src/**", "--json",
+            ],
+        );
+        assert_eq!(code(&out), 0, "{}", erred(&out));
+        (created_id(&out), erred(&out))
+    };
+
+    // Written empty: every act is outside the list.
+    let (locked_task, err) = task("bot/locked", "Locked");
+    assert!(
+        err.contains("forbids new:task") && err.contains("roles.locked.can omits it"),
+        "{err}"
+    );
+    let out = r.ank("bot/locked", &["close", &locked_task, "--reason", "no"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(
+        erred(&out).contains("forbids task:close"),
+        "{}",
+        erred(&out)
+    );
+    let adr = new_adr(&r, "human:marie", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank("bot/locked", &["accept", &adr]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(
+        erred(&out).contains("forbids adr:accept") && erred(&out).contains("roles.locked.can"),
+        "{}",
+        erred(&out)
+    );
+
+    // No can key: only what cannot lists is forbidden.
+    let (loose_task, err) = task("bot/loose", "Loose");
+    assert!(!err.contains("forbids"), "{err}");
+    let out = r.ank("bot/loose", &["close", &loose_task, "--reason", "no"]);
+    assert!(
+        erred(&out).contains("forbids task:close")
+            && erred(&out).contains("roles.loose.cannot lists it"),
+        "{}",
+        erred(&out)
+    );
+    let out = r.ank("bot/loose", &["context", "src"]);
+    assert!(!erred(&out).contains("forbids"), "{}", erred(&out));
+
+    // An absent can reads as absent, and --unset leaves no can key behind.
+    let out = r.ank("human:marie", &["config", "roles.loose.can"]);
+    assert_eq!(said(&out).trim(), "(unset)", "{}", erred(&out));
+    let out = r.ank("human:marie", &["config", "roles.locked.can"]);
+    assert_eq!(said(&out).trim(), "[]", "{}", erred(&out));
+    let out = r.ank("human:marie", &["config", "--unset", "roles.locked.can"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let text = r.config_text();
+    assert!(text.contains("  locked: {}\n"), "{text}");
+    let out = r.ank("human:marie", &["config", "roles.locked.can"]);
+    assert_eq!(said(&out).trim(), "(unset)");
+    let (_, err) = task("bot/locked", "Unlocked");
+    assert!(!err.contains("forbids"), "{err}");
+}
+
+#[test]
+fn the_config_keys_page_states_that_a_written_empty_can_differs_from_none() {
+    let page = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/config-keys.md"),
+    )
+    .unwrap();
+    let row = page
+        .lines()
+        .find(|l| l.starts_with("| `roles.<name>.can` |"))
+        .expect("the can row");
+    assert!(
+        row.contains("`can: []`") && row.contains("forbids every act"),
+        "{row}"
+    );
+    assert!(
+        row.contains("absent") && row.contains("restricts nothing"),
+        "{row}"
+    );
+}
