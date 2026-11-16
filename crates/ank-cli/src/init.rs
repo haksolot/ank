@@ -108,7 +108,7 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
     }
 
     let detached = inv.value("--at");
-    if detached.is_some() && inv.positionals.first().is_some() {
+    if detached.is_some() && !inv.positionals.is_empty() {
         return Err(CliError::new(
             ExitCode::Generic,
             "--at and a positional target name two different directories",
@@ -672,6 +672,8 @@ pub fn repair_remotes(root: &Path) -> (Remotes, Option<String>) {
 }
 
 /// One refspec [`arrange_claims`] added to or removed from a remote's fetch.
+// Each variant is an act on the claims refs, and the shared suffix names them.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimsRefspec {
     /// [`CLAIMS_REFSPEC`] added to `remote.ank.fetch`.

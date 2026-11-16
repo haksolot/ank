@@ -509,7 +509,7 @@ impl Task {
     ///
     /// The local list only: a peer's blocker is answered by that peer, and
     /// the caller that can open it asks there ([`Task::peer_blocked_by`]).
-    pub fn active_blockers<'a, F>(&'a self, status_of: F) -> Result<Vec<&'a EntityId>>
+    pub fn active_blockers<F>(&self, status_of: F) -> Result<Vec<&EntityId>>
     where
         F: Fn(&EntityId) -> Option<TaskStatus>,
     {

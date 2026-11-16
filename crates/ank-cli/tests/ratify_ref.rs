@@ -276,7 +276,8 @@ fn a_second_clone_holding_the_ref_and_a_proposed_file_serves_the_constraint_as_b
     );
 
     let out = ank(&clone, &["context", "src/lib.rs", "--json"]);
-    let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).expect(&both(&out));
+    let doc: serde_yaml::Value =
+        serde_yaml::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", both(&out)));
     let ids = |key: &str| -> Vec<String> {
         doc[key]
             .as_sequence()
@@ -302,13 +303,14 @@ fn a_second_clone_holding_the_ref_and_a_proposed_file_serves_the_constraint_as_b
     );
 
     let out = ank(&clone, &["scope", "src/lib.rs", "--json"]);
-    let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).expect(&both(&out));
+    let doc: serde_yaml::Value =
+        serde_yaml::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", both(&out)));
     let row = doc["adr"]
         .as_sequence()
         .unwrap()
         .iter()
         .find(|r| r["id"].as_str() == Some(A))
-        .expect(&format!("{doc:?}"))
+        .unwrap_or_else(|| panic!("{doc:?}"))
         .clone();
     assert_eq!(row["status"].as_str(), Some("accepted"), "{doc:?}");
     let out = ank(&clone, &["scope", "src/lib.rs"]);
@@ -332,7 +334,8 @@ fn a_clone_without_the_refs_reads_the_file_and_serves_a_proposal() {
         &["clone", "-q", &file_url(&c.origin), clone.to_str().unwrap()],
     );
     let out = ank(&clone, &["context", "src/lib.rs", "--json"]);
-    let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).expect(&both(&out));
+    let doc: serde_yaml::Value =
+        serde_yaml::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", both(&out)));
     let proposed: Vec<&str> = doc["proposed"]
         .as_sequence()
         .unwrap()
@@ -369,7 +372,8 @@ fn a_ref_signed_by_an_undeclared_key_is_a_fault_and_binds_nothing() {
     );
 
     let out = ank(&clone, &["context", "src/lib.rs", "--json"]);
-    let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).expect(&both(&out));
+    let doc: serde_yaml::Value =
+        serde_yaml::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", both(&out)));
     assert!(
         !doc["constraints"]
             .as_sequence()
@@ -648,7 +652,8 @@ fn show_find_and_review_say_whether_a_ref_or_a_commit_carried_it() {
         both(&out)
     );
     let out = ank(&c.repo, &["show", A, "--json"]);
-    let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).expect(&both(&out));
+    let doc: serde_yaml::Value =
+        serde_yaml::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", both(&out)));
     assert_eq!(doc["ratification"]["via"].as_str(), Some("ref"), "{doc:?}");
 
     let out = ank(&c.repo, &["find", "--type", "adr"]);
@@ -663,7 +668,8 @@ fn show_find_and_review_say_whether_a_ref_or_a_commit_carried_it() {
     assert!(line(A).contains("(anchor: ref)"), "{listing}");
     assert!(line(C).contains("(anchor: commit)"), "{listing}");
     let out = ank(&c.repo, &["find", "--type", "adr", "--json"]);
-    let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).expect(&both(&out));
+    let doc: serde_yaml::Value =
+        serde_yaml::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", both(&out)));
     let by = |id: &str| {
         doc["results"]
             .as_sequence()
@@ -939,7 +945,8 @@ fn accept_reanchor_moves_a_commit_anchor_into_a_signed_ref() {
         both(&out)
     );
     let out = ank(&c.repo, &["show", C, "--json"]);
-    let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).expect(&both(&out));
+    let doc: serde_yaml::Value =
+        serde_yaml::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", both(&out)));
     assert_eq!(doc["ratification"]["via"].as_str(), Some("ref"), "{doc:?}");
     assert_eq!(doc["ratification"]["object"].as_str(), Some(tag.as_str()));
     assert_eq!(

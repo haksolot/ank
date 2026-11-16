@@ -555,38 +555,35 @@ fn install(text: &str, commands: &[String]) -> Edit<(String, Vec<&'static str>)>
     }
     let mut added = Vec::new();
     for ((name, event, matcher), command) in EVENTS.iter().zip(commands) {
-        loop {
-            let root = parse(&text)?;
-            let hooks = root.member("hooks").expect("present above");
-            let Some(array) = hooks.member(name) else {
-                let created = format!("[{}]", compact(command, *matcher));
-                text = insert_member(&text, hooks, name, &created);
-                added.push(*name);
-                break;
-            };
-            let Kind::Array(items) = &array.kind else {
-                return Err(format!("its hooks.{name} is not an array"));
-            };
-            if items
-                .iter()
-                .any(|i| ours(i, event).as_deref() == Some(command))
-            {
-                break;
-            }
-            // In place, so whatever form the entry was written in survives it,
-            // and `remove` still recognises a container install created.
-            if let Some(stale) = items.iter().find_map(|i| command_of(i, event)) {
-                let replaced = crate::json::string(command);
-                text = format!("{}{replaced}{}", &text[..stale.start], &text[stale.end..]);
-                added.push(*name);
-                break;
-            }
-            let indent = child_indent(&text, array.start);
-            let entry = pretty(command, *matcher, &indent, &unit(&text), eol(&text));
-            text = insert_item(&text, array, &entry);
+        let root = parse(&text)?;
+        let hooks = root.member("hooks").expect("present above");
+        let Some(array) = hooks.member(name) else {
+            let created = format!("[{}]", compact(command, *matcher));
+            text = insert_member(&text, hooks, name, &created);
             added.push(*name);
-            break;
+            continue;
+        };
+        let Kind::Array(items) = &array.kind else {
+            return Err(format!("its hooks.{name} is not an array"));
+        };
+        if items
+            .iter()
+            .any(|i| ours(i, event).as_deref() == Some(command))
+        {
+            continue;
         }
+        // In place, so whatever form the entry was written in survives it,
+        // and `remove` still recognises a container install created.
+        if let Some(stale) = items.iter().find_map(|i| command_of(i, event)) {
+            let replaced = crate::json::string(command);
+            text = format!("{}{replaced}{}", &text[..stale.start], &text[stale.end..]);
+            added.push(*name);
+            continue;
+        }
+        let indent = child_indent(&text, array.start);
+        let entry = pretty(command, *matcher, &indent, &unit(&text), eol(&text));
+        text = insert_item(&text, array, &entry);
+        added.push(*name);
     }
     Ok((text, added))
 }

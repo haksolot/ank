@@ -276,7 +276,7 @@ impl Repo {
                 // are what is compared.
                 argv.trim()
                     .replace(&self.0.display().to_string(), "<repo>")
-                    .split(|c: char| c == '\'' || c == ' ' || c == '^')
+                    .split(['\'', ' ', '^'])
                     .map(
                         |w| match w.len() == 40 && w.bytes().all(|b| b.is_ascii_hexdigit()) {
                             true => "<sha>",

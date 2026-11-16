@@ -151,7 +151,7 @@ where
 
     let matches: Vec<&EntityId> = ids
         .into_iter()
-        .filter(|id| kind_filter.map_or(true, |k| id.kind() == k))
+        .filter(|id| kind_filter.is_none_or(|k| id.kind() == k))
         .filter(|id| id.hex().starts_with(&hex_prefix))
         .collect();
 

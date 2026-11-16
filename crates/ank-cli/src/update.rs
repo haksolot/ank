@@ -449,7 +449,7 @@ fn installer(version: Version, dir: &Path) -> Result<(Children, String)> {
 /// PATH is a batch file.
 fn encoded_command(script: &str) -> String {
     let mut units: Vec<u16> = script.encode_utf16().collect();
-    while units.len() % 3 != 0 {
+    while !units.len().is_multiple_of(3) {
         units.push(u16::from(b' '));
     }
     let bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();

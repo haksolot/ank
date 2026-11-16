@@ -514,10 +514,7 @@ pub fn parse_duration(text: &str) -> std::result::Result<Duration, String> {
     if t.is_empty() {
         return Err("empty duration".to_string());
     }
-    let (digits, unit) = t.split_at(
-        t.find(|c: char| !c.is_ascii_digit())
-            .unwrap_or_else(|| t.len()),
-    );
+    let (digits, unit) = t.split_at(t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len()));
     if digits.is_empty() {
         return Err(format!("duration '{text}': digit expected before the unit"));
     }
@@ -735,7 +732,7 @@ pub fn read(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
             }
             for glob in inputs {
                 if glob.trim().is_empty()
-                    || ank_core::scope::validate_globs(&[glob.clone()]).is_err()
+                    || ank_core::scope::validate_globs(std::slice::from_ref(glob)).is_err()
                 {
                     return Err(CliError::new(
                         ExitCode::Generic,
@@ -2349,11 +2346,12 @@ fn write_nested(
             .indent
             .and_then(|g| find_key(lines, block.range.clone(), g, seg));
         let Some(j) = found else {
-            let mut at = block.range.end;
-            if at == lines.len() {
+            let end = block.range.end;
+            if end == lines.len() {
                 terminate_last(lines, &eol);
             }
             for (m, s) in path[k..].iter().enumerate() {
+                let at = end + m;
                 let pad = " ".repeat(indent + 2 * m);
                 let text = if k + m + 1 == path.len() {
                     format!("{pad}{s}: {}", render_value(value, verbatim, None))
@@ -2367,7 +2365,6 @@ fn write_nested(
                         eol: eol.clone(),
                     },
                 );
-                at += 1;
             }
             return Ok(());
         };
@@ -3366,7 +3363,7 @@ fn git_config(repo: &crate::repo::Repo, key: &str) -> Option<String> {
 fn key_from_flag(value: &str) -> Result<String> {
     let path = Path::new(value);
     if path.is_file() {
-        let text = std::fs::read_to_string(&path)
+        let text = std::fs::read_to_string(path)
             .map_err(|e| CliError::new(ExitCode::Generic, format!("{}: {e}", path.display())))?;
         return public_key(&text).ok_or_else(|| {
             CliError::new(

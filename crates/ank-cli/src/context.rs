@@ -470,9 +470,7 @@ pub(crate) fn peer_bearing(
         }
     }
     for section in &mut out {
-        section
-            .constraints
-            .sort_by(|a, b| a.id.to_string().cmp(&b.id.to_string()));
+        section.constraints.sort_by_key(|a| a.id.to_string());
     }
     out.sort_by(|a, b| a.peer.cmp(&b.peer));
     out
@@ -2238,7 +2236,7 @@ pub fn render_json(view: &View, budget: usize) -> String {
                 .opt_str("home", c.home.as_deref())
                 .strings(
                     "amended_by",
-                    &c.amended_by
+                    c.amended_by
                         .iter()
                         .map(|a| a.id.to_string())
                         .collect::<Vec<_>>(),

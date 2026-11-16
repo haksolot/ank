@@ -1,3 +1,15 @@
 [workspace]
 members = ["crates/ank-core", "crates/ank-contract", "crates/ank-cli", "crates/ank-mcp", "crates/ank-daemon", "crates/ank-tui"]
 resolver = "2"
+
+# Clippy runs in CI with `-D warnings` on every platform, so a lint is either
+# satisfied or allowed here, by name and with its reason, never left to scroll
+# past. Every crate inherits this table through `[lints] workspace = true`.
+[workspace.lints.clippy]
+# A verb or a renderer takes the repository, the config, the identity and the
+# writer it was handed, and bundling them into a struct to reach seven would
+# name nothing a reader needs.
+too_many_arguments = "allow"
+# The flagged types are tuples and closures read once, beside their use; a
+# `type` alias would move their meaning away from the only place it is read.
+type_complexity = "allow"

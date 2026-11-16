@@ -59,6 +59,11 @@
 //! facts about a process and a git repository, so all three are asserted
 //! against a real one.
 
+// The driven session is `#[cfg(unix)]`, and the fixture it drives with is
+// shared with the tests that run everywhere: off unix, the parts only the
+// session reaches are unused, and that is the platform split, not dead code.
+#![cfg_attr(not(unix), allow(dead_code))]
+
 #[cfg(unix)]
 use crate::fixture;
 use crate::scratch;

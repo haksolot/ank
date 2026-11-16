@@ -8857,7 +8857,7 @@ fn detached(
             .str("task", &id.to_string())
             .obj(
                 "attached",
-                Obj::new().str("type", &kind).str("ref", &reference),
+                Obj::new().str("type", kind).str("ref", &reference),
             )
             .num("detached_proofs", entries)
             .bool("pushed", written.sync == claim::Sync::Pushed)

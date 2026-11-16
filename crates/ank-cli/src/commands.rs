@@ -2084,7 +2084,7 @@ pub fn scope(
     identity: &str,
     out: &mut dyn Write,
 ) -> Result<ExitCode> {
-    if inv.positionals.first().is_none() {
+    if inv.positionals.is_empty() {
         return Err(
             CliError::new(ExitCode::Generic, "scope needs a path").with_hint("ank scope <path>")
         );

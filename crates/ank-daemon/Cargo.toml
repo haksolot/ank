@@ -42,3 +42,6 @@ ank-contract = { path = "../ank-contract" }
 # pair -- so no third-party code enters the tree for the daemon (§13).
 serde = { version = "=1.0.210", features = ["derive"] }
 serde_yaml = "0.9"
+
+[lints]
+workspace = true

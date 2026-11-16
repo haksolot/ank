@@ -73,3 +73,6 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # go through `serde_json` now. Already a dependency of `ank-core` and `ank-cli`,
 # so this one is not spent either.
 serde_yaml = "0.9"
+
+[lints]
+workspace = true

@@ -181,11 +181,9 @@ fn handle(line: &str, reach: &corpora::Reach) -> Option<String> {
     let id = request.get("id").cloned().filter(|v| !v.is_null());
     let id_json = id.as_ref().map(render_id);
 
-    if id_json.is_none() {
-        // A notification. `initialized` is the only one that matters and it wants
-        // silence, not acknowledgement.
-        return None;
-    }
+    // A notification. `initialized` is the only one that matters and it wants
+    // silence, not acknowledgement.
+    id_json.as_ref()?;
 
     match method {
         "initialize" => Some(result(

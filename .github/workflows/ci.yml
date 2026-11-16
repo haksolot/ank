@@ -156,7 +156,7 @@ jobs:
       # rustup preinstalled on the runners reads that file, so a toolchain
       # action would be one more dependency in the supply chain for nothing;
       # `rustup toolchain install` with no argument installs the pinned one,
-      # rustfmt included. The step then refuses a rustc that is not that
+      # rustfmt and clippy included. The step then refuses a rustc that is not that
       # version, so the log line is checked and not only printed.
       - name: versions
         if: env.RUN == 'true'
@@ -280,6 +280,14 @@ jobs:
           mise x -- cargo nextest --version
 
       - run: cargo fmt --check
+        if: env.RUN == 'true'
+
+      # On all three legs, because part of this workspace is behind `cfg(unix)`
+      # or `cfg(windows)`, and a lint on code one platform never compiles is a
+      # lint nobody sees. `-D warnings` makes a warning a red leg: what is
+      # allowed is allowed by name in the workspace's `[lints]` table. Before
+      # the suite, so a lint fails the leg without waiting on the tests.
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
         if: env.RUN == 'true'
 
       # The `ci` profile of .config/nextest.toml runs every test to the end, and

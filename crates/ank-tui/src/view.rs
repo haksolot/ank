@@ -10730,8 +10730,7 @@ pub(crate) mod tests {
                 "{window:?}: the list is not longer than its window, so this \
                  asserts nothing about scrolling it"
             );
-            for row in 0..lines.len() {
-                let (text, binding) = lines[row].clone();
+            for (row, (text, binding)) in lines.iter().cloned().enumerate() {
                 let at = scrolled_to(&mut a, row);
                 assert_eq!(
                     a.list_at(at).map(|b| b.entry()),
