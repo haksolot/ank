@@ -1370,7 +1370,13 @@ fn skills_run(args: &[&str], path: &Path, tmp: &Path, record: &Path) -> Output {
         // which sits inside this repository's corpus: run there, the listing
         // would carry the report a corpus earns (ADR-a8f9c603a0e7), and these
         // tests are about the catalogue a verb prints outside one.
-        let out = Command::new(env!("CARGO_BIN_EXE_ank"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ank"));
+        for (name, _) in std::env::vars_os() {
+            if agent_detecting(&name.to_string_lossy()) {
+                command.env_remove(&name);
+            }
+        }
+        let out = command
             .args(args)
             .current_dir(tmp)
             .env("PATH", path)
@@ -1389,6 +1395,33 @@ fn skills_run(args: &[&str], path: &Path, tmp: &Path, record: &Path) -> Output {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     panic!("the stub npx stayed busy through five runs");
+}
+
+/// **Whether the `skills` CLI reads `name` as a sign that an agent is running
+/// it.** It answers its own selection prompt when it detects one, so a suite run
+/// from an agent's session would pass with an argv that asks a human terminal a
+/// question nobody answers (GitHub #776). The prefixes are the ones the
+/// detection library of `skills` 1.7.6 reads; every run here strips them, so
+/// the verb is measured as a human terminal launches it.
+fn agent_detecting(name: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "AI_AGENT",
+        "ANTIGRAVITY",
+        "AUGMENT_",
+        "CLAUDE",
+        "CODEX",
+        "COPILOT_",
+        "COWORK",
+        "CURSOR",
+        "DEVIN",
+        "GEMINI",
+        "GITHUB_COPILOT",
+        "OPENCODE",
+        "REPLIT",
+        "REPL_ID",
+    ];
+    let name = name.to_ascii_uppercase();
+    PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
 /// The directory `--install` says it wrote, read off its first line.
@@ -1552,7 +1585,9 @@ fn ank_skills_json_outside_a_corpus_carries_the_catalogue_and_no_counts() {
 /// **`--install` writes every skill, hands the directory to npx, and exits with
 /// npx's code.** The stub is what proves the argv, and what it records is read
 /// back rather than the code that builds the command: `skills`, `add`, the
-/// directory, and nothing after it; `npm_config_yes` set; the files already
+/// directory and `-y`, which answers the selection prompt the skills CLI
+/// otherwise refuses without a terminal (GitHub #776), run with no variable
+/// that would let it detect an agent instead; `npm_config_yes` set; the files already
 /// written when npx started; and a standard input that answered nothing.
 ///
 /// Every embedded body is compared byte for byte with the tree's file here,
@@ -1589,7 +1624,7 @@ fn ank_skills_install_runs_npx_on_the_directory_it_wrote() {
         .collect();
     assert_eq!(
         args,
-        ["skills", "add", dir.to_string_lossy().as_ref()],
+        ["skills", "add", dir.to_string_lossy().as_ref(), "-y"],
         "the argv npx received:\n{recorded}"
     );
     for fact in ["yes:1", "written:yes", "stdin:closed"] {

@@ -5,7 +5,7 @@ slug: ank-skills-install-installs-from-a-human-termina
 title: "ank skills --install installs from a human terminal: npx skills add gets -y"
 created: 2026-11-16T08:06:58Z
 author: claude-code/plan
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/skills.rs
   - crates/ank-cli/tests/skill.rs
@@ -16,7 +16,7 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 schema: 4
-version: 1
+version: 2
 ---
 
 GitHub #776.
