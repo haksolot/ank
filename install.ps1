@@ -31,8 +31,10 @@ Exit codes, so a caller can branch on the failure rather than on the message:
   1  usage, or a directory that cannot be written
   2  unsupported platform
   3  the download failed, or the release does not carry this archive
-  4  the checksum did not match the one the release published
-  5  a runtime this script needs is missing
+  4  the checksum did not match the one the release published, or the build
+     provenance was checked and did not verify
+  5  a runtime this script needs is missing, gh included under
+     -RequireProvenance
 
 -NoWelcome, or ANK_NO_WELCOME in the environment, turns off everything this
 script draws for a human and everything it asks one, and leaves only the lines
@@ -54,6 +56,7 @@ param(
     [string]$Version,
     [string]$Dir,
     [switch]$NoWelcome,
+    [switch]$RequireProvenance,
     [switch]$Help
 )
 
@@ -172,6 +175,10 @@ function Show-Usage {
     Say '                      $env:LOCALAPPDATA\Programs\ank'
     Say '  -NoWelcome          draw nothing and ask nothing; install exactly what an'
     Say '                      interactive run that declined every offer installs'
+    Say '  -RequireProvenance  refuse unless gh verifies the build provenance of the'
+    Say '                      archive; without it, provenance is checked when a'
+    Say '                      signed-in gh is on PATH and the checksum stands alone'
+    Say '                      otherwise'
     Say '  -Help               print this and exit'
     Say ''
     Say 'environment:'
@@ -182,6 +189,8 @@ function Show-Usage {
     Say '  ANK_BASE_URL        where the archives are fetched from, for a mirror or a'
     Say '                      staged release; requires -Version, since only GitHub'
     Say '                      can be asked which release is the latest'
+    Say '  ANK_REQUIRE_PROVENANCE'
+    Say '                      same as -RequireProvenance'
     Say ''
     Say 'platforms:'
     Say "  Windows x64         $WindowsTarget"
@@ -926,6 +935,7 @@ if ($PSVersionTable.PSVersion.Major -lt 5) {
 if (-not $Version -and $env:ANK_VERSION) { $Version = $env:ANK_VERSION }
 if (-not $Dir -and $env:ANK_INSTALL_DIR) { $Dir = $env:ANK_INSTALL_DIR }
 $BaseUrl = $env:ANK_BASE_URL
+if ($env:ANK_REQUIRE_PROVENANCE) { $RequireProvenance = $true }
 
 if ($BaseUrl) {
     if ($BaseUrl -notmatch '^https?://') {
@@ -1105,6 +1115,82 @@ try {
     }
 
     Ok "checksum ok  $actual"
+
+    # Build provenance, which is what the checksum is not, on the terms
+    # install.sh states at the same place: whoever can replace an archive on
+    # the release page can replace its .sha256, and cannot forge the
+    # attestation GitHub signs for the workflow run that built it. A signed-in
+    # gh is asked, pinned to this repository and to that workflow, and a failure
+    # refuses with or without -RequireProvenance. A release at or below 0.9.4
+    # predates the attestations. Which check was made is said in one line.
+    $attestedAfter = [version]'0.9.4'
+    $signer = "$Repo/.github/workflows/release.yml"
+    $releaseNumber = $null
+    try { $releaseNumber = [version](($bare -split '[-+]')[0]) } catch { }
+    $provenance = ''
+    if (-not $releaseNumber -or $releaseNumber -le $attestedAfter) {
+        $provenance = "$tag predates build provenance"
+    } elseif (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        $provenance = 'gh is not on PATH, so provenance was not checked'
+    } else {
+        $global:LASTEXITCODE = 0
+        try { & gh auth status 2>&1 | Out-Null } catch { }
+        if ($LASTEXITCODE -ne 0) {
+            $provenance = 'gh is not signed in, so provenance was not checked'
+        } else {
+            $global:LASTEXITCODE = 0
+            $said = @()
+            try {
+                $said = @(& gh attestation verify $archivePath --repo $Repo --signer-workflow $signer 2>&1 |
+                    ForEach-Object { "$_" })
+            } catch {
+                $said += "$($_.Exception.Message)"
+                $global:LASTEXITCODE = 1
+            }
+            if ($LASTEXITCODE -ne 0) {
+                Say ''
+                foreach ($line in $said) { Say "  $line" }
+                Fail 4 @(
+                    "the build provenance of $archive did not verify, refusing to unpack it.",
+                    '',
+                    "  gh attestation verify $archive --repo $Repo --signer-workflow $signer",
+                    '',
+                    'The archive matches the checksum published beside it, and no attestation',
+                    "of this repository's release workflow vouches for it. Nothing was",
+                    'unpacked and nothing was installed. Do not install this archive, and say so:',
+                    "  https://github.com/$Repo/security"
+                )
+            }
+        }
+    }
+
+    if ($provenance -and $RequireProvenance) {
+        if ($provenance -like '*predates*') {
+            Fail 4 @(
+                "-RequireProvenance: $provenance.",
+                '',
+                "Releases above v$attestedAfter carry an attestation per archive. Pick one:",
+                "  & ([scriptblock]::Create((irm $RawUrl))) -Version <version> -RequireProvenance",
+                '',
+                'Nothing was installed.'
+            )
+        }
+        Fail 5 @(
+            "-RequireProvenance: $provenance.",
+            '',
+            'The check is gh attestation verify, which needs gh signed in:',
+            '  https://cli.github.com',
+            '  gh auth login',
+            '',
+            'Nothing was installed.'
+        )
+    }
+
+    if ($provenance) {
+        Ok "verified: sha256 only  ($provenance)"
+    } else {
+        Ok 'verified: sha256 and provenance'
+    }
 
     try {
         Expand-Zip -Path $archivePath -Destination $tmp

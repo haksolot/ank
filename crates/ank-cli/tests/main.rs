@@ -51,6 +51,7 @@ mod init_origin;
 mod init_refspec;
 mod init_requires_ank;
 mod init_wal_ignore;
+mod install_provenance;
 mod log_rewritten;
 mod mcp;
 mod new_scope_hint;

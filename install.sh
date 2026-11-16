@@ -28,8 +28,10 @@
 #   1  usage, or a directory that cannot be written
 #   2  unsupported platform
 #   3  the download failed, or the release does not carry this archive
-#   4  the checksum did not match the one the release published
-#   5  a tool this script needs is missing
+#   4  the checksum did not match the one the release published, or the
+#      build provenance was checked and did not verify
+#   5  a tool this script needs is missing, gh included under
+#      --require-provenance
 #
 # --no-welcome, or ANK_NO_WELCOME in the environment, turns off everything this
 # script draws for a human and everything it asks one, and leaves only the
@@ -448,6 +450,10 @@ options:
   --dir <path>         install into <path> instead of \$HOME/.local/bin
   --no-welcome         draw nothing and ask nothing; install exactly what an
                        interactive run that declined every offer installs
+  --require-provenance refuse unless gh verifies the archive's build
+                       provenance; without it, provenance is checked when a
+                       signed-in gh is on PATH and the checksum stands alone
+                       otherwise
   -h, --help           print this and exit
 
 environment:
@@ -458,6 +464,8 @@ environment:
   ANK_BASE_URL         where the archives are fetched from, for a mirror or a
                        staged release; requires --version, since only GitHub
                        can be asked which release is the latest
+  ANK_REQUIRE_PROVENANCE
+                       same as --require-provenance
 
 platforms:
 $(supported_lines)
@@ -477,7 +485,8 @@ the two questions:
   either does can change any of the codes below.
 
 exit codes:
-  1 usage   2 unsupported platform   3 download   4 checksum   5 missing tool
+  1 usage   2 unsupported platform   3 download   4 checksum or provenance
+  5 missing tool
 EOF
 }
 
@@ -577,6 +586,20 @@ lower() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+# `newer_than <a> <b>`: whether release a is above release b, read as
+# MAJOR.MINOR.PATCH with any prerelease or build suffix set aside. awk rather
+# than `sort -V`, which busybox and macOS do not both have.
+newer_than() {
+  awk -v a="${1%%[-+]*}" -v b="${2%%[-+]*}" 'BEGIN {
+    split(a, x, "."); split(b, y, ".")
+    for (i = 1; i <= 3; i++) {
+      if (x[i] + 0 > y[i] + 0) exit 0
+      if (x[i] + 0 < y[i] + 0) exit 1
+    }
+    exit 1
+  }'
+}
+
 # --------------------------------------------------------------------------
 # Downloading
 # --------------------------------------------------------------------------
@@ -650,6 +673,8 @@ install_dir=${ANK_INSTALL_DIR:-}
 base_url=${ANK_BASE_URL:-}
 no_welcome=no
 [ -z "${ANK_NO_WELCOME:-}" ] || no_welcome=yes
+require_provenance=no
+[ -z "${ANK_REQUIRE_PROVENANCE:-}" ] || require_provenance=yes
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -675,6 +700,10 @@ while [ $# -gt 0 ]; do
       ;;
     --no-welcome)
       no_welcome=yes
+      shift
+      ;;
+    --require-provenance)
+      require_provenance=yes
       shift
       ;;
     -h | --help)
@@ -835,6 +864,70 @@ if [ "$expected" != "$actual" ]; then
 fi
 
 ok "checksum ok  ${ui_dim}${actual}${ui_off}"
+
+# Build provenance, which is what the checksum is not. Whoever can replace an
+# archive on the release page can replace the .sha256 beside it; neither can
+# forge the attestation release.yml records for every archive it builds,
+# because that is signed by GitHub for the workflow run that built the file.
+# So a gh that can ask the API is asked, pinned to this repository and to the
+# workflow that builds, and a failure is a refusal whether or not the caller
+# asked for the check: an archive that matched its hash and failed the
+# stronger test is the one case this exists for.
+#
+# A release at or below 0.9.4 was published before the attestations, so for it
+# the question has no answer to ask for. Which check was made is said in one
+# line, every time, so a log shows what an install rested on.
+attested_after=0.9.4
+signer="${repo}/.github/workflows/release.yml"
+if ! newer_than "$bare" "$attested_after"; then
+  provenance="${tag} predates build provenance"
+elif ! have gh; then
+  provenance="gh is not on PATH, so provenance was not checked"
+elif ! gh auth status >/dev/null 2>&1; then
+  provenance="gh is not signed in, so provenance was not checked"
+elif gh attestation verify "${tmp}/${archive}" --repo "$repo" \
+  --signer-workflow "$signer" >"${tmp}/attestation" 2>&1; then
+  provenance=""
+else
+  say ""
+  sed 's/^/  /' "${tmp}/attestation" >&2
+  die 4 "the build provenance of ${archive} did not verify, refusing to unpack it." \
+    "" \
+    "  gh attestation verify ${archive} --repo ${repo} --signer-workflow ${signer}" \
+    "" \
+    "The archive matches the checksum published beside it, and no attestation" \
+    "of this repository's release workflow vouches for it. Nothing was" \
+    "unpacked and nothing was installed. Do not install this archive, and say so:" \
+    "  https://github.com/${repo}/security"
+fi
+
+if [ -n "$provenance" ] && [ "$require_provenance" = yes ]; then
+  case "$provenance" in
+    *predates*)
+      die 4 "--require-provenance: ${provenance}." \
+        "" \
+        "Releases above v${attested_after} carry an attestation per archive. Pick one:" \
+        "  install.sh --version <version> --require-provenance" \
+        "" \
+        "Nothing was installed."
+      ;;
+    *)
+      die 5 "--require-provenance: ${provenance}." \
+        "" \
+        "The check is gh attestation verify, which needs gh signed in:" \
+        "  https://cli.github.com" \
+        "  gh auth login" \
+        "" \
+        "Nothing was installed."
+      ;;
+  esac
+fi
+
+if [ -n "$provenance" ]; then
+  ok "verified: sha256 only  ${ui_dim}(${provenance})${ui_off}"
+else
+  ok "verified: sha256 and provenance"
+fi
 
 tar xzf "${tmp}/${archive}" -C "$tmp" ||
   die 3 "could not unpack ${archive}." "" "Nothing was installed."

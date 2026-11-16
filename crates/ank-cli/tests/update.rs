@@ -473,9 +473,36 @@ fn the_check_document_is_pinned_by_a_golden() {
 /// The executable's file name on this platform.
 const EXE: &str = if cfg!(windows) { "ank.exe" } else { "ank" };
 
-/// The raw URL each installer is fetched from, as the README documents it.
-const INSTALL_SH: &str = "https://raw.githubusercontent.com/haksolot/ank/main/install.sh";
-const INSTALL_PS1: &str = "https://raw.githubusercontent.com/haksolot/ank/main/install.ps1";
+/// The raw URL an installer is fetched from at `git_ref`: the tag of the
+/// release it installs, or `main` for a release older than the tagged route
+/// (TASK-1ea826115f7a, GitHub #789).
+fn install_sh_at(git_ref: &str) -> String {
+    format!("https://raw.githubusercontent.com/haksolot/ank/{git_ref}/install.sh")
+}
+
+fn install_ps1_at(git_ref: &str) -> String {
+    format!("https://raw.githubusercontent.com/haksolot/ank/{git_ref}/install.ps1")
+}
+
+/// The installer URL a run handed its route: the second argument of `curl`, or
+/// the `irm` argument inside the script PowerShell was handed.
+fn fetched_installer(run: &Run) -> String {
+    let calls = invocations(&run.record);
+    if cfg!(windows) {
+        let script = decoded_command(&args_of(&calls[0].1));
+        script
+            .split_once("irm ")
+            .and_then(|(_, rest)| rest.split(')').next().map(str::to_string))
+            .unwrap_or_else(|| panic!("no irm in: {script}"))
+    } else {
+        let curl = &calls
+            .iter()
+            .find(|(n, _)| n == "curl")
+            .unwrap_or_else(|| panic!("no curl started: {:?}", run.record))
+            .1;
+        args_of(curl)[1].clone()
+    }
+}
 
 /// A copy of the built binary at `rel` under a fresh directory, which is where
 /// the route under test would have placed it. A copy and never a link: the
@@ -602,7 +629,11 @@ fn a_released_binary_runs_the_installer_and_exits_with_its_code() {
         let names: Vec<&str> = calls.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["powershell"], "{:?}", run.record);
         let script = decoded_command(&args_of(&calls[0].1));
-        for needle in [INSTALL_PS1, "-Version v9000.10.0", "-NoWelcome"] {
+        for needle in [
+            install_ps1_at("v9000.10.0").as_str(),
+            "-Version v9000.10.0",
+            "-NoWelcome",
+        ] {
             assert!(script.contains(needle), "{needle} is not in: {script}");
         }
         let given = script
@@ -619,13 +650,60 @@ fn a_released_binary_runs_the_installer_and_exits_with_its_code() {
             "{names:?}"
         );
         let curl = &calls.iter().find(|(n, _)| n == "curl").unwrap().1;
-        assert_eq!(args_of(curl), ["-fsSL", INSTALL_SH]);
+        assert_eq!(
+            args_of(curl),
+            ["-fsSL", install_sh_at("v9000.10.0").as_str()]
+        );
         let sh = &calls.iter().find(|(n, _)| n == "sh").unwrap().1;
         let args = args_of(sh);
         assert_eq!(args.len(), 7, "{args:?}");
         assert_eq!(args[..5], ["-s", "--", "--version", "v9000.10.0", "--dir"]);
         assert_eq!(args[6], "--no-welcome");
         assert_same_directory(&args[5], &dir);
+    }
+}
+
+/// **The installer is the one of the release it installs**: fetched at the tag
+/// `v<version>`, so a commit to `main` reaches nobody's `update` before it is
+/// released. A release at or below 0.9.4 predates that, and its tagged script
+/// may not take the flags `update` passes, so it is fetched from `main` as
+/// before (GitHub #789).
+#[test]
+fn the_installer_is_fetched_at_the_tag_it_installs_and_from_main_before_that() {
+    for (version, git_ref) in [
+        ("9000.10.0", "v9000.10.0"),
+        ("0.9.5", "v0.9.5"),
+        ("v0.10.0", "v0.10.0"),
+        ("0.9.4", "main"),
+        ("0.1.0", "main"),
+    ] {
+        let bare = release_repository("update-tagged", NEWER_TAGS);
+        let exe = placed("update-tagged-bin", "bin");
+        let dir = exe.parent().unwrap().to_path_buf();
+        let run = install(
+            &exe,
+            &bare,
+            &["--version", version],
+            &[("ANK_STUB_CODE", os("3")), ("ANK_STUB_DIR", os(&dir))],
+        );
+        assert_eq!(
+            run.code(),
+            Some(3),
+            "{version}: {}{}",
+            run.stdout(),
+            run.stderr()
+        );
+        let wanted = if cfg!(windows) {
+            install_ps1_at(git_ref)
+        } else {
+            install_sh_at(git_ref)
+        };
+        assert_eq!(fetched_installer(&run), wanted, "--version {version}");
+        assert!(
+            run.stdout().contains(&wanted),
+            "--version {version}: the line naming the route does not name {wanted}:\n{}",
+            run.stdout()
+        );
     }
 }
 
@@ -888,7 +966,8 @@ fn an_installed_binary_that_does_not_answer_exits_non_zero_naming_the_repair() {
     assert_names_the_executable(&stderr, " did not answer --version after the install", &exe);
     assert!(
         stderr.contains(&format!(
-            "curl -fsSL {INSTALL_SH} | sh -s -- --version v9000.10.0"
+            "curl -fsSL {} | sh -s -- --version v9000.10.0",
+            install_sh_at("v9000.10.0")
         )),
         "the refusal does not name the installer that repairs it:\n{stderr}"
     );

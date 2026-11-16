@@ -294,6 +294,57 @@ jobs:
             dist/*/ank.exe
           if-no-files-found: error
 
+  # Build provenance for every archive, which is what the `.sha256` beside it is
+  # not: whoever can replace an asset on the release page can replace its hash
+  # too, and cannot forge an attestation GitHub signs for this workflow run.
+  # `gh attestation verify <archive> --repo haksolot/ank` then says which run
+  # built a file, and install.sh and install.ps1 ask it when gh is there.
+  #
+  # A job of its own, holding `id-token: write` and `attestations: write` and
+  # nothing more: `build` runs code from the tree on five machines and stays
+  # read-only, and `contents: write` stays on `publish` alone
+  # (ADR-24e306277bd4). On a dispatch too, so the rehearsal attests the files
+  # it built and the step that checks the result runs before a tag needs it;
+  # an attestation of a dispatch archive is true of that file and names the
+  # branch it came from.
+  attest:
+    name: attest
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+      # Read back the way the installers read it, pinned to this repository and
+      # this workflow, so a rehearsal turns red on an attestation nobody could
+      # verify rather than a tag discovering it.
+      - name: every archive verifies
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          count=0
+          for archive in dist/*.tar.gz dist/*.zip; do
+            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
+            count=$((count + 1))
+          done
+          echo "$count archives carry verified build provenance"
+          test "$count" -eq 5
+
   # The npm channel exists for the workstation whose firewall blocks downloading
   # a bare executable but lets the registry through, so the binaries travel
   # inside the platform packages and nothing is fetched at install time
@@ -634,7 +685,9 @@ jobs:
     # channel and npm is a convenience on top of it, so a broken wrapper costs
     # the npm packages and not the release. The reverse would hold the binaries
     # hostage to a JavaScript shim.
-    needs: build
+    # And after `attest`: a release whose archives carry no provenance would be
+    # one the installers' --require-provenance refuses whole.
+    needs: [build, attest]
     # And only for a tag. A dispatch run builds and stops there.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest

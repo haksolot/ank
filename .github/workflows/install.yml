@@ -1216,6 +1216,74 @@ jobs:
           "-NoWelcome is accepted, and changes nothing"
           exit 0
 
+      # Build provenance, the half of GitHub #789 the cargo suite cannot reach
+      # on this platform: install.sh is driven end to end there
+      # (crates/ank-cli/tests/install_provenance.rs) and install.ps1 here, on
+      # the same staged release and with the same stub. `gh` is a .cmd ahead of
+      # the runner's real one on PATH, recording its arguments and answering
+      # what each case sets, and GH_TOKEN is absent so the real gh, reached in
+      # the last case, is the one that is not signed in.
+      - name: provenance is checked when gh can, said in one line, and refused when asked
+        env:
+          ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
+        run: |
+          $stub = Join-Path $PWD 'gh-stub'
+          New-Item -ItemType Directory -Force -Path $stub | Out-Null
+          Set-Content -Path (Join-Path $stub 'gh.cmd') -Encoding ascii -Value @(
+            '@echo off',
+            '>> "%ANK_GH_RECORD%" echo(%*',
+            'if "%1 %2"=="auth status" exit /b %ANK_GH_AUTH%',
+            'if "%1 %2"=="attestation verify" exit /b %ANK_GH_VERIFY%',
+            'exit /b 0'
+          )
+          $realPath = $env:PATH
+          $env:ANK_GH_RECORD = Join-Path $PWD 'gh-record.txt'
+          $bad = 0
+
+          function Invoke-Case($name, $auth, $verify, $useStub, [bool]$require) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $env:ANK_GH_RECORD
+            $env:ANK_GH_AUTH = $auth
+            $env:ANK_GH_VERIFY = $verify
+            $env:PATH = if ($useStub) { "$stub;$realPath" } else { $realPath }
+            $dir = Join-Path $PWD "prov-$name"
+            $global:LASTEXITCODE = 0
+            $out = (& ./install.ps1 -NoWelcome -Version $env:STAGED_VERSION -Dir $dir -RequireProvenance:$require *>&1 | Out-String)
+            $code = $LASTEXITCODE
+            $env:PATH = $realPath
+            Write-Host "--- $name exited $code"
+            Write-Host $out
+            $record = if (Test-Path $env:ANK_GH_RECORD) { Get-Content -Raw $env:ANK_GH_RECORD } else { '' }
+            [pscustomobject]@{ Code = $code; Out = $out; Installed = (Test-Path (Join-Path $dir 'ank.exe')); Gh = $record }
+          }
+
+          $r = Invoke-Case 'verified' 0 0 $true $false
+          Write-Host $r.Gh
+          if ($r.Code -ne 0 -or -not $r.Installed) { 'a verified install failed'; $bad = 1 }
+          if ($r.Out -notmatch 'verified: sha256 and provenance') { 'the verified line is missing'; $bad = 1 }
+          if ($r.Gh -notmatch 'attestation verify \S+ank-[^ ]+\.zip --repo haksolot/ank --signer-workflow haksolot/ank/\.github/workflows/release\.yml') {
+            "gh was not asked about the downloaded archive, pinned: $($r.Gh)"; $bad = 1
+          }
+
+          $r = Invoke-Case 'refused' 0 1 $true $false
+          if ($r.Code -ne 4 -or $r.Installed) { "an attestation that failed did not refuse with 4 ($($r.Code))"; $bad = 1 }
+          if ($r.Out -notmatch 'gh attestation verify') { 'the refusal does not name the command'; $bad = 1 }
+
+          $r = Invoke-Case 'unsigned' 1 0 $true $false
+          if ($r.Code -ne 0 -or -not $r.Installed) { 'an unsigned gh failed the install'; $bad = 1 }
+          if ($r.Out -notmatch 'verified: sha256 only') { 'the sha256-only line is missing'; $bad = 1 }
+          if ($r.Gh -match 'attestation verify') { 'verify ran with no credential'; $bad = 1 }
+
+          $r = Invoke-Case 'required' 1 0 $true $true
+          if ($r.Code -ne 5 -or $r.Installed) { "-RequireProvenance with no usable gh did not refuse with 5 ($($r.Code))"; $bad = 1 }
+
+          $r = Invoke-Case 'realgh' 0 0 $false $false
+          if ($r.Code -ne 0 -or -not $r.Installed) { 'the install with the runner gh failed'; $bad = 1 }
+          if ($r.Out -notmatch 'verified: sha256 only') { 'with no credential the line is not sha256 only'; $bad = 1 }
+
+          if ($bad) { exit 1 }
+          'verified, refused, unsigned, required and the real gh each say what they checked'
+          exit 0
+
       # What ADR-1ea31c2f3c5a asks for, measured where the criterion puts it:
       # not that the script contains a line saying one file lands, but that the
       # directory it installed into holds exactly one, and that it runs.
