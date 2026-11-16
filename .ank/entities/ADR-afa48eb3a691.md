@@ -5,7 +5,7 @@ slug: a-config-write-is-warned-at-the-verb-and-never-s
 title: A config write is warned at the verb and never signalled by check, since nothing records its actor
 created: 2026-11-16T12:56:46Z
 author: claude-code/plan
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/config.rs
@@ -13,8 +13,13 @@ scope:
 constraint: |
   check signals, as the kind role, only the acts the corpus records with their actor: an accept, a close, a constraint edit, a new entity. A write to roles, identities, permissions, check or ratify through ank config is warned at the verb under warn or deny, and refused by the hook under deny, and check does not signal it, because ADR-e64dfaafd578 keeps the writer from recording anything beside config.yml and no other record carries who wrote it.
 amends: [ADR-ddbe024ca7f2]
+ratified: ec0042602d99
+anchor: b35df0c5bf86184c80c8498c6c6afda4d763475f
+verified:
+  - by: claude-code/opus-5.5
+    at: 2026-11-16T13:14:14Z
 schema: 4
-version: 3
+version: 4
 ---
 
 ## Context
