@@ -156,5 +156,16 @@ pub fn config_keys_page() -> String {
             key.note.to_string(),
         ]));
     }
+    page.push_str(
+        "\n## The role vocabulary\n\n\
+         Every entry of `roles.<name>.can` and `roles.<name>.cannot` is one of these \
+         words, and `ank check` faults `config.yml` on a word outside them. An act is \
+         forbidden to an identity when its role lists it under `cannot`, or has a `can` \
+         list other than `[\"*\"]` that omits it; an identity absent from `identities` \
+         has the role `agent`.\n\n",
+    );
+    for (word, act) in config::ROLE_WORDS {
+        page.push_str(&format!("- {}: {act}\n", code(word)));
+    }
     page
 }
