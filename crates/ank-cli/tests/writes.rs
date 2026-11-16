@@ -131,6 +131,16 @@ fn ank(dir: &Path, agent: &str, args: &[&str]) -> Output {
         .env("HOME", &home)
         .env("USERPROFILE", &home)
         .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
+        // Every directory a verb could write the reader's state into, under
+        // the same scratch home: the `outside` measurement counts what lands
+        // here, and a directory left pointing at the machine's would let a
+        // write escape the count rather than fail it.
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("XDG_STATE_HOME", home.join(".local/state"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("APPDATA", home.join("AppData/Roaming"))
+        .env("LOCALAPPDATA", home.join("AppData/Local"))
         .env(
             "ANK_UPDATE_REPOSITORY",
             dir.parent().unwrap().join("no-release.git"),
@@ -232,6 +242,26 @@ fn declarations(repo: &Path) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
+/// Each verb and what it declares writing outside the corpus, read back from
+/// the binary as [`declarations`] reads `writes`.
+fn outside_declarations(repo: &Path) -> Vec<(String, Option<String>)> {
+    let out = ank(repo, AGENT, &["help", "--json"]);
+    assert!(out.status.success(), "help --json must answer");
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    doc["verbs"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            (
+                v["name"].as_str().unwrap().to_string(),
+                v["outside"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
+
 #[test]
 fn help_json_declares_writes_on_every_verb() {
     let repo = corpus();
@@ -325,4 +355,226 @@ fn a_verb_declaring_nothing_leaves_nothing_under_ank_or_refs_ank() {
         "verbs declaring writes: nothing changed the corpus:\n{}",
         wrote.join("\n")
     );
+}
+
+/// The two values `outside` takes.
+const OUTSIDE_VALUES: &[&str] = &["nothing", "files"];
+
+/// How each verb declaring `outside: nothing` is run, in order, on one corpus:
+/// the corpus writers too, since `outside` is a second question asked of every
+/// verb and `writes` answering it for the corpus says nothing about the home.
+///
+/// **A verb declaring `outside: nothing` with no line here is a red**, as in
+/// [`READERS`]. A line is measured whatever the verb answers: a refusal that
+/// wrote into the home is as much a write as a success that did.
+const QUIET_OUTSIDE: &[(&str, &[&str])] = &[
+    ("context", &["context", "--json"]),
+    ("find", &["find", "task"]),
+    ("status", &["status", "--json"]),
+    ("review", &["review"]),
+    ("graph", &["graph"]),
+    ("scope", &["scope", "src/main.rs"]),
+    ("verify", &["verify"]),
+    ("help", &["help", "--json"]),
+    ("check", &["check"]),
+    ("claim", &["claim", OPEN]),
+    ("show", &["show", OPEN]),
+    ("log", &["log", "measured outside the corpus"]),
+    ("amend", &["amend", OPEN, "--scope", "docs/**"]),
+    ("edit", &["edit", OPEN, "--title", "The open task, renamed"]),
+    ("read", &["read", OPEN]),
+    ("attest", &["attest", OPEN, "--proof", "test:1"]),
+    ("done", &["done", "--proof", "commit:0000000"]),
+    ("release", &["release", OPEN, "--reason", "measured"]),
+    (
+        "new",
+        &[
+            "new",
+            "adr",
+            "--title",
+            "A decision",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "A rule.",
+        ],
+    ),
+    ("accept", &["accept", "ADR-000000000000"]),
+    ("close", &["close", OPEN, "--reason", "measured"]),
+    (
+        "signers",
+        &["signers", "add", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5"],
+    ),
+    ("migrate", &["migrate"]),
+    ("archive", &["archive"]),
+];
+
+/// The verbs declaring `outside: files`, each with the call that shows it or
+/// the reason no test can run one.
+///
+/// A call here must leave something under the scratch home: the positive side
+/// of the measurement, so that `files` is not a word a verb can wear for free
+/// while writing nothing anywhere. `None` is a verb whose write cannot be made
+/// on a scratch machine, with the reason beside it.
+const LOUD_OUTSIDE: &[(&str, Option<&[&str]>, &str)] = &[
+    (
+        "hooks",
+        Some(&["hooks", "install", "claude"]),
+        "the harness's settings.json",
+    ),
+    (
+        "config",
+        Some(&[
+            "config",
+            "--user",
+            "corpora.0000000000000000000000000000000000000000",
+            "/nowhere",
+        ]),
+        "the reader's corpora.yml",
+    ),
+    (
+        "init",
+        None,
+        "a detached init declares the corpus in corpora.yml, and needs a second repository to detach into",
+    ),
+    (
+        "watch",
+        None,
+        "it writes events.jsonl beside watch.yml while it runs, and runs until stopped",
+    ),
+    (
+        "skills",
+        None,
+        "--install hands a directory to npx skills add, which installs from the network",
+    ),
+    (
+        "update",
+        None,
+        "it replaces this binary with a release it downloads",
+    ),
+    (
+        "tui",
+        None,
+        "it composes config --user among the verbs it spells, and needs a terminal to run at all",
+    ),
+    (
+        "mcp",
+        None,
+        "it is the server, and runs any verb a client calls, the writers above included",
+    ),
+];
+
+/// Every file under the scratch home, as a sorted list of paths.
+fn home_files(home: &Path) -> Vec<String> {
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match path.is_dir() {
+                true => walk(&path, base, out),
+                false => out.push(
+                    path.strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                ),
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(home, home, &mut out);
+    out.sort();
+    out
+}
+
+/// Every verb says what it writes outside the corpus, and both answers are
+/// measured under a scratch home and scratch XDG directories (GitHub #781).
+///
+/// **`writes` stays the corpus, as ADR-3c8d94a0bbe0 gives it**, and `outside`
+/// is the second field that answers for everything else: the harness's
+/// settings, the reader's declarations, a skill directory, the binary itself.
+/// A verb declaring `nothing` is run and must leave the home as it found it; a
+/// verb declaring `files` is run where a scratch machine can run it and must
+/// leave something, so neither word can be worn for free.
+#[test]
+fn a_verb_declaring_nothing_outside_leaves_the_home_untouched() {
+    let repo = corpus();
+    let home = repo.parent().unwrap().join("home");
+    let declared = outside_declarations(&repo);
+    let wrong: Vec<String> = declared
+        .iter()
+        .filter(|(_, o)| !o.as_deref().is_some_and(|o| OUTSIDE_VALUES.contains(&o)))
+        .map(|(name, o)| format!("{name}: {o:?}"))
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "every verb declares outside, one of {OUTSIDE_VALUES:?}; these do not: {wrong:?}"
+    );
+    let side = |value: &str| -> Vec<&str> {
+        declared
+            .iter()
+            .filter(|(_, o)| o.as_deref() == Some(value))
+            .map(|(n, _)| n.as_str())
+            .collect()
+    };
+    let (quiet, loud) = (side("nothing"), side("files"));
+    let missing: Vec<&&str> = quiet
+        .iter()
+        .filter(|v| !QUIET_OUTSIDE.iter().any(|(q, _)| q == *v))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these verbs declare outside: nothing and QUIET_OUTSIDE does not run them: {missing:?}"
+    );
+    let mut stale: Vec<&str> = QUIET_OUTSIDE
+        .iter()
+        .map(|(q, _)| *q)
+        .filter(|q| !quiet.contains(q))
+        .collect();
+    stale.dedup();
+    assert!(
+        stale.is_empty(),
+        "QUIET_OUTSIDE runs verbs that declare files: {stale:?}"
+    );
+    let listed: Vec<&str> = LOUD_OUTSIDE.iter().map(|(v, _, _)| *v).collect();
+    let mut a = loud.clone();
+    let mut b = listed.clone();
+    a.sort();
+    b.sort();
+    assert_eq!(
+        a, b,
+        "the verbs declaring outside: files are exactly the ones LOUD_OUTSIDE accounts for"
+    );
+
+    let before = home_files(&home);
+    let mut wrote = Vec::new();
+    for (verb, args) in QUIET_OUTSIDE {
+        ank(&repo, AGENT, args);
+        let after = home_files(&home);
+        if after != before {
+            wrote.push(format!("{verb} ({args:?}): {before:?} -> {after:?}"));
+            let _ = fs::remove_dir_all(&home);
+            fs::create_dir_all(&home).unwrap();
+        }
+    }
+    assert!(
+        wrote.is_empty(),
+        "verbs declaring outside: nothing wrote under the home:\n{}",
+        wrote.join("\n")
+    );
+
+    for (verb, args, what) in LOUD_OUTSIDE {
+        let Some(args) = args else { continue };
+        let before = home_files(&home);
+        let out = ank(&repo, AGENT, args);
+        let after = home_files(&home);
+        assert_ne!(
+            before,
+            after,
+            "{verb} declares outside: files ({what}) and {args:?} left the home as it was: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }

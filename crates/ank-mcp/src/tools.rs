@@ -216,6 +216,25 @@ fn input_schema(spec: &CommandSpec) -> String {
     }
 }
 
+/// The MCP tool annotations of a verb, derived from what the table declares
+/// and from nothing chosen here (GitHub #781, ADR-fd98f4bc6dea).
+///
+/// **All three on every tool, `false` included.** MCP reads an absent
+/// `destructiveHint` and an absent `openWorldHint` as `true`, so leaving a
+/// hint out is not neutral: it tells a client that `ank_find` may destroy and
+/// may reach the internet. `readOnlyHint` is true exactly where the verb
+/// writes nothing into the corpus and nothing outside it; a read-only tool is
+/// never destructive, which is the hint's own definition.
+fn annotations(spec: &CommandSpec) -> String {
+    let read_only = spec.writes == ank_contract::Writes::Nothing
+        && spec.outside == ank_contract::writes::Outside::Nothing;
+    Obj::new()
+        .bool("readOnlyHint", read_only)
+        .bool("destructiveHint", spec.destructive && !read_only)
+        .bool("openWorldHint", spec.open_world)
+        .finish()
+}
+
 /// Every verb, as a tool.
 pub fn list() -> String {
     let tools = COMMANDS.iter().map(|spec| {
@@ -223,6 +242,7 @@ pub fn list() -> String {
             .str("name", &tool_name(spec))
             .str("description", &description(spec))
             .raw("inputSchema", &input_schema(spec))
+            .raw("annotations", &annotations(spec))
             .finish()
     });
     ank_contract::json::array(tools)

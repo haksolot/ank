@@ -1371,3 +1371,196 @@ fn arguments_are_required_exactly_where_the_binary_refuses_without_them() {
     }
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+/// What `help --json` declares about each verb that an annotation is derived
+/// from: `writes`, `outside`, `destructive` and `open_world`, read out of the
+/// binary rather than out of the contract crate.
+fn declared_effects(repo: &Path) -> Vec<(String, String, String, bool, bool)> {
+    let out = ank(repo, &["help", "--json"]);
+    assert!(out.status.success(), "help --json must answer");
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    doc["verbs"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            let word = |k: &str| v[k].as_str().unwrap_or("<absent>").to_string();
+            let flag = |k: &str| {
+                v[k].as_bool()
+                    .unwrap_or_else(|| panic!("help --json gives {} no boolean {k}", word("name")))
+            };
+            (
+                word("name"),
+                word("writes"),
+                word("outside"),
+                flag("destructive"),
+                flag("open_world"),
+            )
+        })
+        .collect()
+}
+
+/// Every tool carries the three hints, each derived from what the table
+/// declares and none chosen in the server (GitHub #781, TASK-144743f1d688).
+///
+/// **All three on every tool, `false` included.** MCP reads an absent
+/// `destructiveHint` and an absent `openWorldHint` as `true`, so a tool that
+/// left them out would tell a client that `ank_find` may destroy and may reach
+/// the internet; the only safe absence is none.
+///
+/// Two readings, because they fail differently. The hints equal the
+/// declarations `help --json` publishes, which is "derived, nothing curated"
+/// (ADR-fd98f4bc6dea). And the declarations say what the criterion names --
+/// `accept`, `close`, `archive` and `migrate` destroy, `update` alone reaches
+/// the open world, and `hooks`, `skills` and `update` are not read-only --
+/// because a table that declared nothing anywhere would satisfy the first
+/// reading by being uniformly wrong.
+#[test]
+fn every_tool_carries_annotations_derived_from_the_table() {
+    let repo = corpus();
+    let declared = declared_effects(&repo);
+    let replies = talk(
+        &repo,
+        &[r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#],
+    );
+    let doc: serde_yaml::Value = serde_yaml::from_str(&replies[0]).unwrap();
+    let tools = doc["result"]["tools"].as_sequence().unwrap();
+    assert_eq!(tools.len(), declared.len());
+    for (tool, (verb, writes, outside, destructive, open_world)) in tools.iter().zip(&declared) {
+        let name = tool["name"].as_str().unwrap();
+        assert_eq!(
+            name,
+            format!("ank_{verb}"),
+            "tools/list is the table, in order"
+        );
+        let hints = &tool["annotations"];
+        let hint = |k: &str| {
+            hints[k]
+                .as_bool()
+                .unwrap_or_else(|| panic!("{name} carries no boolean {k}: {hints:?}"))
+        };
+        let read_only = writes == "nothing" && outside == "nothing";
+        assert_eq!(
+            hint("readOnlyHint"),
+            read_only,
+            "{name}: writes {writes}, outside {outside}"
+        );
+        assert_eq!(
+            hint("destructiveHint"),
+            *destructive && !read_only,
+            "{name}"
+        );
+        assert_eq!(hint("openWorldHint"), *open_world, "{name}");
+    }
+
+    let named = |pick: &dyn Fn(&(String, String, String, bool, bool)) -> bool| {
+        declared
+            .iter()
+            .filter(|d| pick(d))
+            .map(|d| d.0.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        named(&|d| d.3),
+        ["accept", "close", "migrate", "archive"],
+        "the verbs declaring destructive"
+    );
+    assert_eq!(
+        named(&|d| d.4),
+        ["update"],
+        "the verbs declaring open_world"
+    );
+    let read_only = named(&|d| d.1 == "nothing" && d.2 == "nothing");
+    for writer in ["hooks", "skills", "update"] {
+        assert!(
+            !read_only.contains(&writer),
+            "{writer} writes outside the corpus and is advertised read-only: {read_only:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// A call whose verb answers `--json` carries that document as
+/// `structuredContent` beside the text block, and a refusal, which answers no
+/// document, carries none (GitHub #781).
+///
+/// The structured half is compared with the text half parsed, so the two are
+/// one document and not two renderings that could drift.
+#[test]
+fn a_call_that_answers_a_document_carries_it_as_structured_content() {
+    let repo = corpus();
+    let id = seeded_task(&repo);
+    let show = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"ank_show","arguments":{{"arguments":["{id}"]}}}}}}"#
+    );
+    let replies = talk(
+        &repo,
+        &[
+            &show,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ank_show","arguments":{"arguments":["TASK-000000000000"]}}}"#,
+        ],
+    );
+    let found: serde_yaml::Value = serde_yaml::from_str(&replies[0]).unwrap();
+    let result = &found["result"];
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let parsed: serde_yaml::Value = serde_yaml::from_str(text).unwrap();
+    assert!(
+        result["structuredContent"].is_mapping(),
+        "ank_show answers a document and carries no structuredContent: {}",
+        replies[0]
+    );
+    assert_eq!(result["structuredContent"], parsed);
+    assert_eq!(
+        result["structuredContent"]["id"].as_str(),
+        Some(id.as_str())
+    );
+
+    let refused: serde_yaml::Value = serde_yaml::from_str(&replies[1]).unwrap();
+    assert_eq!(refused["result"]["isError"].as_bool(), Some(true));
+    assert!(
+        refused["result"]["structuredContent"].is_null(),
+        "a refusal answers no document and carries one: {}",
+        replies[1]
+    );
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// `ank_tui` says it needs a terminal and `ank_mcp` says it is the server
+/// itself, in the description a client reads before calling either, and both
+/// are what the call then does (GitHub #781).
+#[test]
+fn the_terminal_and_the_server_say_so_before_they_are_called() {
+    let repo = corpus();
+    let replies = talk(
+        &repo,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ank_tui","arguments":{}}}"#,
+        ],
+    );
+    let doc: serde_yaml::Value = serde_yaml::from_str(&replies[0]).unwrap();
+    let description = |tool: &str| {
+        doc["result"]["tools"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"].as_str() == Some(tool))
+            .and_then(|t| t["description"].as_str())
+            .unwrap_or_else(|| panic!("{tool} is not listed"))
+            .to_string()
+    };
+    let tui = description("ank_tui");
+    assert!(tui.contains("needs a terminal"), "{tui}");
+    let mcp = description("ank_mcp");
+    assert!(mcp.contains("is the server itself"), "{mcp}");
+    // And the description is true of the call: over a pipe the terminal reader
+    // refuses on its environment.
+    assert_eq!(
+        field(&replies[1], "exitCode").as_deref(),
+        Some("9"),
+        "{}",
+        replies[1]
+    );
+    let _ = std::fs::remove_dir_all(&repo);
+}

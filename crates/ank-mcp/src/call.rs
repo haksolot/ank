@@ -49,8 +49,8 @@ impl Outcome {
     }
 
     /// The MCP result. `structuredContent` carries the document the verb
-    /// returned, `content` the same bytes as text for a client that reads only
-    /// that, and `isError` says a refusal happened without hiding what it was.
+    /// returned, when it returned one, and `content` the same bytes as text for
+    /// a client that reads only that, and `isError` says a refusal happened without hiding what it was.
     ///
     /// The exit code is always present, including on success, because a caller
     /// that has to branch on it should not have to tell absence from zero. `check`
@@ -65,6 +65,20 @@ impl Outcome {
             .array("content", [block])
             .bool("isError", self.refused())
             .num("exitCode", self.code);
+        // **The document itself, beside its text** (GitHub #781), so a client
+        // does not parse JSON out of a string. Only when stdout is one JSON
+        // object, which is what `--json` answers: a refusal prints nothing
+        // there, and a verb whose answer is not a document (`hooks run`
+        // prints the harness's own bytes) carries none rather than a guess.
+        // The text block stays, byte for byte, for a client that reads only
+        // that.
+        // Written back compact rather than pasted: a message is one line on
+        // this transport, and a document that spanned several would end it.
+        if let Ok(value @ serde_json::Value::Object(_)) =
+            serde_json::from_str::<serde_json::Value>(self.stdout.trim())
+        {
+            doc = doc.raw("structuredContent", &value.to_string());
+        }
         if !self.stderr.trim().is_empty() {
             // Warnings live on stderr precisely so a caller's parser keeps
             // reading stdout (§4). Carried separately here for the same reason.

@@ -126,7 +126,14 @@ the leading dashes stripped. Where a verb takes a fixed word first, as `hooks`,
 `["install", "claude"]` is a call the schema accepts. Where a verb refuses to
 run without a positional, `arguments` is `required` and `minItems` counts what
 it needs. What a call gets back is the document `--json`
-returns, with the exit code beside it. Nothing in the server names a verb, so
+returns, as `structuredContent` and as the text block beside it, with the exit
+code next to both; a refusal answers no document and carries none. Every tool
+also carries `readOnlyHint`, `destructiveHint` and `openWorldHint`, all three
+and always, derived from what `ank help --json` declares for the verb:
+read-only where `writes` and `outside` are both `nothing`, destructive where
+`destructive` is true, open world where `open_world` is true. `writes` counts
+the corpus and `outside` counts everything else, such as the harness settings
+`hooks install` rewrites. Nothing in the server names a verb, so
 the two surfaces cannot disagree about what exists.
 
 **One process may speak for several corpora, and never for a merged one.**
