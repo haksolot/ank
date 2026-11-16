@@ -1521,17 +1521,16 @@ fn dispatch(
         // A write to what decides who may do what is itself an act of the
         // vocabulary (ADR-ddbe024ca7f2), judged by the roles in force before
         // the write: the ones the writer was bound by.
-        let guarded = (inv.has("--unset") || inv.positionals.len() > 1)
-            && inv.positionals.first().is_some_and(|k| {
-                let top = k.split('.').next().unwrap_or_default();
-                ["roles", "identities", "permissions", "check", "ratify"].contains(&top)
-            });
-        let before = guarded
+        let acts = acts_of(&inv);
+        let before = (!acts.is_empty())
             .then(|| crate::config::load(&repo.config_path()).ok())
             .flatten();
         let code = crate::config::run(&inv, &repo, out)?;
         if let Some(cfg) = before {
-            cfg.warn_forbidden(&crate::identity::resolved().0, "config:permissions");
+            let identity = crate::identity::resolved().0;
+            for act in &acts {
+                cfg.warn_forbidden(&identity, act);
+            }
         }
         return Ok(code);
     }
@@ -1657,12 +1656,25 @@ fn dispatch(
 }
 
 /// The acts of the role vocabulary a verb performs, as the invocation names
-/// them (ADR-ddbe024ca7f2). A config write is judged at the config verb, and
-/// `ank log` is left out: its read form and its write form are one verb, and
-/// only the write is the act.
-fn acts_of(inv: &Invocation) -> Vec<String> {
+/// them (ADR-ddbe024ca7f2): what the verb warns about after it ran, and what
+/// the pre-tool-use hook refuses before it runs, read from one table so the
+/// two never disagree. `ank log` is left out: its read form and its write form
+/// are one verb, and only the write is the act.
+pub(crate) fn acts_of(inv: &Invocation) -> Vec<String> {
     let first = inv.positionals.first().map(String::as_str);
     match inv.command {
+        // A write to what decides who may do what, judged by the roles in
+        // force before the write: the ones the writer was bound by.
+        "config"
+            if !inv.has("--user")
+                && (inv.has("--unset") || inv.positionals.len() > 1)
+                && first.is_some_and(|k| {
+                    let top = k.split('.').next().unwrap_or_default();
+                    ["roles", "identities", "permissions", "check", "ratify"].contains(&top)
+                }) =>
+        {
+            vec!["config:permissions".to_string()]
+        }
         "context" | "find" | "claim" | "done" => vec![inv.command.to_string()],
         "close" => vec!["task:close".to_string()],
         "new" => match inv.subcommand.as_deref() {

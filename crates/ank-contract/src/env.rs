@@ -49,6 +49,7 @@ pub const PATHEXT: &str = "PATHEXT";
 pub const CLAUDE_CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 pub const ANK_GUARD_CORPUS: &str = "ANK_GUARD_CORPUS";
 pub const ANK_GUARD_EDIT: &str = "ANK_GUARD_EDIT";
+pub const ANK_PERMISSIONS_ENFORCE: &str = "ANK_PERMISSIONS_ENFORCE";
 pub const ANK_INDEX_BUSY_MS: &str = "ANK_INDEX_BUSY_MS";
 pub const ANK_INDEX_STEPS: &str = "ANK_INDEX_STEPS";
 pub const ANK_INDEX_REFRESHED: &str = "ANK_INDEX_REFRESHED";
@@ -205,6 +206,17 @@ pub const VARIABLES: &[Variable] = &[
                   by whoever launches the agent; it may tighten the level `.ank/config.yml` \
                   declares and never loosen it, so a looser or unknown value is ignored and \
                   the hook says so. Unset or empty, the declared level",
+        interface: true,
+    },
+    Variable {
+        name: ANK_PERMISSIONS_ENFORCE,
+        read_by: "`ank hooks run claude pre-tool-use`",
+        changes: "the level of `permissions.enforce` for this session, `off`, `warn` or \
+                  `deny`, set by whoever launches the agent; under `deny` the hook refuses a \
+                  shell call to an ank verb the identity's role forbids. It may only tighten \
+                  the level `.ank/config.yml` declares, so a looser or unknown value is \
+                  ignored and the hook says so. Unset or empty, the declared \
+                  level",
         interface: true,
     },
     Variable {

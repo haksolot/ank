@@ -437,8 +437,10 @@ verb.
 `CLAUDE_CONFIG_DIR`, or in `.claude` under the home directory when that is unset
 or empty. Install adds one `SessionStart` entry and one `PreToolUse` entry
 matched to the file tools (`Read`, `Write`, `Edit`, `MultiEdit`,
-`NotebookEdit`, `Glob`, `Grep`), each running the binary that installed it by
-its absolute path. A second install changes nothing:
+`NotebookEdit`, `Glob`, `Grep`) and to `Bash`, each running the binary that
+installed it by its absolute path. An entry an earlier install matched to the
+file tools alone has its matcher moved in place. A second install changes
+nothing:
 
 <!-- replay hooks CLAUDE_CONFIG_DIR=/home/me/.claude dir=/home/me/.claude ANK_AGENT=tool/1.0
 $ printf '{\n  "theme": "dark"\n}\n' > /home/me/.claude/settings.json
@@ -519,6 +521,31 @@ So an orchestrator that launches its workers with `ANK_GUARD_EDIT=claim` holds
 them to their claims whatever the corpus declares, and a corpus that declares
 `claim` cannot be loosened by a launch. Both variables are in [the environment
 reference](environment.md).
+
+**A third guard reads shell calls.** Under `permissions.enforce deny`, a `Bash`
+call whose command runs an ank verb the identity's role forbids is refused,
+naming the role, the entry of `.ank/config.yml` that forbids the act, and the
+command, which is a human's to run. The two file guards ignore a shell call.
+The command is split on `&&`, `||`, `;`, `|`, `&` and newlines; each part whose
+program is `ank`, by any path and after `NAME=value` prefixes or `env`, is read
+as the verb would read it. A command that runs ank through another program,
+`sh -c` or `xargs` among them, is let through, and the verb then warns as it
+does under `warn`. The identity judged is the session's `ANK_AGENT`, whatever
+the command itself exports. `ANK_PERMISSIONS_ENFORCE` tightens the declared
+level the way the two guard variables do. With `tool/1.0` mapped to `human` by
+`init`, and a worker that nothing maps, so an `agent`:
+
+<!-- replay hooks -->
+
+    $ ank config permissions.enforce deny
+    permissions.enforce warn -> deny
+    $ echo '{"tool_name":"Bash","tool_input":{"command":"ank accept ADR-06d29e727d24"}}' | ANK_AGENT=claude-code/worker ank hooks run claude pre-tool-use
+    {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"permissions.enforce is deny, and role 'agent' of claude-code/worker forbids adr:accept (roles.agent.cannot lists it): `ank accept ADR-06d29e727d24` is a human's to run, from their own terminal under an identity whose role allows it."}}
+    $ echo '{"tool_name":"Bash","tool_input":{"command":"ank context src"}}' | ANK_AGENT=claude-code/worker ank hooks run claude pre-tool-use; echo "exit $?"
+    exit 0
+
+A command that runs no ank is answered before any corpus is read, and starts
+no process.
 
 **Fail-open.** A hook that blocks the harness on its own error is worse than no
 hook, so `run` never does. Outside a corpus it is silent and exits 0, and a
