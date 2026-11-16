@@ -170,6 +170,7 @@ kinds! {
     OverConstrained => "over-constrained",
     Weight => "weight",
     RequiresAnk => "requires-ank",
+    ConfigBound => "config-bound",
     NoConstraint => "no-constraint",
     EnforcedBy => "enforced-by",
     Reference => "reference",
@@ -344,6 +345,9 @@ const OWES: &[(Kind, Owes)] = &[
     (Kind::PeerHalfDeclared, Owes::Remedy),
     // Every reason a peer goes unread carries the command that settles it.
     (Kind::PeerUnreadable, Owes::Remedy),
+    // `ank config <key> <value>` names the repair, and the value is the
+    // reader's to choose.
+    (Kind::ConfigBound, Owes::Fault),
 ];
 
 impl Kind {
@@ -670,7 +674,13 @@ impl Finding {
 // check
 // ---------------------------------------------------------------------------
 
-pub fn check(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<ExitCode> {
+pub fn check(
+    inv: &Invocation,
+    repo: &Repo,
+    cfg: &Config,
+    bounds: &[String],
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
     let kind = kind_flag(inv)?;
     let path = crate::context::perimeter(inv, repo)?;
     // Repaired before the inspection reads a single ref, so the proofs the
@@ -684,6 +694,7 @@ pub fn check(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -
         remotes
     });
     let mut report = inspect_with(repo, cfg, path.as_deref(), true, origin)?;
+    check_config_bounds(repo, bounds, &mut report);
     if inv.has("--peers") {
         report.require_peers();
     }
@@ -3585,6 +3596,30 @@ fn check_task(
                 );
             }
         }
+    }
+}
+
+/// A value of `config.yml` below its bound (GitHub #783), written by hand or
+/// brought by a merge, since `ank config` refuses to write one.
+///
+/// **A fault**, whatever the perimeter: every other verb refuses the file, so
+/// the corpus is unusable until it is repaired, and the report says so beside
+/// everything else it found rather than in place of it.
+fn check_config_bounds(repo: &Repo, bounds: &[String], report: &mut Report) {
+    let file = repo.config_path();
+    let subject = file
+        .strip_prefix(&repo.corpus)
+        .unwrap_or(&file)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let prefix = format!("{}: ", file.display());
+    for sentence in bounds {
+        let message = sentence.strip_prefix(&prefix).unwrap_or(sentence);
+        let key = message.split(':').next().unwrap_or_default();
+        report.findings.push(
+            Finding::fault(Kind::ConfigBound, &subject, message)
+                .with_note(vec![format!("ank config {key} <value>")]),
+        );
     }
 }
 
@@ -10806,7 +10841,7 @@ mod tests {
             let repo = self.repo();
             let cfg = self.cfg();
             let code = match inv.command {
-                "check" => check(&inv, &repo, &cfg, &mut out)?,
+                "check" => check(&inv, &repo, &cfg, &[], &mut out)?,
                 "review" => review(&inv, &repo, &cfg, &mut out)?,
                 "accept" => accept(&inv, &repo, who, &mut out)?,
                 "close" => close(&inv, &repo, who, &mut out)?,

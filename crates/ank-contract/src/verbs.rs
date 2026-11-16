@@ -2530,24 +2530,26 @@ pub const COMMANDS: &[CommandSpec] = &[
         min_positionals: 1,
         max_positionals: 2,
         positional_help: "<key> [<value>]",
-        flags: &[switch("--unset"), switch("--user")],
+        flags: &[switch("--unset"), switch("--user"), switch("--list")],
         refuses: &[
             refuses(
                 ExitCode::Generic,
                 "a key the parser does not know, or a value in a form the surgery cannot edit safely",
             ),
+            refuses(ExitCode::Generic, "--list beside a key, a value or --unset"),
             refuses(ExitCode::Prerequisite, "verifiers.<name>.timeout, .default or .inputs on a verifier that is not declared"),
         ],
         notes: &[
             CONFIG_KEYS_NOTE,
             "a resolved default prints marked as one; --json carries value and source as separate fields",
+            "--list prints every key ank config reads, each declared verifier's and peer's included, with its value in force; under --json each entry carries value as a string and typed, the value in the JSON type its type names: integer, boolean, string or list",
             "--unset verifiers.<name> removes a whole verifier, and the default mark with it, which is what makes declaring one reversible",
             "verifiers.<name>.default true marks a verifier for ank new task to write into every task it creates",
             "--user reads and writes the reader's corpora.yml instead: corpora.<identity>, and peers.<identity>.<name>, which overrides for this reader the path the corpus <identity> declares for its peer <name>, and never touches config.yml",
             "a binding across corpora needs both declarations: the governing corpus names the governed one in its scope, <peer>:<glob> through its own peers.<peer>, and the governed corpus declares the governing one in peers.<name> to read it",
         ],
         refuses_globals: &[],
-        output: &[when("reading, `ank config <key>`", &[f("key", Type::Str), opt("value", Type::Str), f("source", Type::Str)]), when("writing, `ank config <key> <value>`", &[f("key", Type::Str), opt("previous", Type::Str), opt("value", Type::Str), f("changed", Type::Bool)])],
+        output: &[when("reading, `ank config <key>`", &[f("key", Type::Str), opt("value", Type::Str), f("source", Type::Str), f("type", Type::Str), opt("typed", Type::Any)]), when("listing, `ank config --list`", &[f("entries", Type::Array(&[f("key", Type::Str), opt("value", Type::Str), f("source", Type::Str), f("type", Type::Str), opt("typed", Type::Any)]))]), when("writing, `ank config <key> <value>`", &[f("key", Type::Str), opt("previous", Type::Str), opt("value", Type::Str), f("changed", Type::Bool)])],
         owner_task: None,
     },
     // After `config` and before `init`: §4's order. It writes one block of the

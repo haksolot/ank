@@ -1251,6 +1251,10 @@ struct Startup {
     /// printed: the identity is resolved once, and a second reading of the
     /// environment would be a second answer free to disagree with the first.
     identity_source: crate::identity::Source,
+    /// The values below their bound `config.yml` carries (GitHub #783), read
+    /// past for `check` alone, which reports each as a fault; every other verb
+    /// has refused the file before this is built.
+    bounds: Vec<String>,
 }
 
 /// Names the corpus when the walk crossed a git repository boundary
@@ -1417,7 +1421,11 @@ fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
     }
     warn_if_outside_repository(inv, &repo, cwd);
     warn_if_schema_ahead(inv, &repo);
-    let config = crate::config::load(&repo.config_path())?;
+    let (config, bounds) = if inv.command == "check" {
+        crate::config::load_unbounded(&repo.config_path())?
+    } else {
+        (crate::config::load(&repo.config_path())?, Vec::new())
+    };
     warn_if_requires_ank(inv, &config);
     let (identity, identity_source) = crate::identity::resolved();
     Ok(Startup {
@@ -1425,6 +1433,7 @@ fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
         config,
         identity,
         identity_source,
+        bounds,
     })
 }
 
@@ -1586,7 +1595,7 @@ fn dispatch(
         "scope" => crate::commands::scope(&inv, &s.repo, &s.config, &s.identity, out),
         "log" => crate::commands::log(&inv, &s.repo, &s.config, &s.identity, out),
         "release" => crate::commands::release(&inv, &s.repo, &s.identity, out),
-        "check" => crate::human::check(&inv, &s.repo, &s.config, out),
+        "check" => crate::human::check(&inv, &s.repo, &s.config, &s.bounds, out),
         "migrate" => crate::migrate::run(&inv, &s.repo, out),
         "signers" => crate::config::run_signers(&inv, &s.repo, out),
         "archive" => crate::archive::run(&inv, &s.repo, &s.config, out),

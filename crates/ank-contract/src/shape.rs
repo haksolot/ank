@@ -93,6 +93,11 @@ pub enum Type {
     Object(&'static [Field]),
     /// An array of documents, each with these fields.
     Array(&'static [Field]),
+    /// A value whose JSON type is stated by the document rather than by the
+    /// shape: a string field named `type` beside it, one of `integer`,
+    /// `boolean`, `string` or `list`, says which (GitHub #784). The type a
+    /// configuration key holds is the key's, and one shape lists every key.
+    Any,
 }
 
 impl Type {
@@ -109,6 +114,7 @@ impl Type {
             Type::Strings => "string[]",
             Type::Object(_) => "object",
             Type::Array(_) => "object[]",
+            Type::Any => "any",
         }
     }
 

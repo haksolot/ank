@@ -100,19 +100,19 @@ pub static KEYS: &[ConfigKey] = &[
         "context_budget",
         "integer",
         Absent::Number(DEFAULT_CONTEXT_BUDGET as u64),
-        "what `context` hands a reader, in characters",
+        "what `context` hands a reader, in characters; at least 1",
     ),
     key(
         "claim_ttl_max",
         "duration",
         Absent::Text(DEFAULT_CLAIM_TTL_MAX),
-        "the longest lease a claim is granted, whatever `--ttl` asks",
+        "the longest lease a claim is granted, whatever `--ttl` asks; at least `1s`",
     ),
     key(
         "claim_ttl_default",
         "duration",
         Absent::Text(DEFAULT_CLAIM_TTL),
-        "the lease `claim` grants without `--ttl`, capped by `claim_ttl_max`",
+        "the lease `claim` grants without `--ttl`, capped by `claim_ttl_max`; at least `1s`",
     ),
     key(
         "default_branch",
@@ -136,7 +136,7 @@ pub static KEYS: &[ConfigKey] = &[
         "verifiers.<name>.timeout",
         "duration",
         Absent::Text(DEFAULT_VERIFIER_TIMEOUT),
-        "how long `done` lets the command run",
+        "how long `done` lets the command run; at least `1s`",
     ),
     key(
         "verifiers.<name>.default",
@@ -154,7 +154,7 @@ pub static KEYS: &[ConfigKey] = &[
         "proof.reuse_max_age",
         "duration",
         Absent::Text(DEFAULT_PROOF_REUSE_MAX_AGE),
-        "how old a passing run recorded under `<git-common-dir>/ank/runs/` may be for `done` to reuse it rather than run the verifier again; `done --fresh` reuses nothing",
+        "how old a passing run recorded under `<git-common-dir>/ank/runs/` may be for `done` to reuse it rather than run the verifier again, at least `1s`; `done --fresh` reuses nothing",
     ),
     key(
         "verifier_jobs",
