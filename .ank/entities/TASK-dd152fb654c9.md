@@ -5,7 +5,7 @@ slug: a-forbidden-act-is-warned-at-the-verb-and-signal
 title: A forbidden act is warned at the verb and signalled by check as role, and self-ratified goes quiet when declared
 created: 2026-11-16T08:08:02Z
 author: claude-code/plan
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/config.rs
@@ -19,7 +19,7 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 schema: 4
-version: 1
+version: 2
 ---
 
 Implements ADR-ddbe024ca7f2, which is proposed: do not claim before a human has ratified it (ank show ADR-ddbe024ca7f2 says accepted). GitHub #785.
