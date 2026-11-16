@@ -5,7 +5,7 @@ slug: security-md-describes-the-ratification-model-the
 title: SECURITY.md describes the ratification model the binary has, and names no release version
 created: 2026-11-16T08:06:58Z
 author: claude-code/plan
-status: open
+status: in_progress
 scope:
   - SECURITY.md
   - crates/ank-cli/tests/doc_replay.rs
@@ -15,7 +15,7 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 schema: 4
-version: 1
+version: 2
 ---
 
 GitHub #779. The permissions plan will amend SECURITY.md again later; describe what the binary does today.
