@@ -5,7 +5,7 @@ slug: a-role-is-read-an-act-it-forbids-is-warned-at-th
 title: "A role is read: an act it forbids is warned at the verb, signalled by check, and refused only by the hook"
 created: 2026-11-16T08:07:26Z
 author: claude-code/plan
-status: proposed
+status: accepted
 scope:
   - crates/ank-core/src/config.rs
   - crates/ank-cli/src/config.rs
@@ -18,8 +18,13 @@ scope:
 constraint: |
   permissions.enforce in .ank/config.yml, off, warn or deny, absent meaning off, sets how roles apply, and ank init writes warn with the identity that runs it mapped to human. The words of roles.<name>.can and .cannot are a fixed vocabulary docs/config-keys.md publishes, config:permissions among them, and a word outside it is a fault. An act is forbidden to an identity when its role lists it under cannot, or has a can list that is not ["*"] and omits it; an identity absent from identities has the role agent. Under warn or deny the verb performing a forbidden act still performs it, names on stderr the role and the entry that forbid it, and exits as it would have: the CLI never refuses on a role. Under warn or deny check signals, as the kind role, each recorded act (an accept, a close, a constraint edit, a new entity, a write to roles, identities, permissions, check or ratify) whose actor's role forbade it, and does not signal self-ratified when the ratifier's role allows adr:accept. Under deny, ank hooks run <agent> pre-tool-use refuses a shell tool call that runs an ank verb the identity's role forbids, naming the entry and the command a human runs instead. ANK_PERMISSIONS_ENFORCE, set by whoever launches the agent, may tighten the declared level and never loosen it.
 amends: [ADR-43cbb20dcbf1]
+ratified: 2057ee33e73e
+anchor: 241ce7936d83480ececc38ec2746c2e32e86c250
+verified:
+  - by: claude-code/opus-5.5
+    at: 2026-11-16T11:23:19Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Context
