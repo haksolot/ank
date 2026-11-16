@@ -338,6 +338,14 @@ pub enum Enforce {
 }
 
 impl Enforce {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Enforce::Off => "off",
+            Enforce::Warn => "warn",
+            Enforce::Deny => "deny",
+        }
+    }
+
     pub fn parse(text: &str) -> Option<Enforce> {
         match text {
             "off" => Some(Enforce::Off),
@@ -553,7 +561,73 @@ pub struct Config {
     pub signers: Vec<Signer>,
 }
 
+/// Why an act is forbidden to an identity (ADR-ddbe024ca7f2): the role it
+/// has, and the entry of that role that forbids the act.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Forbidden {
+    pub role: String,
+    /// `roles.<role>.cannot lists it`, or `.can omits it`, the way a reader
+    /// finds it in the file.
+    pub entry: String,
+}
+
 impl Config {
+    /// The role of `identity`: the one `identities` maps it to, `agent` when
+    /// the table does not name it.
+    pub fn role_of(&self, identity: &str) -> &str {
+        self.identities
+            .get(identity)
+            .map_or("agent", String::as_str)
+    }
+
+    /// Whether the role of `identity` forbids `act`, whatever the level:
+    /// its `cannot` lists the act or `*`, or its `can` is a list that is not
+    /// `["*"]` and omits the act. An empty `can` is a list nobody wrote, since
+    /// the parser reads an absent one as empty, and restricts nothing; a role
+    /// nobody declared forbids nothing either.
+    pub fn forbids(&self, identity: &str, act: &str) -> Option<Forbidden> {
+        let name = self.role_of(identity);
+        let role = self.roles.get(name)?;
+        let entry = if role.cannot.iter().any(|w| w == act || w == "*") {
+            format!("roles.{name}.cannot lists it")
+        } else if !role.can.is_empty()
+            && !role.can.iter().any(|w| w == "*")
+            && !role.can.iter().any(|w| w == act)
+        {
+            format!("roles.{name}.can omits it")
+        } else {
+            return None;
+        };
+        Some(Forbidden {
+            role: name.to_string(),
+            entry,
+        })
+    }
+
+    /// [`Config::forbids`], under `warn` or `deny` only: off, roles apply to
+    /// nothing.
+    pub fn forbidding(&self, identity: &str, act: &str) -> Option<Forbidden> {
+        if self.enforce == Enforce::Off {
+            return None;
+        }
+        self.forbids(identity, act)
+    }
+
+    /// What a verb that performed `act` says when the role of `identity`
+    /// forbids it: on stderr, and never a refusal (ADR-ddbe024ca7f2). The act
+    /// is done; the line is so that it does not go unnoticed.
+    pub fn warn_forbidden(&self, identity: &str, act: &str) {
+        if let Some(f) = self.forbidding(identity, act) {
+            eprintln!(
+                "warning: role '{}' of {identity} forbids {act} ({}); performed, \
+                 since permissions.enforce {} warns and never refuses at the verb",
+                f.role,
+                f.entry,
+                self.enforce.as_str()
+            );
+        }
+    }
+
     /// What bounds a `done`: the key when the file sets it, the machine's
     /// available parallelism when it does not, and one when even that cannot
     /// be read.

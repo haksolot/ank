@@ -28350,3 +28350,230 @@ fn the_config_keys_page_no_longer_says_roles_are_edited_by_hand() {
     assert!(page.contains("ank config roles.<name>.can"), "{page}");
     assert!(page.contains("ank config identities.<identity>"), "{page}");
 }
+
+// ---------------------------------------------------------------------------
+// A forbidden act is warned at the verb and signalled by check (ADR-ddbe024ca7f2,
+// GitHub #785)
+// ---------------------------------------------------------------------------
+
+/// The roles every case below reads: an agent that may write tasks and nothing
+/// else of the vocabulary's acts, by its `can` list, and that is refused the
+/// ratification and the close by name, by its `cannot` list.
+fn with_permissions(r: &Repo, level: Option<&str>) {
+    let mut config = r.config_text();
+    config.push_str(
+        "roles:\n  agent:\n    can: [context, find, claim, log, done, new:task]\n    \
+         cannot: [adr:accept, task:close]\n  human:\n    can: [\"*\"]\n\
+         identities:\n  human:marie: human\n",
+    );
+    if let Some(level) = level {
+        config.push_str(&format!("permissions:\n  enforce: {level}\n"));
+    }
+    r.set_config(&config);
+}
+
+/// Every act of the criterion an unmapped agent performs, each exiting as it
+/// would have; what each wrote to stderr, keyed by the act.
+fn forbidden_acts(r: &Repo) -> (String, String, String, Vec<(&'static str, String)>) {
+    let agent = "claude-code/opus-5";
+    let mut warned = Vec::new();
+
+    let adr = new_adr(r, agent, "Do not do X.");
+    // `new_adr` asserts the exit; the warning is read off a second birth.
+    let out = r.ank(
+        agent,
+        &[
+            "new",
+            "adr",
+            "--title",
+            "Another",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "Y.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    warned.push(("new:adr:proposed", erred(&out)));
+
+    let out = r.ank(
+        agent,
+        &[
+            "new", "spec", "--title", "A spec", "--scope", "src/**", "--body", "Text.", "--json",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let spec = created_id(&out);
+    warned.push(("new:spec:proposed", erred(&out)));
+
+    let out = r.ank(
+        agent,
+        &[
+            "new", "task", "--title", "Allowed", "--scope", "src/**", "--json",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let task = created_id(&out);
+    warned.push(("new:task", erred(&out)));
+
+    let out = r.ank(agent, &["edit", &adr, "--constraint", "Do not do X, ever."]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    warned.push(("adr:edit-constraint", erred(&out)));
+
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank(agent, &["accept", &adr]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    warned.push(("adr:accept", erred(&out)));
+
+    let out = r.ank(agent, &["close", &task, "--reason", "not needed"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    warned.push(("task:close", erred(&out)));
+
+    let out = r.ank(agent, &["config", "identities.someone", "agent"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    warned.push(("config:permissions", erred(&out)));
+
+    (adr, spec, task, warned)
+}
+
+fn role_findings(r: &Repo) -> Vec<serde_yaml::Value> {
+    let out = r.ank("human:marie", &["check", "--all", "--json"]);
+    let doc: serde_yaml::Value = serde_yaml::from_str(&said(&out)).unwrap();
+    doc["findings"]
+        .as_sequence()
+        .expect("findings")
+        .iter()
+        .filter(|f| f["kind"].as_str() == Some("role"))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_forbidden_act_is_performed_warned_at_the_verb_and_signalled_by_check() {
+    for level in ["warn", "deny"] {
+        let r = ready_to_ratify();
+        with_permissions(&r, Some(level));
+        let (adr, spec, task, said) = forbidden_acts(&r);
+
+        for (act, err) in &said {
+            if *act == "new:task" {
+                assert!(
+                    !err.contains("forbids"),
+                    "{level}: an allowed act warned: {err}"
+                );
+                continue;
+            }
+            assert!(
+                err.contains(&format!("forbids {act}")) && err.contains("role 'agent'"),
+                "{level} {act}: {err}"
+            );
+            let entry = if matches!(*act, "adr:accept" | "task:close") {
+                "roles.agent.cannot lists it"
+            } else {
+                "roles.agent.can omits it"
+            };
+            assert!(err.contains(entry), "{level} {act}: {err}");
+        }
+        // Performed: the ADR is accepted and the task closed.
+        assert!(r.adr_text(&adr).contains("status: accepted"), "{level}");
+        assert!(r.task_text(&task).contains("status: closed"), "{level}");
+        assert!(r.config_text().contains("someone: agent"), "{level}");
+
+        let found = role_findings(&r);
+        let on = |id: &str, act: &str| {
+            found.iter().any(|f| {
+                f["subject"].as_str() == Some(id)
+                    && f["level"].as_str() == Some("signal")
+                    && f["message"].as_str().is_some_and(|m| {
+                        m.contains(act)
+                            && m.contains("claude-code/opus-5")
+                            && m.contains("roles.agent.")
+                    })
+            })
+        };
+        assert!(on(&adr, "new:adr:proposed"), "{level}: {found:?}");
+        assert!(on(&adr, "adr:edit-constraint"), "{level}: {found:?}");
+        assert!(on(&adr, "adr:accept"), "{level}: {found:?}");
+        assert!(on(&spec, "new:spec:proposed"), "{level}: {found:?}");
+        assert!(on(&task, "task:close"), "{level}: {found:?}");
+        assert!(
+            !on(&task, "new:task"),
+            "{level}: an allowed act signalled: {found:?}"
+        );
+        // The second ADR, born forbidden, is signalled too.
+        assert_eq!(
+            found
+                .iter()
+                .filter(|f| f["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("new:adr:proposed")))
+                .count(),
+            2,
+            "{level}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn with_permissions_off_no_verb_warns_and_check_signals_no_role() {
+    for level in [None, Some("off")] {
+        let r = ready_to_ratify();
+        with_permissions(&r, level);
+        let (_, _, _, said) = forbidden_acts(&r);
+        for (act, err) in &said {
+            assert!(!err.contains("forbids"), "{level:?} {act}: {err}");
+        }
+        let found = role_findings(&r);
+        assert!(found.is_empty(), "{level:?}: {found:?}");
+    }
+}
+
+#[test]
+fn self_ratified_goes_quiet_when_the_ratifiers_role_allows_the_accept() {
+    // Declared: marie is a human, and a human's role allows adr:accept.
+    let r = ready_to_ratify();
+    with_permissions(&r, Some("warn"));
+    let id = new_adr(&r, "human:marie", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank("human:marie", &["accept", &id]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(!erred(&out).contains("forbids"), "{}", erred(&out));
+    let out = r.ank("human:marie", &["check", "--all"]);
+    assert!(
+        !said(&out).contains("ratified by its own author"),
+        "{}",
+        said(&out)
+    );
+
+    // Off, the same history keeps its signal: nothing is declared to apply.
+    r.set_config(&r.config_text().replace("enforce: warn", "enforce: off"));
+    let out = r.ank("human:marie", &["check", "--all"]);
+    assert!(
+        said(&out).contains(&format!(
+            "signal: {id}: ratified by its own author (human:marie)"
+        )),
+        "{}",
+        said(&out)
+    );
+
+    // An agent whose role cannot accept, ratifying its own decision, keeps the
+    // signal, and earns the role one beside it.
+    let r = ready_to_ratify();
+    with_permissions(&r, Some("warn"));
+    let id = new_adr(&r, "claude-code/opus-5", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank("claude-code/opus-5", &["accept", &id]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let out = r.ank("human:marie", &["check", "--all"]);
+    let text = said(&out);
+    assert!(
+        text.contains(&format!(
+            "signal: {id}: ratified by its own author (claude-code/opus-5)"
+        )),
+        "{text}"
+    );
+    assert!(text.contains("adr:accept"), "{text}");
+}
