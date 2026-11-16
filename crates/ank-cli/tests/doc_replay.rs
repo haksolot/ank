@@ -1189,6 +1189,80 @@ fn a_page_naming_one_value_twice_is_caught() {
     assert_eq!(p.translate("ank show 9c45"), "ank show 1111");
 }
 
+/// Every `<major>.<minor>.<patch>` literal in `text`: three runs of digits
+/// joined by two dots, standing alone, so `2.34` and `1.2.3.4` are not one.
+fn version_literals(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let starts = bytes[i].is_ascii_digit()
+            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'.'));
+        if !starts {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        let mut groups = 0;
+        loop {
+            let from = j;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j == from {
+                break;
+            }
+            groups += 1;
+            let dot_then_digit =
+                j + 1 < bytes.len() && bytes[j] == b'.' && bytes[j + 1].is_ascii_digit();
+            if !dot_then_digit {
+                break;
+            }
+            j += 1;
+        }
+        let ends = j == bytes.len() || !(bytes[j].is_ascii_alphanumeric() || bytes[j] == b'.');
+        let ends = ends || (bytes[j] == b'.' && !bytes.get(j + 1).is_some_and(u8::is_ascii_digit));
+        if groups == 3 && ends {
+            found.push(text[i..j].to_string());
+        }
+        i = j.max(i + 1);
+    }
+    found
+}
+
+#[test]
+fn a_version_literal_is_three_numbers_standing_alone() {
+    assert_eq!(version_literals("| 0.8.0 (latest) | yes |"), ["0.8.0"]);
+    assert_eq!(version_literals("ank 0.9.4."), ["0.9.4"]);
+    assert!(version_literals("git 2.34 or newer").is_empty());
+    assert!(version_literals("an address 10.0.0.1").is_empty());
+    assert!(version_literals("v1.2.3x").is_empty());
+}
+
+/// **SECURITY.md states the trust model the binary has, and names no release
+/// version** (GitHub #779). A version in it goes stale at the next release, and
+/// keys declared in `.ank/allowed_signers` is the model `ank signers migrate`
+/// left: `check` reads `signers:` in `.ank/config.yml` and nothing else.
+#[test]
+fn security_md_names_no_release_version_and_no_allowed_signers_file() {
+    let page = std::fs::read_to_string(workspace().join("SECURITY.md"))
+        .expect("SECURITY.md must be readable");
+    let versions = version_literals(&page);
+    assert!(
+        versions.is_empty(),
+        "SECURITY.md names release versions {versions:?}: link the latest release instead"
+    );
+    assert!(
+        !page.contains("allowed_signers"),
+        "SECURITY.md names allowed_signers: the keys that may ratify live under signers: \
+         in .ank/config.yml, written by ank signers"
+    );
+    assert!(
+        page.contains("signers:") && page.contains("refs/ank/ratify/<id>"),
+        "SECURITY.md must name where ratification keys live and where accept writes its tag"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The pages the installers name (GitHub #778)
 // ---------------------------------------------------------------------------

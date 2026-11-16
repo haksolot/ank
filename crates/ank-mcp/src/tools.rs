@@ -145,20 +145,37 @@ fn description(spec: &CommandSpec) -> String {
 /// every client would have to quote.
 fn input_schema(spec: &CommandSpec) -> String {
     let mut props = Obj::new();
-    if spec.max_positionals > 0 || !spec.subcommands.is_empty() {
-        let mut items = Obj::new().str("type", "string");
-        if !spec.subcommands.is_empty() {
-            items = items.raw(
+    // **The subcommand is the first item and only the first** (GitHub #780).
+    // The enum used to sit on `items`, which in every dialect governs each item,
+    // so `["install", "claude"]` failed on `claude` and a client that validates
+    // before sending could not call `hooks` or `signers` at all. `prefixItems`
+    // holds the first item to the fixed words and `items` beside it, in
+    // 2020-12, governs only the ones after; a draft-07 reader that ignores
+    // `prefixItems` sees an array of strings, which is looser and never wrong.
+    //
+    // `minItems` counts the subcommand, which is mandatory, and the
+    // positionals the verb refuses to run without. Where it is above zero the
+    // argument is `required`, because an absent array is the same refusal as
+    // an empty one.
+    let subcommand = usize::from(!spec.subcommands.is_empty());
+    let least = subcommand + spec.min_positionals;
+    if spec.max_positionals > 0 || subcommand > 0 {
+        let string = Obj::new().str("type", "string");
+        let mut arguments = Obj::new().str("type", "array");
+        if subcommand > 0 {
+            let first = Obj::new().str("type", "string").raw(
                 "enum",
                 &ank_contract::json::strings(spec.subcommands.iter().copied()),
             );
+            arguments = arguments.raw("prefixItems", &format!("[{}]", first.finish()));
+        }
+        arguments = arguments.obj("items", string);
+        if least > 0 {
+            arguments = arguments.num("minItems", least as i64);
         }
         props = props.obj(
             "arguments",
-            Obj::new()
-                .str("type", "array")
-                .obj("items", items)
-                .str("description", spec.positional_help),
+            arguments.str("description", spec.positional_help),
         );
     }
     for flag in spec.flags.iter().filter(|f| f.listed) {
@@ -192,9 +209,29 @@ fn input_schema(spec: &CommandSpec) -> String {
             .str("type", "string")
             .str("description", crate::corpora::HELP),
     );
+    let schema = Obj::new().str("type", "object").obj("properties", props);
+    match least {
+        0 => schema.finish(),
+        _ => schema.raw("required", "[\"arguments\"]").finish(),
+    }
+}
+
+/// The MCP tool annotations of a verb, derived from what the table declares
+/// and from nothing chosen here (GitHub #781, ADR-fd98f4bc6dea).
+///
+/// **All three on every tool, `false` included.** MCP reads an absent
+/// `destructiveHint` and an absent `openWorldHint` as `true`, so leaving a
+/// hint out is not neutral: it tells a client that `ank_find` may destroy and
+/// may reach the internet. `readOnlyHint` is true exactly where the verb
+/// writes nothing into the corpus and nothing outside it; a read-only tool is
+/// never destructive, which is the hint's own definition.
+fn annotations(spec: &CommandSpec) -> String {
+    let read_only = spec.writes == ank_contract::Writes::Nothing
+        && spec.outside == ank_contract::writes::Outside::Nothing;
     Obj::new()
-        .str("type", "object")
-        .obj("properties", props)
+        .bool("readOnlyHint", read_only)
+        .bool("destructiveHint", spec.destructive && !read_only)
+        .bool("openWorldHint", spec.open_world)
         .finish()
 }
 
@@ -205,6 +242,7 @@ pub fn list() -> String {
             .str("name", &tool_name(spec))
             .str("description", &description(spec))
             .raw("inputSchema", &input_schema(spec))
+            .raw("annotations", &annotations(spec))
             .finish()
     });
     ank_contract::json::array(tools)
@@ -253,16 +291,21 @@ mod tests {
     }
 
     /// The argument is optional, and optional is a property of the document
-    /// rather than of the prose: nothing in a generated schema is required, so a
-    /// client that passed no corpus yesterday passes none today.
+    /// rather than of the prose: what a schema requires is the verb's own
+    /// positionals and never the corpus, so a client that passed no corpus
+    /// yesterday passes none today.
     #[test]
     fn the_corpus_argument_is_never_required() {
         for spec in COMMANDS {
             let schema = input_schema(spec);
-            assert!(
-                !schema.contains("\"required\""),
-                "{} requires something, and the corpus argument must not be it: \
-                 {schema}",
+            let required = match schema.find("\"required\":") {
+                Some(at) => &schema[at..],
+                None => continue,
+            };
+            let list = &required[..required.find(']').unwrap_or(required.len())];
+            assert_eq!(
+                list, "\"required\":[\"arguments\"",
+                "{} requires something other than its positionals: {schema}",
                 spec.name
             );
         }

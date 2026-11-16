@@ -1062,3 +1062,505 @@ fn a_fixture_repository_is_not_maintained_under_the_test() {
     assert_unmaintained(&repo);
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+/// The `inputSchema` of every tool, by tool name, out of a `tools/list` reply.
+///
+/// Parsed, unlike everything [`field`] reads: what is asserted here is that a
+/// call satisfies a schema, and a schema is a tree a substring cannot walk.
+/// `serde_yaml` reads it, as the rest of this suite reads a `--json` document.
+fn published_schemas(reply: &str) -> Vec<(String, serde_yaml::Value)> {
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(reply).expect("a tools/list reply is a JSON document");
+    doc["result"]["tools"]
+        .as_sequence()
+        .expect("tools/list answers a list of tools")
+        .iter()
+        .map(|tool| {
+            (
+                tool["name"]
+                    .as_str()
+                    .expect("a tool has a name")
+                    .to_string(),
+                tool["inputSchema"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// Why `value` fails `schema`, or `None` when it satisfies it.
+///
+/// **The keywords the published schemas use, and a refusal for any other.** A
+/// validator that skipped a keyword it did not know would pass a call the
+/// schema refuses, which is the defect this suite closes read the other way
+/// round; so a keyword this walk does not implement fails the test by name, and
+/// whoever adds one to the surface adds it here. The dialect is 2020-12, the one
+/// MCP names: `items` beside `prefixItems` governs only the items after them.
+fn violation(schema: &serde_yaml::Value, value: &serde_yaml::Value, at: &str) -> Option<String> {
+    use serde_yaml::Value;
+    let map = schema.as_mapping().expect("a schema is an object");
+    for key in map.keys() {
+        let key = key.as_str().unwrap_or("");
+        let known = [
+            "type",
+            "properties",
+            "required",
+            "items",
+            "prefixItems",
+            "enum",
+            "minItems",
+            "description",
+        ];
+        assert!(
+            known.contains(&key),
+            "the surface publishes `{key}` at {at} and this validator does not \
+             implement it, so it would pass a call the schema refuses"
+        );
+    }
+    if let Some(kind) = schema["type"].as_str() {
+        let ok = match kind {
+            "object" => value.is_mapping(),
+            "array" => value.is_sequence(),
+            "string" => value.is_string(),
+            "boolean" => value.is_bool(),
+            other => panic!("type {other} at {at} is not one this validator reads"),
+        };
+        if !ok {
+            return Some(format!("{at}: expected {kind}, got {value:?}"));
+        }
+    }
+    if let Some(allowed) = schema["enum"].as_sequence() {
+        if !allowed.contains(value) {
+            return Some(format!("{at}: {value:?} is not one of {allowed:?}"));
+        }
+    }
+    if let Some(fields) = value.as_mapping() {
+        for name in schema["required"].as_sequence().into_iter().flatten() {
+            if !fields.contains_key(name) {
+                return Some(format!("{at}: {name:?} is required"));
+            }
+        }
+        if let Some(props) = schema["properties"].as_mapping() {
+            for (name, sub) in fields {
+                if let Some(prop) = props.get(name) {
+                    let at = format!("{at}.{}", name.as_str().unwrap_or("?"));
+                    if let Some(why) = violation(prop, sub, &at) {
+                        return Some(why);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(items) = value.as_sequence() {
+        if let Some(min) = schema["minItems"].as_u64() {
+            if (items.len() as u64) < min {
+                return Some(format!("{at}: {} items, at least {min}", items.len()));
+            }
+        }
+        let prefix: &[Value] = schema["prefixItems"]
+            .as_sequence()
+            .map(|s| s.as_slice())
+            .unwrap_or(&[]);
+        for (i, item) in items.iter().enumerate() {
+            let sub = match prefix.get(i) {
+                Some(sub) => sub,
+                None if schema["items"].is_mapping() => &schema["items"],
+                None => continue,
+            };
+            if let Some(why) = violation(sub, item, &format!("{at}[{i}]")) {
+                return Some(why);
+            }
+        }
+    }
+    None
+}
+
+/// One call per verb that the CLI accepts as written, as the `arguments` of a
+/// `tools/call`.
+///
+/// **Written down, once per verb, and the test refuses a verb without one.**
+/// Each is a usage line `ank help <verb>` prints, turned into the object the
+/// surface reads: positionals into `arguments`, a flag under its name without
+/// its dashes. The list is not the surface -- the surface is the table -- so the
+/// first assertion of the test below is that every advertised tool has a call
+/// here, and a verb the table gains turns this red until somebody writes one.
+const LEGAL_CALLS: &[(&str, &str)] = &[
+    ("context", r#"{"arguments":["src/main.rs"]}"#),
+    ("claim", r#"{"arguments":["TASK-000000000000"]}"#),
+    ("show", r#"{"arguments":["TASK-000000000000"]}"#),
+    (
+        "log",
+        r#"{"arguments":["TASK-000000000000","tried the obvious fix"]}"#,
+    ),
+    ("verify", r#"{}"#),
+    ("done", r#"{}"#),
+    ("release", r#"{"reason":"needs a decision"}"#),
+    (
+        "new",
+        r#"{"arguments":["task"],"title":"A task","scope":["src/**"],"criteria":"It holds."}"#,
+    ),
+    ("find", r#"{"arguments":["query"]}"#),
+    ("status", r#"{}"#),
+    ("review", r#"{}"#),
+    (
+        "accept",
+        r#"{"arguments":["ADR-000000000000","ADR-111111111111"]}"#,
+    ),
+    ("read", r#"{"arguments":["TASK-000000000000"]}"#),
+    (
+        "close",
+        r#"{"arguments":["TASK-000000000000"],"reason":"superseded"}"#,
+    ),
+    (
+        "amend",
+        r#"{"arguments":["TASK-000000000000"],"blocked-by":["TASK-111111111111"]}"#,
+    ),
+    (
+        "attest",
+        r#"{"arguments":["TASK-000000000000"],"proof":"test:1"}"#,
+    ),
+    ("edit", r#"{"arguments":["TASK-000000000000"]}"#),
+    ("graph", r#"{}"#),
+    ("scope", r#"{"arguments":["src/main.rs"]}"#),
+    ("tui", r#"{}"#),
+    ("mcp", r#"{}"#),
+    ("watch", r#"{}"#),
+    ("check", r#"{"arguments":["src"]}"#),
+    ("migrate", r#"{}"#),
+    ("archive", r#"{}"#),
+    ("config", r#"{"arguments":["default_branch","main"]}"#),
+    (
+        "signers",
+        r#"{"arguments":["add","ssh-ed25519 AAAAC3NzaC1lZDI1NTE5"]}"#,
+    ),
+    ("init", r#"{}"#),
+    ("skills", r#"{}"#),
+    ("hooks", r#"{"arguments":["install","claude"]}"#),
+    ("update", r#"{}"#),
+    ("help", r#"{"arguments":["new","task"]}"#),
+];
+
+/// A legal call satisfies the schema the server published for it, for every
+/// tool it publishes (GitHub #780, TASK-9885c8401544).
+///
+/// **Validated against the published document, never against `tools.rs`.** The
+/// defect was a schema whose `items` carried the subcommand enum, so that
+/// `["install","claude"]` failed on its second item: a client that validates
+/// before sending could not call `ank_hooks` or `ank_signers` at all, and the
+/// function that wrote the schema was not where that showed. So the schemas
+/// come out of the process, and a call is checked against exactly what a client
+/// would hold.
+///
+/// Two further assertions, each a half of the fix the criterion names. The
+/// three verbs whose first positional is a fixed word constrain that item and
+/// only that one -- a second item outside the enum is accepted, a first one is
+/// refused -- and a tool that declares `arguments` required refuses the empty
+/// call, so `required` is not decoration.
+#[test]
+fn a_legal_call_satisfies_the_schema_the_server_publishes_for_it() {
+    let repo = corpus();
+    let replies = talk(
+        &repo,
+        &[r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#],
+    );
+    let schemas = published_schemas(&replies[0]);
+    assert_eq!(schemas.len(), COMMANDS.len());
+    for (tool, schema) in &schemas {
+        let verb = tool.strip_prefix("ank_").expect("every tool is ank_<verb>");
+        let call = LEGAL_CALLS
+            .iter()
+            .find(|(v, _)| *v == verb)
+            .unwrap_or_else(|| panic!("{tool} is advertised and has no legal call here"))
+            .1;
+        let call: serde_yaml::Value = serde_yaml::from_str(call).unwrap();
+        if let Some(why) = violation(schema, &call, tool) {
+            panic!("a legal call to {tool} fails the schema the server published: {why}");
+        }
+    }
+
+    for verb in ["hooks", "signers", "new"] {
+        let tool = format!("ank_{verb}");
+        let schema = &schemas.iter().find(|(t, _)| *t == tool).unwrap().1;
+        let spec = ank_contract::spec_of(verb).unwrap();
+        let first = spec.subcommands[0];
+        let later: serde_yaml::Value = serde_yaml::from_str(&format!(
+            r#"{{"arguments":["{first}","not-a-subcommand"]}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            violation(schema, &later, &tool),
+            None,
+            "{tool} holds a later item to the subcommand enum"
+        );
+        let wrong: serde_yaml::Value =
+            serde_yaml::from_str(r#"{"arguments":["not-a-subcommand"]}"#).unwrap();
+        assert!(
+            violation(schema, &wrong, &tool).is_some(),
+            "{tool} no longer constrains its first item to {:?}",
+            spec.subcommands
+        );
+    }
+
+    let empty: serde_yaml::Value = serde_yaml::from_str("{}").unwrap();
+    for (tool, schema) in &schemas {
+        if schema["required"].as_sequence().is_some() {
+            assert!(
+                violation(schema, &empty, tool).is_some(),
+                "{tool} declares something required and accepts the empty call"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// `required` is declared exactly where the binary refuses the call without a
+/// positional, measured rather than read (GitHub #780).
+///
+/// **Both directions, through the surface.** A tool that declares `arguments`
+/// required is called without them and must come back exit 1, the usage refusal
+/// the CLI gives a missing positional -- or 7, which is how `signers` names the
+/// key a sub-action acts on, but no such tool is called empty here. A tool that
+/// takes a positional and declares none required is called without one and must
+/// *not* come back exit 1, or a client is told a call is complete that the
+/// binary will refuse as incomplete. Verbs that take no positional are not
+/// called: there is nothing to omit, and some of them reach the network or a
+/// terminal.
+#[test]
+fn arguments_are_required_exactly_where_the_binary_refuses_without_them() {
+    let repo = corpus();
+    let replies = talk(
+        &repo,
+        &[r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#],
+    );
+    let schemas = published_schemas(&replies[0]);
+    let mut requests = Vec::new();
+    let mut asked = Vec::new();
+    for (i, (tool, schema)) in schemas.iter().enumerate() {
+        let required = schema["required"]
+            .as_sequence()
+            .is_some_and(|r| r.iter().any(|v| v.as_str() == Some("arguments")));
+        let takes = schema["properties"]["arguments"].is_mapping();
+        // `init` refuses `--repo` whatever it is passed, and the server always
+        // passes it, so what it answers empty says nothing about positionals.
+        if !takes || tool == "ank_init" {
+            continue;
+        }
+        requests.push(format!(
+            r#"{{"jsonrpc":"2.0","id":{i},"method":"tools/call","params":{{"name":"{tool}","arguments":{{}}}}}}"#
+        ));
+        asked.push((tool.clone(), required));
+    }
+    let refs: Vec<&str> = requests.iter().map(|s| s.as_str()).collect();
+    let answers = talk(&repo, &refs);
+    assert_eq!(answers.len(), asked.len(), "{answers:?}");
+    for ((tool, required), answer) in asked.iter().zip(&answers) {
+        let code = field(answer, "exitCode");
+        match required {
+            true => assert_eq!(
+                code.as_deref(),
+                Some("1"),
+                "{tool} declares arguments required and the binary takes the \
+                 call without them: {answer}"
+            ),
+            false => assert_ne!(
+                code.as_deref(),
+                Some("1"),
+                "{tool} declares no argument required and the binary refuses \
+                 the call without one: {answer}"
+            ),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// What `help --json` declares about each verb that an annotation is derived
+/// from: `writes`, `outside`, `destructive` and `open_world`, read out of the
+/// binary rather than out of the contract crate.
+fn declared_effects(repo: &Path) -> Vec<(String, String, String, bool, bool)> {
+    let out = ank(repo, &["help", "--json"]);
+    assert!(out.status.success(), "help --json must answer");
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    doc["verbs"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            let word = |k: &str| v[k].as_str().unwrap_or("<absent>").to_string();
+            let flag = |k: &str| {
+                v[k].as_bool()
+                    .unwrap_or_else(|| panic!("help --json gives {} no boolean {k}", word("name")))
+            };
+            (
+                word("name"),
+                word("writes"),
+                word("outside"),
+                flag("destructive"),
+                flag("open_world"),
+            )
+        })
+        .collect()
+}
+
+/// Every tool carries the three hints, each derived from what the table
+/// declares and none chosen in the server (GitHub #781, TASK-144743f1d688).
+///
+/// **All three on every tool, `false` included.** MCP reads an absent
+/// `destructiveHint` and an absent `openWorldHint` as `true`, so a tool that
+/// left them out would tell a client that `ank_find` may destroy and may reach
+/// the internet; the only safe absence is none.
+///
+/// Two readings, because they fail differently. The hints equal the
+/// declarations `help --json` publishes, which is "derived, nothing curated"
+/// (ADR-fd98f4bc6dea). And the declarations say what the criterion names --
+/// `accept`, `close`, `archive` and `migrate` destroy, `update` alone reaches
+/// the open world, and `hooks`, `skills` and `update` are not read-only --
+/// because a table that declared nothing anywhere would satisfy the first
+/// reading by being uniformly wrong.
+#[test]
+fn every_tool_carries_annotations_derived_from_the_table() {
+    let repo = corpus();
+    let declared = declared_effects(&repo);
+    let replies = talk(
+        &repo,
+        &[r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#],
+    );
+    let doc: serde_yaml::Value = serde_yaml::from_str(&replies[0]).unwrap();
+    let tools = doc["result"]["tools"].as_sequence().unwrap();
+    assert_eq!(tools.len(), declared.len());
+    for (tool, (verb, writes, outside, destructive, open_world)) in tools.iter().zip(&declared) {
+        let name = tool["name"].as_str().unwrap();
+        assert_eq!(
+            name,
+            format!("ank_{verb}"),
+            "tools/list is the table, in order"
+        );
+        let hints = &tool["annotations"];
+        let hint = |k: &str| {
+            hints[k]
+                .as_bool()
+                .unwrap_or_else(|| panic!("{name} carries no boolean {k}: {hints:?}"))
+        };
+        let read_only = writes == "nothing" && outside == "nothing";
+        assert_eq!(
+            hint("readOnlyHint"),
+            read_only,
+            "{name}: writes {writes}, outside {outside}"
+        );
+        assert_eq!(
+            hint("destructiveHint"),
+            *destructive && !read_only,
+            "{name}"
+        );
+        assert_eq!(hint("openWorldHint"), *open_world, "{name}");
+    }
+
+    let named = |pick: &dyn Fn(&(String, String, String, bool, bool)) -> bool| {
+        declared
+            .iter()
+            .filter(|d| pick(d))
+            .map(|d| d.0.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        named(&|d| d.3),
+        ["accept", "close", "migrate", "archive"],
+        "the verbs declaring destructive"
+    );
+    assert_eq!(
+        named(&|d| d.4),
+        ["update"],
+        "the verbs declaring open_world"
+    );
+    let read_only = named(&|d| d.1 == "nothing" && d.2 == "nothing");
+    for writer in ["hooks", "skills", "update"] {
+        assert!(
+            !read_only.contains(&writer),
+            "{writer} writes outside the corpus and is advertised read-only: {read_only:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// A call whose verb answers `--json` carries that document as
+/// `structuredContent` beside the text block, and a refusal, which answers no
+/// document, carries none (GitHub #781).
+///
+/// The structured half is compared with the text half parsed, so the two are
+/// one document and not two renderings that could drift.
+#[test]
+fn a_call_that_answers_a_document_carries_it_as_structured_content() {
+    let repo = corpus();
+    let id = seeded_task(&repo);
+    let show = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"ank_show","arguments":{{"arguments":["{id}"]}}}}}}"#
+    );
+    let replies = talk(
+        &repo,
+        &[
+            &show,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ank_show","arguments":{"arguments":["TASK-000000000000"]}}}"#,
+        ],
+    );
+    let found: serde_yaml::Value = serde_yaml::from_str(&replies[0]).unwrap();
+    let result = &found["result"];
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let parsed: serde_yaml::Value = serde_yaml::from_str(text).unwrap();
+    assert!(
+        result["structuredContent"].is_mapping(),
+        "ank_show answers a document and carries no structuredContent: {}",
+        replies[0]
+    );
+    assert_eq!(result["structuredContent"], parsed);
+    assert_eq!(
+        result["structuredContent"]["id"].as_str(),
+        Some(id.as_str())
+    );
+
+    let refused: serde_yaml::Value = serde_yaml::from_str(&replies[1]).unwrap();
+    assert_eq!(refused["result"]["isError"].as_bool(), Some(true));
+    assert!(
+        refused["result"]["structuredContent"].is_null(),
+        "a refusal answers no document and carries one: {}",
+        replies[1]
+    );
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// `ank_tui` says it needs a terminal and `ank_mcp` says it is the server
+/// itself, in the description a client reads before calling either, and both
+/// are what the call then does (GitHub #781).
+#[test]
+fn the_terminal_and_the_server_say_so_before_they_are_called() {
+    let repo = corpus();
+    let replies = talk(
+        &repo,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ank_tui","arguments":{}}}"#,
+        ],
+    );
+    let doc: serde_yaml::Value = serde_yaml::from_str(&replies[0]).unwrap();
+    let description = |tool: &str| {
+        doc["result"]["tools"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"].as_str() == Some(tool))
+            .and_then(|t| t["description"].as_str())
+            .unwrap_or_else(|| panic!("{tool} is not listed"))
+            .to_string()
+    };
+    let tui = description("ank_tui");
+    assert!(tui.contains("needs a terminal"), "{tui}");
+    let mcp = description("ank_mcp");
+    assert!(mcp.contains("is the server itself"), "{mcp}");
+    // And the description is true of the call: over a pipe the terminal reader
+    // refuses on its environment.
+    assert_eq!(
+        field(&replies[1], "exitCode").as_deref(),
+        Some("9"),
+        "{}",
+        replies[1]
+    );
+    let _ = std::fs::remove_dir_all(&repo);
+}

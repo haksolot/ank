@@ -273,14 +273,15 @@ work](multi-agent.md#the-methods-a-corpus-uses) reads.
 `ank skills --install` writes them into a new directory under the temporary
 directory and hands that directory to the `skills` CLI below, without asking:
 the flag is the consent. It prints two lines of its own, `wrote 7 skills to
-<directory>` and `running: npx skills add <directory>`; everything after them is
-the `skills` CLI's own report of the seven skills it found and where it linked
-each one.
+<directory>` and `running: npx skills add <directory> -y`; everything after them
+is the `skills` CLI's own report of the seven skills it found and where it
+linked each one. The `-y` answers that CLI's question of which skills and which
+agents: all of them, from an agent's session or from your own terminal alike.
 
 The files are the binary's, so they match the build `ank --version` names.
 `npx` itself goes online to fetch the `skills` CLI the first
-time it has none cached. With an agent detected, that CLI installs copies into
-`.agents/skills` of the directory it ran from, and they outlive the temporary
+time it has none cached. That CLI installs copies into `.agents/skills` of the
+directory it ran from, and they outlive the temporary
 directory. Without `npx` on your `PATH`, the verb prints the directory it wrote
 and the command to run later, and exits 0.
 
