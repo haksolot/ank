@@ -4,7 +4,7 @@ name: release
 # produced from a branch would make "the binary for v0.1.0" a question rather
 # than an answer.
 #
-# `workflow_dispatch` builds the same four targets and publishes nothing. The
+# `workflow_dispatch` builds the same five targets and publishes nothing. The
 # alternative is discovering that the release pipeline is broken at the moment
 # you use it, on a tag you then have to delete -- and a tag is the one thing
 # here that is awkward to take back.
@@ -79,6 +79,14 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             archive: tar.gz
+          # Linux arm64 on an arm64 runner, for the reason the Intel Mac row
+          # below gives: this job tests before it packages, and a binary
+          # cross-compiled from x86_64 would be tested through an emulator
+          # nobody downloading it runs. Graviton, the Arm CI runners and every
+          # Linux container on an Apple Silicon laptop are what it is for.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            archive: tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
             archive: tar.gz
@@ -129,12 +137,20 @@ jobs:
 
       # musl needs its own std and its own C compiler, and `bundled` means
       # there is C to compile. Both are absent from the image by default.
+      #
+      # The compiler is named for the arm64 row, where cc looks for
+      # `aarch64-linux-musl-gcc` and musl-tools installs `musl-gcc`; a fallback
+      # to the image's gcc would compile SQLite against glibc's headers.
       - name: musl toolchain
-        if: matrix.target == 'x86_64-unknown-linux-musl'
+        if: endsWith(matrix.target, '-unknown-linux-musl')
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-          rustup target add x86_64-unknown-linux-musl
+          rustup target add ${{ matrix.target }}
+          if [ "${{ matrix.target }}" = aarch64-unknown-linux-musl ]; then
+            echo "CC_aarch64_unknown_linux_musl=musl-gcc" >> "$GITHUB_ENV"
+          fi
 
       # The criterion asks for the suite on every target, not only for a build
       # that links. A binary nobody tested is not a release, it is a file.
@@ -278,6 +294,57 @@ jobs:
             dist/*/ank.exe
           if-no-files-found: error
 
+  # Build provenance for every archive, which is what the `.sha256` beside it is
+  # not: whoever can replace an asset on the release page can replace its hash
+  # too, and cannot forge an attestation GitHub signs for this workflow run.
+  # `gh attestation verify <archive> --repo haksolot/ank` then says which run
+  # built a file, and install.sh and install.ps1 ask it when gh is there.
+  #
+  # A job of its own, holding `id-token: write` and `attestations: write` and
+  # nothing more: `build` runs code from the tree on five machines and stays
+  # read-only, and `contents: write` stays on `publish` alone
+  # (ADR-24e306277bd4). On a dispatch too, so the rehearsal attests the files
+  # it built and the step that checks the result runs before a tag needs it;
+  # an attestation of a dispatch archive is true of that file and names the
+  # branch it came from.
+  attest:
+    name: attest
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+      # Read back the way the installers read it, pinned to this repository and
+      # this workflow, so a rehearsal turns red on an attestation nobody could
+      # verify rather than a tag discovering it.
+      - name: every archive verifies
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          count=0
+          for archive in dist/*.tar.gz dist/*.zip; do
+            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
+            count=$((count + 1))
+          done
+          echo "$count archives carry verified build provenance"
+          test "$count" -eq 5
+
   # The npm channel exists for the workstation whose firewall blocks downloading
   # a bare executable but lets the registry through, so the binaries travel
   # inside the platform packages and nothing is fetched at install time
@@ -293,6 +360,9 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             package: ank-linux-x64-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            package: ank-linux-arm64-musl
           - os: macos-latest
             target: aarch64-apple-darwin
             package: ank-darwin-arm64
@@ -308,10 +378,11 @@ jobs:
       # node comes from mise.lock, as nextest does in ci.yml
       # (ADR-9c69bd47ce23), and mise is that file's step: its published release
       # binary, pinned by version and by sha256 per runner, checked from stdin
-      # before it runs, with no third-party action. macOS-X64 is pinned for the
-      # Intel row of `build`, the one runner here ci.yml never uses; the
-      # digests agree with the release's SHASUMS256.txt and with the digest
-      # GitHub records for each asset. A runner outside the four is an
+      # before it runs, with no third-party action. macOS-X64 and Linux-ARM64
+      # are pinned for the Intel and the arm64 rows of `build`, the two runners
+      # here ci.yml never uses; the digests agree with the release's
+      # SHASUMS256.txt and with the digest GitHub records for each asset. A
+      # runner outside the five is an
       # environment to repair, exit 9.
       #
       # Only node is installed, and its directory goes on PATH itself rather
@@ -329,6 +400,9 @@ jobs:
             Linux-X64)
               asset=linux-x64
               sha=fe6dd17e68e09682b31d2e7bb7bb755d22636ac1af5d94621e300f2ca9e9fe8a ;;
+            Linux-ARM64)
+              asset=linux-arm64
+              sha=e90904144ba4377c5fbe385f429830282c68f3b4f9c690bf6c5a2ae9b74a809b ;;
             macOS-ARM64)
               asset=macos-arm64
               sha=9e27709db5eb1e900d83149418d3067309f2a5004d4994d94246ab658ba4a3ce ;;
@@ -542,7 +616,7 @@ jobs:
           printf '%s\n' "$err" | grep -q -- "--nosuchflag"
 
   publish-npm:
-    # Only on a tag, and only once all three smoke tests agree. Publishing is
+    # Only on a tag, and only once every smoke row agrees. Publishing is
     # the one step here that cannot be taken back.
     needs: npm-smoke
     if: startsWith(github.ref, 'refs/tags/v')
@@ -599,25 +673,27 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           tag=$(bash .github/scripts/npm-dist-tag.sh "$version")
           echo "publishing $version under $tag"
-          for p in ank-linux-x64-musl ank-darwin-arm64 ank-win32-x64 ank; do
+          for p in ank-linux-x64-musl ank-linux-arm64-musl ank-darwin-arm64 ank-win32-x64 ank; do
             npm publish --access public --tag "$tag" "./npm/$p"
           done
 
   publish:
-    # Only after every row. A release carrying three targets out of four would
+    # Only after every row. A release carrying four targets out of five would
     # be worse than no release: it looks complete.
     #
     # `build` and not `npm-smoke`, deliberately: the release page is the primary
     # channel and npm is a convenience on top of it, so a broken wrapper costs
     # the npm packages and not the release. The reverse would hold the binaries
     # hostage to a JavaScript shim.
-    needs: build
+    # And after `attest`: a release whose archives carry no provenance would be
+    # one the installers' --require-provenance refuses whole.
+    needs: [build, attest]
     # And only for a tag. A dispatch run builds and stops there.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # The one job in this file that writes, and the only one: `contents:
     # write` is granted here and nowhere else, so `build` -- which runs code
-    # from the tree on four machines -- never holds the capability that
+    # from the tree on five machines -- never holds the capability that
     # creates a release.
     permissions:
       contents: write

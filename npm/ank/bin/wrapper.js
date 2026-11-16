@@ -21,6 +21,7 @@ const { spawnSync } = require("child_process");
 
 const PACKAGES = {
   "linux x64": "@haksolot/ank-linux-x64-musl",
+  "linux arm64": "@haksolot/ank-linux-arm64-musl",
   "darwin arm64": "@haksolot/ank-darwin-arm64",
   "win32 x64": "@haksolot/ank-win32-x64",
 };

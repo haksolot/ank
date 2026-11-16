@@ -23,6 +23,7 @@ manifests=(
   crates/ank-core/Cargo.toml
   npm/ank/package.json
   npm/ank-linux-x64-musl/package.json
+  npm/ank-linux-arm64-musl/package.json
   npm/ank-darwin-arm64/package.json
   npm/ank-win32-x64/package.json
   .claude-plugin/plugin.json

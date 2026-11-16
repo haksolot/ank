@@ -36,8 +36,8 @@ The binary is inside the package: one package per platform, installed through
 `postinstall` download would die behind the very firewall this channel exists
 to cross, after the install looked like it had worked.
 
-It covers `linux x64`, `darwin arm64` and `win32 x64`. On anything else, an
-Intel Mac or a linux arm64 box, the wrapper exits 9 and names `cargo install`.
+It covers `linux x64`, `linux arm64`, `darwin arm64` and `win32 x64`. On
+anything else, an Intel Mac for one, the wrapper exits 9 and names `cargo install`.
 
 **`curl | sh`**, on Linux and macOS:
 
@@ -55,6 +55,25 @@ exist.
 It verifies the `.sha256` the same way, runs under Windows PowerShell 5.1 as
 well as PowerShell 7, and moves a running `ank.exe` aside before writing the new
 one, so an upgrade works from a shell that already has ank on its `PATH`.
+
+**Where an archive came from.** The `.sha256` beside an archive catches a
+truncated or corrupted download, and whoever could replace the archive on the
+release page could replace its hash too. So every archive of a release after
+0.9.4 also carries a build provenance attestation, which GitHub signs for the
+`release.yml` run that built the file. Check one by hand with
+[`gh`](https://cli.github.com):
+
+    gh release download v<version> --repo haksolot/ank --pattern 'ank-*-x86_64-unknown-linux-musl.tar.gz'
+    gh attestation verify ank-<version>-x86_64-unknown-linux-musl.tar.gz \
+      --repo haksolot/ank --signer-workflow haksolot/ank/.github/workflows/release.yml
+
+When a signed-in `gh` is on `PATH`, both installers run that check before
+unpacking and refuse an archive that fails it, with exit 4. Each says in one
+line which check it made: `verified: sha256 and provenance`, or `verified:
+sha256 only` followed by the reason. To refuse any install the check cannot be
+made for, pass `--require-provenance` to `install.sh` or `-RequireProvenance` to
+`install.ps1`, or set `ANK_REQUIRE_PROVENANCE` for either: it exits 5 without a
+signed-in `gh`, and 4 for a release from before the attestations.
 
 Two fallbacks remain when none of the three fits, and this project supports
 neither as a route. The [releases
@@ -182,7 +201,10 @@ nothing and says so:
     up to date
 
 Otherwise it prints the command it hands the install to, runs it, and exits
-with that command's code. `--version <v>` installs the release it names, an
+with that command's code. The installer it pipes is the one tagged with the
+release it installs, read from `raw.githubusercontent.com/haksolot/ank/v<version>/`,
+so a change on `main` reaches an update only once a release carries it. A
+release at or below 0.9.4 still takes the installer on `main`, as before. `--version <v>` installs the release it names, an
 older one included. The skills stay where they are: when the new release carries
 another skill revision than the binary it replaced, `update` names `ank skills
 --install` in one line and leaves running it to you.

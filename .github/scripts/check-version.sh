@@ -127,7 +127,7 @@ compare "npm/ank/package.json" "npm/ank/package.json" \
   "$(json_version npm/ank/package.json 2>/dev/null)" \
   "npm pkg set version=$version --prefix npm/ank"
 
-for p in ank-linux-x64-musl ank-darwin-arm64 ank-win32-x64; do
+for p in ank-linux-x64-musl ank-linux-arm64-musl ank-darwin-arm64 ank-win32-x64; do
   # The wrapper pins its platform packages exactly, so a pin left behind
   # resolves an install to a binary from a different build.
   compare "npm/ank/package.json @haksolot/$p" "npm/ank/package.json" \

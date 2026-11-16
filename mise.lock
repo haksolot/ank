@@ -67,6 +67,10 @@ version = "22.23.4"
 backend = "core:node"
 specifiers = ["22.23.4"]
 
+[tools.node."platforms.linux-arm64"]
+checksum = "sha256:f7a1e486dbc8b286847815b477d4fb5e9fb963ed4489c3e1588853d685f589f9"
+url = "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-arm64.tar.gz"
+
 [tools.node."platforms.linux-x64"]
 checksum = "sha256:b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406"
 url = "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.gz"

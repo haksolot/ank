@@ -1,0 +1,22 @@
+{
+  "name": "@haksolot/ank-linux-arm64-musl",
+  "version": "0.9.4",
+  "description": "The ank binary for Linux arm64, statically linked against musl.",
+  "license": "Apache-2.0",
+  "author": "Sean Lamet",
+  "homepage": "https://github.com/haksolot/ank",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haksolot/ank.git"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/ank",
+    "LICENSE"
+  ]
+}

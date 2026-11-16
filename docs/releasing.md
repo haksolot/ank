@@ -9,14 +9,15 @@ anything is built.
 
 ## Bump the version literals
 
-Ten literals across seven files carry the version, and every one of them must
+Twelve literals across eight files carry the version, and every one of them must
 say the version you are about to tag:
 
     crates/ank-cli/Cargo.toml                          version = "<v>"
     crates/ank-core/Cargo.toml                         version = "<v>"
     npm/ank/package.json                               "version"
-    npm/ank/package.json                               the three optionalDependencies pins
+    npm/ank/package.json                               the four optionalDependencies pins
     npm/ank-linux-x64-musl/package.json                "version"
+    npm/ank-linux-arm64-musl/package.json              "version"
     npm/ank-darwin-arm64/package.json                  "version"
     npm/ank-win32-x64/package.json                     "version"
     .claude-plugin/plugin.json                         "version"
@@ -46,7 +47,7 @@ checks](ci-jobs.md)).
 ## Rehearse with a dispatch
 
 `release.yml` also runs on `workflow_dispatch`, and a dispatch builds the same
-four targets and publishes nothing. Run one before tagging whenever the pipeline
+five targets and publishes nothing. Run one before tagging whenever the pipeline
 itself changed:
 
     gh workflow run release.yml --ref main
@@ -54,7 +55,7 @@ itself changed:
 The alternative is discovering that the release pipeline is broken at the moment
 you use it, on a tag you then have to delete, and a tag is the one thing here
 that is awkward to take back. On a dispatch the version job says there is no tag
-to compare and skips the comparison, the four builds and the three npm smoke
+to compare and skips the comparison, the five builds and the four npm smoke
 tests run in full, and the two publish jobs do not start.
 
 ## Tag
@@ -72,15 +73,16 @@ What the run then does, in order:
 1. **version** compares the tag with every literal and refuses before anything
    is built. A check at the end would already have spent the matrix.
 2. **build** runs the tests and packages one archive per target:
-   `x86_64-unknown-linux-musl`, `aarch64-apple-darwin`, `x86_64-apple-darwin`
-   on an Intel runner, and `x86_64-pc-windows-msvc`, each with a `.sha256`.
-3. **npm smoke** installs the assembled packages from their tarballs on three
+   `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` on an arm64
+   runner, `aarch64-apple-darwin`, `x86_64-apple-darwin` on an Intel runner,
+   and `x86_64-pc-windows-msvc`, each with a `.sha256`.
+3. **npm smoke** installs the assembled packages from their tarballs on four
    platforms and checks the wrapper answers like the binary.
-4. **publish** creates the GitHub release from the four archives, only once
-   every build row passed. A release carrying three targets out of four would
+4. **publish** creates the GitHub release from the five archives, only once
+   every build row passed. A release carrying four targets out of five would
    look complete.
-5. **publish-npm** publishes the three platform packages and then the wrapper,
-   only once all three smoke tests agree.
+5. **publish-npm** publishes the four platform packages and then the wrapper,
+   only once every smoke row agrees.
 
 A version with a prerelease suffix, `v0.9.0-rc1`, publishes under the npm
 dist-tag `next` and as a GitHub prerelease, so it is installable by whoever asks
@@ -95,12 +97,13 @@ the pipeline uses no secret at all: the GitHub release is
 created under the workflow's own token, and the registry attaches provenance to
 every package it receives.
 
-npmjs.com decides whom to trust, per package. Each of the four packages,
-`@haksolot/ank`, `@haksolot/ank-linux-x64-musl`, `@haksolot/ank-darwin-arm64`
-and `@haksolot/ank-win32-x64`, names GitHub Actions as its trusted publisher
+npmjs.com decides whom to trust, per package. Each of the five packages,
+`@haksolot/ank`, `@haksolot/ank-linux-x64-musl`,
+`@haksolot/ank-linux-arm64-musl`, `@haksolot/ank-darwin-arm64` and
+`@haksolot/ank-win32-x64`, names GitHub Actions as its trusted publisher
 under *Settings → Trusted Publisher*, with the owner `haksolot`, the repository
 `ank` and the workflow file `release.yml`. Renaming that file, or adding a
-fifth package, means adding the new name there before the next tag, or that
+sixth package, means adding the new name there before the next tag, or that
 package's publish is refused.
 
 The same page carries **Allowed actions**, and it has to allow publishing

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Fills the npm packages with the binary the build job produced, stamps one
-# version across all four, and packs them.
+# version across all five, and packs them.
 #
 # The binary comes from the same artefacts the GitHub release publishes: one
 # build, two channels, and no second compilation that could disagree with the
@@ -14,7 +14,7 @@
 #
 #   npm-assemble.sh <version> [package ...]
 #
-# With no package named, all three are assembled -- which is what the publish
+# With no package named, all four are assembled -- which is what the publish
 # job wants. The smoke job names the one platform whose artefact it downloaded,
 # because it only has that one.
 
@@ -24,7 +24,7 @@ version="${1:?usage: npm-assemble.sh <version> [package ...]}"
 shift
 packages=("$@")
 if [ "${#packages[@]}" -eq 0 ]; then
-  packages=(ank-linux-x64-musl ank-darwin-arm64 ank-win32-x64)
+  packages=(ank-linux-x64-musl ank-linux-arm64-musl ank-darwin-arm64 ank-win32-x64)
 fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -33,6 +33,7 @@ cd "$root"
 target_of() {
   case "$1" in
     ank-linux-x64-musl) echo x86_64-unknown-linux-musl ;;
+    ank-linux-arm64-musl) echo aarch64-unknown-linux-musl ;;
     ank-darwin-arm64) echo aarch64-apple-darwin ;;
     ank-win32-x64) echo x86_64-pc-windows-msvc ;;
     *)
@@ -84,7 +85,7 @@ done
 # the version is the only thing tying the two together.
 cd npm/ank
 npm pkg set version="$version"
-for p in ank-linux-x64-musl ank-darwin-arm64 ank-win32-x64; do
+for p in ank-linux-x64-musl ank-linux-arm64-musl ank-darwin-arm64 ank-win32-x64; do
   npm pkg set "optionalDependencies.@haksolot/$p=$version"
 done
 cp ../../LICENSE LICENSE

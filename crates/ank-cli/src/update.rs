@@ -139,10 +139,31 @@ fn restore_ratifications(inv: &Invocation, cwd: &Path, out: &mut dyn Write) {
     }
 }
 
-/// Where each installer is fetched from: the raw file on the default branch,
-/// which is the route the README documents and so the one a person already ran.
-const INSTALL_SH: &str = "https://raw.githubusercontent.com/haksolot/ank/main/install.sh";
-const INSTALL_PS1: &str = "https://raw.githubusercontent.com/haksolot/ank/main/install.ps1";
+/// Where the installers are fetched from: the raw files of this repository, at
+/// a ref [`installer_ref`] chooses.
+const RAW: &str = "https://raw.githubusercontent.com/haksolot/ank";
+
+/// The last release whose tagged installer `update` does not fetch.
+///
+/// Up to it, `update` piped the script on `main` whatever it installed, and a
+/// tagged script that old may not take the flags `update` passes; so for those
+/// releases the default branch stays the route, as it was.
+const MAIN_UP_TO: Version = Version(0, 9, 4);
+
+/// The ref the installer for `version` is read at: the tag `v<version>` it
+/// installs, which is immutable and is what the release workflow tested,
+/// rather than whatever `main` holds at that second (GitHub #789).
+fn installer_ref(version: Version) -> String {
+    if version > MAIN_UP_TO {
+        format!("v{version}")
+    } else {
+        "main".to_string()
+    }
+}
+
+fn installer_url(version: Version, file: &str) -> String {
+    format!("{RAW}/{}/{file}", installer_ref(version))
+}
 
 /// The npm package, whose tree holds the platform binary on a global install.
 const NPM_PACKAGE: &str = "@haksolot/ank";
@@ -359,8 +380,9 @@ fn installer(version: Version, dir: &Path) -> Result<(Children, String)> {
     let tag = format!("v{version}");
     let dir_text = dir.to_string_lossy().to_string();
     if cfg!(windows) {
+        let install_ps1 = installer_url(version, "install.ps1");
         let script = format!(
-            "& ([scriptblock]::Create((irm {INSTALL_PS1}))) -Version {tag} -Dir '{}' -NoWelcome",
+            "& ([scriptblock]::Create((irm {install_ps1}))) -Version {tag} -Dir '{}' -NoWelcome",
             dir_text.replace('\'', "''")
         );
         let shown = format!("powershell -Command \"{script}\"");
@@ -383,15 +405,16 @@ fn installer(version: Version, dir: &Path) -> Result<(Children, String)> {
         )?;
         return Ok((Children(vec![("powershell".into(), child)]), shown));
     }
+    let install_sh = installer_url(version, "install.sh");
     let shown =
-        format!("curl -fsSL {INSTALL_SH} | sh -s -- --version {tag} --dir {dir_text} --no-welcome");
+        format!("curl -fsSL {install_sh} | sh -s -- --version {tag} --dir {dir_text} --no-welcome");
     let curl = crate::skills::on_path("curl").ok_or_else(|| not_on_path("curl", &shown))?;
     let sh = crate::skills::on_path("sh").ok_or_else(|| not_on_path("sh", &shown))?;
     let mut fetch = start(
         &curl,
         &shown,
         Command::new(&curl)
-            .args(["-fsSL", INSTALL_SH])
+            .args(["-fsSL", install_sh.as_str()])
             .stdin(Stdio::null())
             .stdout(Stdio::piped()),
     )?;
