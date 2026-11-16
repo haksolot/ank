@@ -23,43 +23,80 @@ config confers no authority; the signature is what carries it.
 specification, so any tool can read and write `.ank/`. Immutability is
 therefore *verifiable, not defended*: every freeze is anchored by a hash in an
 artifact the file's editor does not control (the claim record, the
-ratification commit, the proof entry) and `ank check` is what compares. A
+ratification tag, the proof entry) and `ank check` is what compares. A
 direct edit is not prevented. It is noticed.
 
 **Enforcement, where it is real, lives outside ank.** A harness `PreToolUse`
-hook that refuses a tool call cannot be talked out of it by an environment
-variable, because the process it guards does not get to set one. That is the
-layer to reach for when you need a refusal that holds.
+hook that refuses a tool call cannot be talked out of it by the agent it
+guards, because that agent does not start the harness and does not get to set
+its environment. That is the layer to reach for when you need a refusal that
+holds, and ank ships one for Claude Code.
 
-This repository ships no such hook. It had one, refusing direct reads of
-`.ank/`, and it was deleted along with the rest of `.claude/` in 264636c. The
-rule it guarded did not go with it: it is the ratified constraint of
-ADR-3c8d94a0bbe0, `ank context` serves it every session, and `ank check` reports
-a file written behind the CLI's back. What changed is that the rule is advisory
-here, which is the regime section 1 describes rather than a hole in a defence.
-Install the hook on your own machine if you want the refusal; nothing in this
-repository depends on one being installed, and its absence is not a
-vulnerability.
+`ank hooks install claude` adds two entries to the user-level `settings.json`
+of the harness, both running the binary that installed them: one at session
+start, which serves `ank status`, and one before a file tool, which applies two
+guards declared in `.ank/config.yml` and set with `ank config`:
+
+- **`guard.corpus`**, `deny` by default, refuses a `Read`, `Write`, `Edit`,
+  `MultiEdit`, `NotebookEdit`, `Glob` or `Grep` aimed under the corpus
+  directory, naming the verbs that read it instead. `off` lets it through.
+- **`guard.edit`**, `warn` by default, looks at an `Edit`, `MultiEdit`, `Write`
+  or `NotebookEdit` that no live claim of the identity covers: `claim` refuses
+  it, `warn` lets it through with a message naming the path, `off` says
+  nothing. A tool that only reads is never an edit.
+
+`ANK_GUARD_CORPUS` and `ANK_GUARD_EDIT`, set by whoever launches the agent, may
+tighten either level and never loosen it; a looser value is ignored and the
+hook says so.
+
+What the guards do not refuse is as much a part of the model as what they do:
+
+- **A shell command.** The hook is matched to the file tools above and never
+  sees a `Bash` call, so `cat .ank/config.yml` or a redirect into a file no
+  claim covers goes through at every level.
+- **An identity.** "The identity" is `$ANK_AGENT`, which the launcher sets, so
+  `guard.edit` measures an edit against the claims of whatever identity the
+  session was started with.
+- **Its own failure.** The hook fails open: outside a corpus it is silent, and a
+  payload it cannot read or an error of its own lets the tool call through
+  rather than blocking the harness.
+- **A machine where nobody installed it.** The entries live in the user's own
+  settings, not in the repository, and only for Claude Code. Nothing in this
+  repository installs them or depends on them being installed, and their
+  absence is not a vulnerability: the corpus rules they guard stay readable
+  through `ank context`, and `ank check` still reports a file written behind
+  the CLI's back.
 
 ## 2. The one hard line, and what it does not prove
 
-The single hard line of authority is the **signed ratification commit**
-produced by `ank accept`. It records the SHA and the hash of the accepted ADR's
-`constraint` and `scope`, `ank check` verifies that signature against the keys
-declared in `.ank/allowed_signers`, and `accept` refuses to run anywhere but
-the default branch. The key file is versioned, so adding a key is a diff in
-review.
+The single hard line of authority is the **signed ratification tag**
+written by `ank accept`: an annotated tag at `refs/ank/ratify/<id>`, pointing at
+the blob of the entity file as `accept` wrote it, whose message carries the
+anchor (the hash of an ADR's `constraint` and `scope`, or of a spec's body and
+`scope`), the actor and any supersession. It is signed where the repository
+signs. `accept` runs on any branch, commits nothing, and pushes the ref with
+compare-and-swap; when the ref does not reach the remote it exits 9 and keeps
+nothing.
+
+`ank check` verifies that signature against the keys declared under `signers:`
+in `.ank/config.yml`, and reads no other list. The block is written by `ank
+signers add`, `retire` and `remove`, which write files and commit nothing, so
+declaring a key is a diff landed by pull request, and a ratification is judged
+against the `signers:` the default branch holds. A ratification made before
+tags existed is a signed commit with the subject `ratify <id>`; `check` still
+finds it by walking history, and `ank accept --reanchor` moves its anchor into
+a tag.
 
 **What the signature proves is access to an authorised key, not human intent.**
 An agent running on a developer machine whose git signing is configured and
-unlocked can produce a valid signed commit. The defence against that case is
+unlocked can produce a valid signed tag. The defence against that case is
 operational rather than cryptographic: keep the ratification key behind a
 passphrase or hardware touch-to-sign, distinct from the everyday commit key if
 needed. That limitation is consistent with section 1: drift, not an adversary.
 
 **With no signing configured at all, the hard line is gone and nothing replaces
 it.** Roles were already advisory, and the ratification anchor becomes a hash
-in a commit message anyone can write. `ank check` displays that rather than
+in an unsigned tag message anyone can write. `ank check` displays that rather than
 hiding it, and it distinguishes a fault from a signal: a signature present with
 no local public key is reported as *not verified, and not refused*, because a
 clone without the key is a correct repository on an incomplete machine. The
@@ -90,20 +127,17 @@ a silent fallback to `cmd`.
 ## 4. Supported versions
 
 Ank is pre-1.0. Only the **latest published release** is supported, and fixes
-ship in the next release rather than in a backport.
+ship in the next release rather than in a backport. Every earlier release is
+unsupported: upgrade.
 
-| Version | Supported |
-|---|---|
-| 0.8.0 (latest) | yes |
-| every earlier release | no, upgrade |
-
-This table names a number, so it goes stale between releases. The releases
-themselves are the answer that cannot:
+The latest release is the one this page links rather than names, because a
+number written here would go stale at the next one:
 <https://github.com/haksolot/ank/releases/latest>. `ank update --check` reports
 the running version against the latest published one and installs nothing, and
 `ank --version` prints the running build.
 
-Ank requires **git 2.34 or newer** and checks at startup.
+Ank requires **git 2.34 or newer**, checked by each verb that needs git and
+never at startup.
 
 ## 5. Reporting a vulnerability
 
@@ -130,7 +164,7 @@ In the corpus:
 - a hash anchor that can be forged rather than detected;
 - a write outside what the verb run documents as its own: a path where `ank`
   touches the working tree, a branch, a tag or a ref that its `ank help <verb>`
-  entry does not name, or a commit from any verb but `accept`;
+  entry does not name, or a commit made by any verb, since none of them commits;
 - secrets leaking into output, into a proof or into an entity.
 
 Each verb's documented perimeter is what that fourth item measures against, so
@@ -176,6 +210,6 @@ actually reach for:
 **Out of scope**, because section 1 already answers it: an agent editing
 `.ank/` directly instead of going through the CLI; a falsified `$ANK_AGENT`; a
 role in `config.yml` not being enforced; a ratification signature produced on a
-machine whose signing key is unlocked; this repository shipping no `PreToolUse`
-hook. These are documented properties. If you think one of them should change,
+machine whose signing key is unlocked; a shell command the `PreToolUse` hook
+never sees, or a machine where the hook is not installed. These are documented properties. If you think one of them should change,
 that is an ADR, not an advisory.

@@ -9,12 +9,14 @@
 //!
 //! **`--install` hands a directory to the skills CLI and decides nothing about
 //! where a skill goes.** It writes one subdirectory per skill under a directory
-//! of its own and runs `npx skills add <that directory>`, which places them for
-//! every agent it knows. The flag given is the consent, so nothing here asks,
+//! of its own and runs `npx skills add <that directory> -y`, which places them
+//! for every agent it knows. The flag given is the consent, so nothing here asks,
 //! and nothing here reads standard input: the child gets none either, so a
 //! question the skills CLI would ask on a cold cache answers itself instead of
 //! waiting on a terminal nobody is at. `npm_config_yes` is `npx --yes` spelled
-//! as the environment, the same value the installers pass.
+//! as the environment, the same value the installers pass; `-y` is the skills
+//! CLI's own consent, which it otherwise takes only from a terminal or from an
+//! agent it detects.
 
 use crate::cli::{CliError, Invocation, Result};
 use crate::index::Index;
@@ -318,13 +320,18 @@ fn run_over(skills: &[Embedded], install: bool, out: &mut dyn Write) -> Result<E
         return Ok(ExitCode::Ok);
     };
 
-    let _ = writeln!(out, "running: npx skills add {shown}");
+    let _ = writeln!(out, "running: npx skills add {shown} -y");
     // The child writes to the same stdout, so what this process has buffered
     // goes first or the two interleave out of order.
     let _ = out.flush();
     let status = Command::new(&npx)
         .args(["skills", "add"])
         .arg(&dir)
+        // **`-y` answers the skills CLI's own question**, which skills and
+        // which agents. It refuses that question without a terminal unless it
+        // detects an agent, so without the flag a human terminal installs
+        // nothing (GitHub #776); `npm_config_yes` answers only npx's.
+        .arg("-y")
         .env("npm_config_yes", "1")
         .stdin(Stdio::null())
         .status()
