@@ -5,7 +5,7 @@ slug: doc-replay-format-replays-finds-the-task-its-own
 title: doc_replay::format_replays finds the task its own setup created
 created: 2026-11-16T15:28:19Z
 author: claude-code/plan
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/tests/doc_replay.rs
   - docs/format.md
@@ -16,7 +16,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: diagnose
 schema: 4
-version: 1
+version: 2
 ---
 
 One failure on PR #798 (a corpus-only PR), green on the rerun and 3 of 3 locally. Read how the replay maps the ids the page prints to the ids the binary creates.
