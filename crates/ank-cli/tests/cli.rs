@@ -20980,6 +20980,7 @@ fn json_golden_reading_verbs() {
         ("review", &["review", "src/**", "--json"][..]),
         ("context", &["context", "src/**", "--json"][..]),
         ("config-read", &["config", "claim_ttl_max", "--json"][..]),
+        ("config-list", &["config", "--list", "--json"][..]),
         ("log-read", &["log", ID, "--json"][..]),
         ("skills", &["skills", "--json"][..]),
     ] {
@@ -21325,8 +21326,9 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
     // since TASK-f248037e8bab, which gave `hooks` one, pinned three times in
     // `tests/hooks_install.rs`: an install, the second install that changes
     // nothing, and the remove; and thirty-eight since TASK-69006ffa955e, which
-    // gave a failing `done` one, pinned in `tests/done_output.rs`.
-    assert_eq!(checked, 38, "one fixture per document the surface returns");
+    // gave a failing `done` one, pinned in `tests/done_output.rs`, and
+    // thirty-nine since TASK-fa89fb00791f, which gave `config --list` one.
+    assert_eq!(checked, 39, "one fixture per document the surface returns");
     // **A declaration is unexercised when no instance of it anywhere carries a
     // row**, which is the reading this list is about (TASK-fbdf25e30058). It
     // used to be one instance at a time: a path went on the list every time the
@@ -21443,6 +21445,20 @@ fn conforms(
             Type::Bool if v.as_bool().is_some() => {}
             Type::Strings | Type::Array(_) if v.as_sequence().is_some() => {}
             Type::Object(inner) => conforms(v, inner, &here, arrays)?,
+            // Any is not unchecked: the document states the type beside the
+            // value, and the value has to be of it.
+            Type::Any => {
+                let declared = map
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .ok_or_else(|| format!("{here}: declared any, with no `type` beside it"))?;
+                if !typed_as(declared, v) {
+                    return Err(format!(
+                        "{here}: `type` says {declared}, found {}",
+                        kind_of(v)
+                    ));
+                }
+            }
             _ => {
                 return Err(format!(
                     "{here}: declared {}, found {}",
@@ -27854,5 +27870,133 @@ fn config_keys_page_states_the_lower_bound_of_each_zero_bounded_key() {
             .find(|l| l.starts_with(&format!("| `{key}` |")))
             .unwrap_or_else(|| panic!("{key} has no row"));
         assert!(row.contains("at least"), "{key} states no bound: {row}");
+    }
+}
+
+/// Whether a JSON value is of the type a `config` entry declares for it.
+fn typed_as(declared: &str, v: &serde_yaml::Value) -> bool {
+    match declared {
+        "integer" => v.as_i64().is_some() || v.as_u64().is_some(),
+        "boolean" => v.as_bool().is_some(),
+        "string" => v.as_str().is_some(),
+        "list" => v
+            .as_sequence()
+            .is_some_and(|s| s.iter().all(|i| i.as_str().is_some())),
+        _ => false,
+    }
+}
+
+#[test]
+fn config_list_answers_every_key_in_force_with_its_source() {
+    let r = Repo::new();
+    r.set_config(&format!(
+        "{AWKWARD}    inputs: [\"src/**\", \"Cargo.toml\"]\npeers:\n  sibling: ../sibling\n"
+    ));
+
+    let out = r.ank("claude-code@ank", &["config", "--list"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let text = said(&out);
+    let line = |key: &str| {
+        text.lines()
+            .find(|l| l.split_whitespace().next() == Some(key))
+            .unwrap_or_else(|| panic!("no line for {key}:\n{text}"))
+            .to_string()
+    };
+    // Every key the reader addresses, each declared verifier's and peer's
+    // included, in the words `ank config <key>` answers with.
+    assert_eq!(line("claim_ttl_max"), "claim_ttl_max 2h");
+    assert_eq!(line("context_budget"), "context_budget 8000 (default)");
+    assert_eq!(line("default_branch"), "default_branch main");
+    assert_eq!(line("verifier_lock"), "verifier_lock true (default)");
+    assert_eq!(line("peers.sibling"), "peers.sibling ../sibling");
+    for verifier in ["fmt-check", "cargo-test"] {
+        for field in ["run", "timeout", "default", "inputs"] {
+            line(&format!("verifiers.{verifier}.{field}"));
+        }
+    }
+    assert_eq!(
+        line("verifiers.cargo-test.timeout"),
+        "verifiers.cargo-test.timeout 30m"
+    );
+    for key in [
+        "schema",
+        "requires_ank",
+        "claim_ttl_default",
+        "proof.reuse_max_age",
+        "verifier_jobs",
+        "weight.hot_files",
+        "weight.plane_bytes",
+        "guard.corpus",
+        "guard.edit",
+    ] {
+        line(key);
+    }
+
+    // The same entries as one document, each typed as declared.
+    let out = r.ank("claude-code@ank", &["config", "--list", "--json"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&said(&out)).unwrap();
+    assert_eq!(doc["contract"].as_u64(), Some(1));
+    let entries = doc["entries"].as_sequence().expect("entries is an array");
+    assert_eq!(entries.len(), text.lines().count(), "one entry per line");
+    let entry = |key: &str| {
+        entries
+            .iter()
+            .find(|e| e["key"].as_str() == Some(key))
+            .unwrap_or_else(|| panic!("no entry for {key}"))
+            .clone()
+    };
+    for e in entries {
+        let key = e["key"].as_str().unwrap();
+        let declared = e["type"].as_str().unwrap();
+        if e["value"].is_null() {
+            assert!(e["typed"].is_null(), "{key}: typed without a value");
+            assert_eq!(e["source"].as_str(), Some("unset"), "{key}");
+        } else {
+            assert!(e["value"].as_str().is_some(), "{key}: value retyped");
+            assert!(typed_as(declared, &e["typed"]), "{key}: {e:?}");
+        }
+    }
+    let budget = entry("context_budget");
+    assert_eq!(budget["value"].as_str(), Some("8000"));
+    assert_eq!(budget["typed"].as_u64(), Some(8000));
+    assert_eq!(budget["source"].as_str(), Some("default"));
+    assert_eq!(entry("verifier_lock")["typed"].as_bool(), Some(true));
+    assert_eq!(entry("claim_ttl_max")["source"].as_str(), Some("file"));
+    let inputs = entry("verifiers.cargo-test.inputs");
+    assert_eq!(inputs["type"].as_str(), Some("list"));
+    assert_eq!(
+        inputs["typed"],
+        serde_yaml::from_str::<serde_yaml::Value>("[\"src/**\", \"Cargo.toml\"]").unwrap()
+    );
+
+    // A key named beside --list is a question --list does not answer.
+    let out = r.ank("claude-code@ank", &["config", "--list", "context_budget"]);
+    assert_eq!(code(&out), 1, "{}", said(&out));
+}
+
+#[test]
+fn config_reading_one_key_keeps_value_a_string_and_adds_its_type() {
+    let r = Repo::new();
+    r.set_config(AWKWARD);
+    for (key, ty, typed) in [
+        ("context_budget", "integer", "8000"),
+        ("verifier_lock", "boolean", "true"),
+        ("claim_ttl_max", "string", "\"2h\""),
+        ("verifiers.fmt-check.default", "boolean", "false"),
+        ("requires_ank", "string", "null"),
+    ] {
+        let out = r.ank("claude-code@ank", &["config", key, "--json"]);
+        assert_eq!(code(&out), 0, "{key}: {}", erred(&out));
+        let doc: serde_yaml::Value = serde_yaml::from_str(&said(&out)).unwrap();
+        assert_eq!(doc["type"].as_str(), Some(ty), "{key}");
+        assert_eq!(
+            doc["typed"],
+            serde_yaml::from_str::<serde_yaml::Value>(typed).unwrap(),
+            "{key}"
+        );
+        if typed != "null" {
+            assert!(doc["value"].as_str().is_some(), "{key}: value retyped");
+        }
     }
 }

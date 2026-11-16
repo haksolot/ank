@@ -1843,6 +1843,138 @@ impl Value {
     }
 }
 
+impl Value {
+    /// The value in the JSON type `ty` names, `null` for an unset value and
+    /// for one the file wrote in a form its type does not read: the string
+    /// beside it still says what was written (GitHub #784).
+    fn typed(&self, ty: &str) -> String {
+        let (Value::Set(v) | Value::Default(v)) = self else {
+            return "null".to_string();
+        };
+        let v = v.trim();
+        match ty {
+            "integer" => v
+                .parse::<u64>()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| "null".to_string()),
+            "boolean" => match v {
+                "true" | "false" => v.to_string(),
+                _ => "null".to_string(),
+            },
+            "list" => serde_yaml::from_str::<Vec<String>>(v)
+                .map(crate::json::strings)
+                .unwrap_or_else(|_| "null".to_string()),
+            _ => crate::json::string(v),
+        }
+    }
+}
+
+/// The JSON type a key's value is read as, from the type the key table
+/// declares (`ank_core::config::KEYS`): `integer`, `boolean`, `list` for a
+/// list of anything, and `string` for every other word, a duration, a path, a
+/// version and a closed set of words among them.
+fn json_type(key: &Key) -> &'static str {
+    let template = match key {
+        Key::Top { name, .. } => (*name).to_string(),
+        Key::Under { map: "peers", .. } => "peers.<name>".to_string(),
+        Key::Under { map, name, .. } => format!("{map}.{name}"),
+        Key::Field { field, .. } => format!("verifiers.<name>.{field}"),
+        Key::Inputs { .. } => "verifiers.<name>.inputs".to_string(),
+        Key::Block { .. } => return "string",
+    };
+    let declared = ank_core::config::KEYS
+        .iter()
+        .find(|k| k.path == template)
+        .map_or("string", |k| k.ty);
+    match declared {
+        "integer" => "integer",
+        "boolean" => "boolean",
+        d if d.starts_with("list") => "list",
+        _ => "string",
+    }
+}
+
+/// The names declared directly under the top-level mapping `map`, in file
+/// order: the verifiers, or the peers.
+fn declared_under(lines: &[Line], map: &str) -> Vec<String> {
+    let Some((_, block)) = named_block(lines, map) else {
+        return Vec::new();
+    };
+    let Some(child) = block.indent else {
+        return Vec::new();
+    };
+    lines[block.range]
+        .iter()
+        .filter(|l| content_indent(&l.text) == Some(child))
+        .filter_map(|l| key_of(&l.text).map(|(k, _)| k))
+        .collect()
+}
+
+/// Every key `ank config <key>` reads, resolved against the file: the
+/// templates of [`KEYS`] in their order, `<name>` expanded into each declared
+/// peer and each declared verifier, a verifier's fields kept together.
+fn listed_keys(lines: &[Line]) -> Vec<String> {
+    let fields: Vec<&str> = KEYS
+        .iter()
+        .filter_map(|k| k.strip_prefix("verifiers.<name>."))
+        .collect();
+    let mut keys = Vec::new();
+    for template in KEYS {
+        if *template == "peers.<name>" {
+            keys.extend(
+                declared_under(lines, "peers")
+                    .into_iter()
+                    .map(|p| format!("peers.{p}")),
+            );
+        } else if let Some(field) = template.strip_prefix("verifiers.<name>.") {
+            // Expanded once, at the first field, so each verifier's fields
+            // stay together rather than interleave with another's.
+            if fields.first() == Some(&field) {
+                for v in declared_under(lines, "verifiers") {
+                    keys.extend(fields.iter().map(|f| format!("verifiers.{v}.{f}")));
+                }
+            }
+        } else {
+            keys.push((*template).to_string());
+        }
+    }
+    keys
+}
+
+/// `ank config --list`: every key [`listed_keys`] names, with its value in
+/// force and its source, read from the text as `ank config <key>` reads one,
+/// so it answers on a file that does not parse too.
+fn list(inv: &Invocation, lines: &[Line], out: &mut dyn Write) -> Result<ExitCode> {
+    let mut entries = Vec::new();
+    let mut human = Vec::new();
+    for name in listed_keys(lines) {
+        let key = resolve_key(&name)?;
+        let value = read_key(lines, &key)?;
+        let ty = json_type(&key);
+        human.push(format!("{name} {}", value.display()));
+        entries.push(
+            crate::json::Obj::new()
+                .str("key", &name)
+                .raw("value", &value.json())
+                .str("source", value.source())
+                .str("type", ty)
+                .raw("typed", &value.typed(ty))
+                .finish(),
+        );
+    }
+    if inv.json() {
+        let doc = crate::json::Obj::document()
+            .array("entries", entries)
+            .finish();
+        let _ = writeln!(out, "{doc}");
+    } else if !inv.quiet() {
+        for line in human {
+            let _ = writeln!(out, "{line}");
+        }
+    }
+    Ok(ExitCode::Ok)
+}
+
 fn from_default(d: &Option<String>) -> Value {
     match d {
         Some(v) => Value::Default(v.clone()),
@@ -2832,7 +2964,21 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
     let path = repo.config_path();
     let unset = inv.has("--unset");
 
+    let listing = inv.has("--list");
+    if listing && (unset || !inv.positionals.is_empty()) {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            "--list answers every key, and takes no key, value or --unset",
+        )
+        .with_hint("ank config --list   or   ank config <key>"));
+    }
     let Some(raw_key) = inv.positionals.first() else {
+        if listing {
+            let text = std::fs::read_to_string(&path).map_err(|e| {
+                CliError::new(ExitCode::Generic, format!("{}: {e}", path.display()))
+            })?;
+            return list(inv, &split_lines(&text), out);
+        }
         return Err(CliError::new(ExitCode::Generic, "config expects a key")
             .with_hint(format!("keys: {}", KEYS.join(" "))));
     };
@@ -2904,10 +3050,13 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
         // value is not a thing, and only `--unset` addresses it.
         let before = read_key(&lines, &key)?;
         if inv.json() {
+            let ty = json_type(&key);
             let doc = crate::json::Obj::document()
                 .str("key", raw_key)
                 .raw("value", &before.json())
                 .str("source", before.source())
+                .str("type", ty)
+                .raw("typed", &before.typed(ty))
                 .finish();
             let _ = writeln!(out, "{doc}");
         } else if !inv.quiet() {
