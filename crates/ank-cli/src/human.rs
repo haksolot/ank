@@ -2318,8 +2318,34 @@ pub const NO_RATIFICATION_KEY: &str =
 
 /// §8: with no signing configured, permissions are advisory. Displayed rather
 /// than hidden, and once rather than once per entity.
+/// `ratify.require_signature` as the file says it, `false` for a file that
+/// does not read: every verb already reports that one.
+fn signature_required(repo: &Repo) -> bool {
+    crate::config::load(&repo.config_path()).is_ok_and(|c| c.require_signature)
+}
+
 fn check_signers(repo: &Repo, report: &mut Report) {
     let keys = declared_signers(repo).len();
+    // A regime nobody can satisfy, written past `ank config`
+    // (ADR-2e777475c4de): a fault on the file, beside the ones each
+    // ratification then carries.
+    if keys == 0 && signature_required(repo) {
+        let file = repo.config_path();
+        let subject = file
+            .strip_prefix(&repo.corpus)
+            .unwrap_or(&file)
+            .to_string_lossy()
+            .replace('\\', "/");
+        report.findings.push(
+            Finding::fault(
+                Kind::Signature,
+                &subject,
+                "ratify.require_signature is true, and signers: declares no key: no ratification \
+                 can satisfy it",
+            )
+            .with_note(vec!["ank signers add".to_string()]),
+        );
+    }
     if keys == 0 {
         report.findings.push(Finding::signal(
             Kind::NoSigners,
@@ -7279,6 +7305,10 @@ pub fn accept(
         }
     }
 
+    // The last refusal, on the configuration and on the key at hand
+    // (ADR-2e777475c4de): after every id is judged, before any is written.
+    let required = require_signature(repo)?;
+
     // One tag per id, in the order named: each is its own ref, and two
     // ratifications never share one.
     let mut tags: Vec<String> = Vec::new();
@@ -7289,7 +7319,7 @@ pub fn accept(
             (None, None) => None,
         };
         let before = resigned.map(|_| store.load(&r.id)).transpose()?;
-        tags.push(write_ratification(&store, repo, r)?);
+        tags.push(write_ratification(&store, repo, r, required)?);
         // **A re-signature is a second write on a ratified file, and it leaves
         // an entry** (ADR-52bb0da2023a): the first ratification is evidenced by
         // `ratified` itself, and nothing in the file counts the ones after it.
@@ -8436,7 +8466,11 @@ fn judge_signature(repo: &Repo, ratification: &git::Ratification) -> Option<Sign
     // reports `N` for a perfectly signed commit when `gpg.format` is ssh and no
     // allowed-signers file is configured, so a corpus with no file would have
     // every ratification called unsigned.
-    if declared.is_empty() {
+    //
+    // Unless the repository requires a signature (ADR-2e777475c4de): then
+    // there is an allowlist, an empty one, and every ratification is judged
+    // against it, an unsigned one as absent and a signed one as undeclared.
+    if declared.is_empty() && !signature_required(repo) {
         return None;
     }
 
@@ -8697,7 +8731,12 @@ pub fn ratification_anchor(text: &str, scope: &[String]) -> String {
 /// **Nothing is staged and nothing is committed.** The file lands with
 /// whoever's next change, by any merge method, and the ref is what makes it
 /// binding wherever it is read.
-fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<String> {
+fn write_ratification(
+    store: &Store,
+    repo: &Repo,
+    r: &Ratification,
+    required: bool,
+) -> Result<String> {
     let cwd = &repo.corpus;
     let name = claim::ratify_ref(&r.id);
 
@@ -8712,7 +8751,7 @@ fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<St
     }
     let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
 
-    let tag = tag_blob(cwd, &r.id, &blob, &r.message)?;
+    let tag = tag_blob(cwd, &r.id, &blob, &r.message, required)?;
 
     // An empty old value: the ref must not exist, and a ratification already
     // recorded there is the one thing this verb never overwrites -- except
@@ -8780,6 +8819,76 @@ fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<St
     Ok(tag)
 }
 
+/// Whether `ratify.require_signature` holds, refusing at the code a missing
+/// prerequisite carries when it does and git cannot sign with a key `signers:`
+/// declares live today (ADR-2e777475c4de).
+///
+/// **The key is resolved, not tried.** It is the one `ank signers add` would
+/// declare, read off `user.signingkey` and `gpg.format` by the same resolver,
+/// so the refusal names the key in the form `signers:` writes it and nothing
+/// is signed, written or pushed to learn it. A configuration that cannot be
+/// read requires nothing here: every verb already refuses it.
+fn require_signature(repo: &Repo) -> Result<bool> {
+    let Ok(config) = crate::config::load(&repo.config_path()) else {
+        return Ok(false);
+    };
+    if !config.require_signature {
+        return Ok(false);
+    }
+    let refused = |why: String| {
+        CliError::new(
+            ExitCode::Prerequisite,
+            format!("ratify.require_signature is true, and {why}: nothing is written"),
+        )
+        .with_hint(
+            "git config user.signingkey <a key signers: declares> (or: ank signers add, a human act)",
+        )
+    };
+    let key = crate::config::key_from_git(repo).map_err(|e| refused(e.message))?;
+    let (keytype, value) = key.split_once(' ').unwrap_or((key.as_str(), ""));
+    let matching: Vec<&Signer> = config
+        .signers
+        .iter()
+        .filter(|s| match keytype {
+            "gpg" => {
+                let (a, b) = (s.key.to_ascii_uppercase(), value.to_ascii_uppercase());
+                s.keytype == "gpg" && !a.is_empty() && (a.ends_with(&b) || b.ends_with(&a))
+            }
+            _ => s.keytype == keytype && s.key == value,
+        })
+        .collect();
+    if matching.is_empty() {
+        let declared: Vec<String> = config
+            .signers
+            .iter()
+            .map(|s| format!("{} {}", s.keytype, s.key))
+            .collect();
+        return Err(refused(format!(
+            "git would sign with {key}, which signers: does not declare (declared: {})",
+            if declared.is_empty() {
+                "none".to_string()
+            } else {
+                declared.join(", ")
+            }
+        )));
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .ok();
+    if matching.iter().all(|s| retired(s, now)) {
+        let until = matching
+            .iter()
+            .filter_map(|s| s.valid_before.clone())
+            .max()
+            .unwrap_or_default();
+        return Err(refused(format!(
+            "git would sign with {key}, which signers: retired on its valid_before {until}"
+        )));
+    }
+    Ok(true)
+}
+
 /// The tag object on `blob`, signed where this repository signs and annotated
 /// where it does not (ADR-964be4d940b2), named `ratify/<id>`.
 ///
@@ -8789,13 +8898,27 @@ fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<St
 /// forge. `tag` is porcelain, and this is the exception `accept` always made
 /// for the one act that signs: nothing is parsed from it, the object name comes
 /// from `rev-parse`.
-fn tag_blob(cwd: &Path, id: &EntityId, blob: &str, message: &str) -> Result<String> {
+fn tag_blob(
+    cwd: &Path,
+    id: &EntityId,
+    blob: &str,
+    message: &str,
+    required: bool,
+) -> Result<String> {
     let temporary = format!("ratify/{id}");
     let full = format!("refs/tags/{temporary}");
     // Signing when it is possible rather than only when `tag.gpgSign` asks for
     // it: a maintainer who signs selectively still means a ratification to be
     // signed.
-    let mode = if can_sign(cwd) { "-s" } else { "-a" };
+    // Under `ratify.require_signature` it signs whatever `can_sign` guesses:
+    // the key was resolved and judged before anything was written, and an
+    // annotated tag there would be the unsigned ratification the regime
+    // exists to stop (ADR-2e777475c4de).
+    let mode = if required || can_sign(cwd) {
+        "-s"
+    } else {
+        "-a"
+    };
     let args = ["tag", mode, "-m", message, &temporary, blob];
     let out = std::process::Command::new("git")
         .current_dir(cwd)

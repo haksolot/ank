@@ -122,6 +122,17 @@ struct ConfigFile {
     /// `check:`, the repository's policy over `check` (ADR-55460a57353a).
     #[serde(default)]
     check: CheckFile,
+    /// `ratify:`, what a ratification must carry (ADR-2e777475c4de).
+    #[serde(default)]
+    ratify: RatifyFile,
+}
+
+/// `ratify:` as written.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RatifyFile {
+    #[serde(default)]
+    require_signature: Option<bool>,
 }
 
 /// `check:` as written. Each severity is read as whatever YAML resolved it to
@@ -578,6 +589,10 @@ pub struct Config {
     /// `check.severity`, kind word to value as written (ADR-55460a57353a);
     /// `check` applies the ones it can and faults the rest.
     pub severity: BTreeMap<String, String>,
+    /// `ratify.require_signature` (ADR-2e777475c4de), `false` when absent:
+    /// `accept` refuses to ratify without a declared key at hand, and `check`
+    /// judges every ratification even where `signers:` declares nothing.
+    pub require_signature: bool,
 }
 
 /// Why an act is forbidden to an identity (ADR-ddbe024ca7f2): the role it
@@ -945,6 +960,7 @@ pub fn read(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
         enforce,
         reuse_max_age,
         signers,
+        require_signature: raw.ratify.require_signature.unwrap_or(false),
         severity: raw
             .check
             .severity
@@ -1567,6 +1583,17 @@ fn resolve_key(path: &str) -> Result<Key> {
             format!("'{path}': who may ratify is written by ank signers, not by ank config"),
         )
         .with_hint("ank help signers")),
+        ["ratify", "require_signature"] => Ok(Key::Under {
+            map: "ratify",
+            name: "require_signature".to_string(),
+            verbatim: true,
+            default: Some("false".to_string()),
+        }),
+        ["ratify", ..] => Err(CliError::new(
+            ExitCode::Generic,
+            format!("'{path}': ratify holds one key, require_signature"),
+        )
+        .with_hint("ank config ratify.require_signature true")),
         ["check", "severity", kind] => Ok(Key::Severity {
             kind: (*kind).to_string(),
         }),
@@ -3668,6 +3695,24 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
     })?;
     let lines = split_lines(&text);
 
+    // A regime nobody can satisfy is not written (ADR-2e777475c4de): requiring
+    // a signature by a declared key while no key is declared would refuse
+    // every `accept` that follows. Read off the file as it stands, through the
+    // reader every verb uses, so a block `ank signers` wrote is what counts.
+    if let (Key::Under { map: "ratify", .. }, Some(v)) = (&key, value) {
+        if v.trim() == "true" && read(&text, &path).is_ok_and(|(c, _)| c.signers.is_empty()) {
+            return Err(CliError::new(
+                ExitCode::Prerequisite,
+                format!(
+                    "{raw_key} true requires a signature by a key signers: declares, and \
+                     signers: in {} declares no key",
+                    path.display()
+                ),
+            )
+            .with_hint("ank signers add, then ank config ratify.require_signature true"));
+        }
+    }
+
     // An identity names a role the file declares, or it names nothing and
     // the mapping would read as a rule (ADR-ddbe024ca7f2).
     if let (
@@ -4035,7 +4080,7 @@ fn key_from_flag(value: &str) -> Result<String> {
 }
 
 /// The key git signs with, in the form `signers:` declares it.
-fn key_from_git(repo: &crate::repo::Repo) -> Result<String> {
+pub(crate) fn key_from_git(repo: &crate::repo::Repo) -> Result<String> {
     let missing = |why: String| {
         CliError::new(ExitCode::Prerequisite, why)
             .with_hint("ank signers add --key <file> (or: git config user.signingkey <key>)")
@@ -5635,6 +5680,11 @@ mod reference_table {
                         .into_iter()
                         .map(|f| format!("guard.{f}")),
                 ),
+                "ratify" => accepted.extend(
+                    fields_of::<RatifyFile>()
+                        .into_iter()
+                        .map(|f| format!("ratify.{f}")),
+                ),
                 "check" => {
                     assert_eq!(fields_of::<CheckFile>(), vec!["severity"]);
                     accepted.insert("check.severity.<kind>".to_string());
@@ -5653,7 +5703,7 @@ mod reference_table {
             }
         }
         let table: BTreeSet<String> = KEYS.iter().map(|k| k.path.to_string()).collect();
-        assert_eq!(accepted.len(), 26, "{accepted:?}");
+        assert_eq!(accepted.len(), 27, "{accepted:?}");
         assert_eq!(table, accepted);
         // What `ank config` addresses is a subset of the table, never a key
         // of its own.
