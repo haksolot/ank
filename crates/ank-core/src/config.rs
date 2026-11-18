@@ -268,6 +268,12 @@ pub static KEYS: &[ConfigKey] = &[
         "what `ank hooks run` does with an edit no live claim of the identity covers: `off` says nothing, `warn` lets it through naming the path, `claim` refuses it; a launch environment may set `ANK_GUARD_EDIT` tighter, never looser (ADR-43cbb20dcbf1)",
     ),
     key(
+        "check.severity.<kind>",
+        "`fault`",
+        Absent::None,
+        "raises a kind `check` reports as a signal to a fault, named as raised by the repository; only `fault` is written, a kind already a fault or unknown to `check` is refused, and nothing lowers a fault; the kinds are listed in [Reading ank check](check.md#raising-a-signal-to-a-fault) (ADR-55460a57353a)",
+    ),
+    key(
         "signers.<principal>.keys[].key",
         "string",
         Absent::Required,

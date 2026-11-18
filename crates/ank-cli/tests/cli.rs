@@ -11107,6 +11107,258 @@ fn help_check_says_the_verb_prunes_refs() {
     assert!(listing.contains("prunes"), "{listing}");
 }
 
+// ---------------------------------------------------------------------------
+// check.severity and check --strict (ADR-55460a57353a, GitHub #786)
+// ---------------------------------------------------------------------------
+
+/// The findings of `check --json`, as parsed values.
+fn severity_findings(r: &Repo, args: &[&str]) -> (i32, Vec<serde_yaml::Value>) {
+    let mut all = vec!["check", "--json"];
+    all.extend_from_slice(args);
+    let out = r.ank("claude-code@ank", &all);
+    let doc: serde_yaml::Value = serde_yaml::from_str(&said(&out)).expect("a JSON document");
+    let findings = doc["findings"].as_sequence().expect("findings").clone();
+    (code(&out), findings)
+}
+
+#[test]
+fn check_severity_raises_no_signers_to_a_fault_named_as_the_repositorys() {
+    let r = Repo::new();
+    let base = "schema: 1\ndefault_branch: main\n";
+    r.set_config(base);
+    // Unraised, the corpus with no signer is a signal and check exits 0.
+    let (c, findings) = severity_findings(&r, &[]);
+    assert_eq!(c, 0, "{findings:?}");
+    let f = findings
+        .iter()
+        .find(|f| f["kind"].as_str() == Some("no-signers"))
+        .expect("a corpus with no signer signals it");
+    assert_eq!(f["level"].as_str(), Some("signal"));
+
+    r.set_config(&format!(
+        "{base}check:\n  severity:\n    no-signers: fault\n"
+    ));
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 8, "{}\n{}", said(&out), erred(&out));
+    let text = said(&out);
+    let line = text
+        .lines()
+        .find(|l| l.contains("no ratification key declared"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.starts_with("error: signers:"), "{text}");
+    assert!(
+        text.contains(
+            "raised to a fault by this repository: check.severity.no-signers in .ank/config.yml"
+        ),
+        "{text}"
+    );
+
+    let (c, findings) = severity_findings(&r, &[]);
+    assert_eq!(c, 8);
+    let f = findings
+        .iter()
+        .find(|f| f["kind"].as_str() == Some("no-signers"))
+        .expect("still reported, under its own kind");
+    assert_eq!(f["level"].as_str(), Some("fault"), "{f:?}");
+    assert_eq!(f["owed"].as_bool(), Some(true), "{f:?}");
+    let note = format!("{:?}", f["note"]);
+    assert!(note.contains("check.severity.no-signers"), "{note}");
+
+    // A raised kind raises nothing else: the other signals stay signals.
+    for f in &findings {
+        if f["kind"].as_str() != Some("no-signers") {
+            assert_ne!(f["level"].as_str(), Some("fault"), "{f:?}");
+        }
+    }
+}
+
+#[test]
+fn config_writes_check_severity_fault_for_a_signal_kind_and_refuses_the_rest() {
+    let r = Repo::new();
+    r.set_config("schema: 1\ndefault_branch: main\n");
+    let before = r.config_text();
+
+    let out = r.ank("claude-code@ank", &["config", "check.severity.no-signers"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert_eq!(said(&out).trim(), "(unset)", "{}", said(&out));
+    assert_eq!(r.config_text(), before, "a read wrote");
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "check.severity.no-signers", "fault"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let written = r.config_text();
+    assert!(
+        written.ends_with("check:\n  severity:\n    no-signers: fault\n"),
+        "{written}"
+    );
+    // A second kind lands beside the first, and every other byte stays.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "check.severity.self-ratified", "fault"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let written = r.config_text();
+    assert_eq!(
+        written,
+        format!("{before}check:\n  severity:\n    no-signers: fault\n    self-ratified: fault\n")
+    );
+    let out = r.ank("claude-code@ank", &["config", "check.severity.no-signers"]);
+    assert_eq!(said(&out).trim(), "fault");
+    let out = r.ank("claude-code@ank", &["config", "--list"]);
+    assert!(
+        said(&out).contains("check.severity.no-signers")
+            && said(&out).contains("check.severity.self-ratified"),
+        "{}",
+        said(&out)
+    );
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "the file still loads: {}", erred(&out));
+
+    // Unknown, already a fault, or a value that is not `fault`: refused at 1,
+    // nothing written, and the refusal names what may be raised.
+    for (key, value, why) in [
+        ("check.severity.no-such-kind", "fault", "no rule of check"),
+        ("check.severity.cycle", "fault", "already a fault"),
+        ("check.severity.no-signers", "signal", "only fault"),
+        ("check.severity.no-signers", "warn", "only fault"),
+    ] {
+        let out = r.ank("claude-code@ank", &["config", key, value]);
+        assert_eq!(code(&out), 1, "{key} {value}: {}", said(&out));
+        let err = erred(&out);
+        assert!(err.contains(why), "{key} {value}: {err}");
+        assert!(
+            err.contains("no-signers") && err.contains("self-ratified"),
+            "{key} {value}: the refusal names the kinds that may be raised: {err}"
+        );
+        assert_eq!(r.config_text(), written, "{key} {value} wrote");
+    }
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "--unset", "check.severity.self-ratified"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "--unset", "check.severity.no-signers"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let out = r.ank("claude-code@ank", &["config", "check.severity.no-signers"]);
+    assert_eq!(said(&out).trim(), "(unset)");
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "{}\n{}", erred(&out), r.config_text());
+}
+
+#[test]
+fn check_faults_config_yml_on_a_severity_it_cannot_apply() {
+    let r = Repo::new();
+    let base = "schema: 1\ndefault_branch: main\n";
+    for (entry, words) in [
+        ("no-such-kind: fault", ["no-such-kind", "no rule of check"]),
+        ("cycle: fault", ["cycle", "already a fault"]),
+        ("no-signers: signal", ["no-signers", "only fault"]),
+        ("no-signers: off", ["no-signers", "only fault"]),
+    ] {
+        r.set_config(&format!("{base}check:\n  severity:\n    {entry}\n"));
+        let out = r.ank("claude-code@ank", &["check"]);
+        assert_eq!(code(&out), 8, "{entry}: {}\n{}", said(&out), erred(&out));
+        let (_, findings) = severity_findings(&r, &[]);
+        let bad: Vec<_> = findings
+            .iter()
+            .filter(|f| f["kind"].as_str() == Some("severity"))
+            .collect();
+        assert_eq!(bad.len(), 1, "{entry}: {findings:?}");
+        assert_eq!(bad[0]["level"].as_str(), Some("fault"));
+        assert_eq!(bad[0]["subject"].as_str(), Some(".ank/config.yml"));
+        let message = bad[0]["message"].as_str().unwrap();
+        for w in words {
+            assert!(message.contains(w), "{entry}: {message}");
+        }
+        // No other verb is stopped by it: the severity is check's to apply.
+        let out = r.ank("claude-code@ank", &["status"]);
+        assert_eq!(code(&out), 0, "{entry}: {}", erred(&out));
+        // And a kind written wrongly is not applied: no-signers stays a signal.
+        let signers = findings
+            .iter()
+            .find(|f| f["kind"].as_str() == Some("no-signers"))
+            .expect("no-signers");
+        assert_eq!(signers["level"].as_str(), Some("signal"), "{entry}");
+    }
+}
+
+#[test]
+fn check_strict_fails_on_every_signal_and_writes_nothing() {
+    let r = Repo::new();
+    r.set_config("schema: 1\ndefault_branch: main\n");
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    // An orphan claim, which a plain check prunes.
+    let gone = "TASK-00000000dead";
+    r.seed_task(gone, Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "the task"]);
+    let out = r.ank("codex@host-9", &["claim", gone]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    std::fs::remove_file(r.0.join(".ank/entities").join(format!("{gone}.md"))).unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "drop it"]);
+
+    let refs = |r: &Repo| {
+        let out = git_command(&r.0)
+            .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let config = |r: &Repo| {
+        let out = git_command(&r.0)
+            .args(["config", "--local", "--list"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let (refs_before, config_before) = (refs(&r), config(&r));
+    let status_before = r.git(&["status", "--porcelain", "--ignored"]);
+
+    let out = r.ank("claude-code@ank", &["check", "--strict"]);
+    assert_eq!(code(&out), 8, "{}\n{}", said(&out), erred(&out));
+    let text = said(&out);
+    assert!(!text.contains("pruned"), "{text}");
+    assert!(
+        !text.lines().any(|l| l.starts_with("signal:")),
+        "every signal is a fault under --strict: {text}"
+    );
+    assert!(
+        text.contains("raised to a fault by check --strict"),
+        "{text}"
+    );
+    assert!(r.claim_ref(gone).is_some(), "--strict pruned the orphan");
+    assert_eq!(refs(&r), refs_before, "--strict moved a ref");
+    assert_eq!(config(&r), config_before, "--strict wrote git config");
+    assert_eq!(
+        r.git(&["status", "--porcelain", "--ignored"]),
+        status_before,
+        "--strict wrote a file"
+    );
+
+    let (c, findings) = severity_findings(&r, &["--strict"]);
+    assert_eq!(c, 8);
+    assert!(!findings.is_empty());
+    for f in &findings {
+        assert_eq!(f["level"].as_str(), Some("fault"), "{f:?}");
+        assert_eq!(f["owed"].as_bool(), Some(true), "{f:?}");
+    }
+
+    // Without the flag, the same corpus is green and the orphan is collected.
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}", said(&out));
+    assert!(r.claim_ref(gone).is_none(), "{}", said(&out));
+}
+
 #[test]
 fn help_json_reaches_the_process_intact() {
     let out = help_from_nowhere(&["help", "--json"]);
@@ -13507,8 +13759,11 @@ fn every_flag_the_help_offers_can_be_given_to_the_verb() {
     // decision somebody writes down (TASK-49fce8b49d00). `ank log --method`
     // is the second: it writes the record that a sibling opened and takes no
     // message, so the positional this walk hands `log` is refused beside it
-    // (ADR-a8f9c603a0e7, TASK-a6c9d98a38ac).
-    const SELECTS_AN_ACT: [(&str, &str); 2] = [("init", "--at"), ("log", "--method")];
+    // (ADR-a8f9c603a0e7, TASK-a6c9d98a38ac). `ank check --strict` is the
+    // third: it exists to turn a corpus with signals red, so its code is
+    // meant to differ from the code without it (ADR-55460a57353a).
+    const SELECTS_AN_ACT: [(&str, &str); 3] =
+        [("init", "--at"), ("log", "--method"), ("check", "--strict")];
 
     let mut walked = 0;
     for (verb, positionals) in verbs {
@@ -14500,7 +14755,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 47] = [
+const NOT_A_PATH: [&str; 48] = [
     // Who may ratify, what a reviewer should know of the key, and the date it
     // stops ratifying: an email, prose and a day (ADR-5c6db7a161b8).
     "--principal",
@@ -14597,6 +14852,8 @@ const NOT_A_PATH: [&str; 47] = [
     // A switch: the peers it reads are the ones `config.yml` declares, and
     // nothing about them comes off the command line (ADR-376bed7fa39a).
     "--peers",
+    // A switch: every signal a fault for the run (ADR-55460a57353a).
+    "--strict",
     "--body",
     "--type",
     "--status",
