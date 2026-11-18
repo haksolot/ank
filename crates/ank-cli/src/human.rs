@@ -546,7 +546,7 @@ impl Report {
         });
     }
 
-    /// `check --peers` (ADR-376bed7fa39a): a declared peer that cannot be
+    /// `check --peers` (ADR-89c1e7146fe5): a declared peer that cannot be
     /// read is a fault rather than a signal. Raised here, on the report, and
     /// not in the inspection, because `status` and `review` read the same
     /// inspection and never ask for the peers.

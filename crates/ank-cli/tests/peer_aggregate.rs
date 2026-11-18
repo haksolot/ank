@@ -1,5 +1,5 @@
 //! `status`, `find` and `context` take `--peers` and add each declared peer's
-//! answer, claims included (ADR-376bed7fa39a, TASK-ae6c94125af5).
+//! answer, claims included (ADR-89c1e7146fe5, TASK-ae6c94125af5).
 //!
 //! The fixture is the trio the criterion names: `web` declares `api` and `db`
 //! as peers, and each of the three holds one open task nobody holds and one

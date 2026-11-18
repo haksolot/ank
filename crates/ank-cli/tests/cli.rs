@@ -14848,7 +14848,7 @@ const NOT_A_PATH: [&str; 48] = [
     // and nothing about it comes off the command line (ADR-894d4bfbf9bd).
     "--since",
     // A switch: the peers it reads are the ones `config.yml` declares, and
-    // nothing about them comes off the command line (ADR-376bed7fa39a).
+    // nothing about them comes off the command line (ADR-89c1e7146fe5).
     "--peers",
     // A switch: every signal a fault for the run (ADR-55460a57353a).
     "--strict",
