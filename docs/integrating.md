@@ -560,6 +560,57 @@ payload it cannot read, or an error of its own, lets the tool call through:
     $ cd /srv/plain && echo '{"tool_name":"Read","tool_input":{"file_path":".ank/config.yml"}}' | ank hooks run claude pre-tool-use; echo "exit $?"
     exit 0
 
+**Any other harness wires `generic`.** Every agent `run` handles is a
+translation onto one protocol (ADR-b108b24202ed), and `ank hooks run generic
+<event>` reads and writes that protocol unchanged, so a harness with any hook
+that can run a command and read its stdout gets the same guards. There is no
+settings file to write, so `ank hooks install generic` and `ank hooks remove
+generic` refuse: you add the entry to the harness's own hook configuration by
+hand, one for `session-start` and one for `pre-tool-use`.
+
+On stdin, one JSON object:
+
+- **`event`**, `session-start` or `pre-tool-use`, optional; when present it
+  has to name the event `run` was called with.
+- **`tool`**, for `pre-tool-use`: `read`, `search`, `edit` or `shell`. Any
+  tool but `shell` is confronted with `guard.corpus` for every path it
+  reaches, and `edit` with `guard.edit` too.
+- **`paths`**, an array of strings: the files a tool reads or writes, and the
+  directory a search starts from, relative to `cwd` or absolute.
+- **`command`**, for `shell`: the line it runs, read by the permissions guard.
+- **`cwd`**, the session's directory; the process's own when it is absent or
+  not absolute.
+
+On stdout, one JSON object on one line, and always exit 0:
+
+- **`{"decision":"allow"}`**, with a `message` for the agent when the guard
+  has something to say and lets the call through anyway, as `guard.edit warn`
+  does.
+- **`{"decision":"deny","reason":...}`**: refuse the call, and show the agent
+  the reason.
+- **`{"decision":"context","text":...}`**: at session start, the text to serve
+  the agent, `ank status` and the contract pointer.
+
+Nothing on stdout means the same as allow, and is what `run` writes outside a
+corpus, on input it cannot read, and on an error of its own. A path under
+`.ank/` is denied with the reason shown for `claude` above, as its `reason`.
+With the claim and the `guard.edit claim` above:
+
+<!-- replay hooks -->
+
+    $ echo '{"event":"pre-tool-use","tool":"edit","paths":["src/main.rs"]}' | ank hooks run generic pre-tool-use
+    {"decision":"allow"}
+    $ echo '{"event":"pre-tool-use","tool":"edit","paths":["docs/page.md"]}' | ank hooks run generic pre-tool-use
+    {"decision":"deny","reason":"guard.edit is claim, and no live claim of tool/1.0 covers docs/page.md: `ank context docs/page.md` names the task that does, and `ank claim <id>` takes it."}
+    $ ank hooks install generic; echo "exit $?"
+    error[1]: generic is wired by hand: it is the hook protocol itself, with no settings file for hooks install to write; point the harness's own hook at `ank hooks run generic <event>`, as docs/integrating.md shows
+      -> ank hooks run generic pre-tool-use
+    exit 1
+
+The protocol is documented and versioned like the `--json` contract. `claude`
+is a translation onto it, and its bytes are the ones shown above: the guards
+decide once, in the protocol, and each agent only translates.
+
 ## What binds and what does not
 
 - **Bind to `--json`**, never to the human output. One line, stdout only, never
