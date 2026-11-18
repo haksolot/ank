@@ -5320,7 +5320,7 @@ identities: {}
         for (key, value) in [
             ("verifiers.cargo-test.vars.FOO", "bar"),
             ("verifiers.cargo-test.vars.N", "1"),
-            ("verifiers.cargo-test.inherit_env", "[PATH, HOME]"),
+            ("verifiers.cargo-test.inherit_env", "[ONE, TWO]"),
             ("verifiers.cargo-test.cwd", "sub"),
         ] {
             text = edit(&text, key, Some(value)).unwrap();
@@ -5334,12 +5334,12 @@ identities: {}
         );
         assert_eq!(
             v.inherit_env.as_deref(),
-            Some(&["PATH".to_string(), "HOME".to_string()][..])
+            Some(&["ONE".to_string(), "TWO".to_string()][..])
         );
         assert_eq!(v.cwd.as_deref(), Some("sub"));
         assert_eq!(
             read(&text, "verifiers.cargo-test.inherit_env").unwrap(),
-            Value::Set("[\"PATH\", \"HOME\"]".to_string())
+            Value::Set("[\"ONE\", \"TWO\"]".to_string())
         );
         let off = edit(&text, "verifiers.cargo-test.inherit_env", Some("false")).unwrap();
         assert_eq!(
