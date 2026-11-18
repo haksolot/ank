@@ -1,6 +1,8 @@
-//! A verifier declares `run`, `timeout` and `inputs`, and nothing else: `env`
+//! A verifier declares `run`, `timeout` and `inputs`, and since
+//! ADR-ebe85b3aa79d `vars`, `inherit_env` and `cwd`, and never `env`: `env`
 //! left the verifier block (ADR-7224dea611c1, TASK-91cefb36af81), after
-//! TASK-dc04757dfecb had parsed, validated and hashed it.
+//! TASK-dc04757dfecb had parsed, validated and hashed it, and stays refused by
+//! name. Every run is told its task, verifier, scope and base (GitHub #787).
 //!
 //! **Through the binary**, because every clause of the criterion is about it:
 //! the file is refused by the parser every verb loads it through, the keys are
@@ -147,7 +149,10 @@ fn ank_config_refuses_every_env_key_by_name_and_lists_none() {
     // the verb, and its refusal lists flags, never keys.
     let help = run(ANK, &dir, &["help", "config"]);
     assert!(help.contains("verifiers.<name>.inputs"), "{help}");
-    assert!(!help.contains("env"), "ank help config names env:\n{help}");
+    // `inherit_env` is a key of its own (ADR-ebe85b3aa79d); what stays
+    // withdrawn is `env` as a key, a `.env` segment of a path.
+    assert!(help.contains("verifiers.<name>.inherit_env"), "{help}");
+    assert!(!help.contains(".env"), "ank help config names env:\n{help}");
     let out = spawn(ANK, &dir, &["config", "--help"]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!err.contains("env"), "ank config --help names env:\n{err}");
@@ -258,4 +263,326 @@ fn the_docs_name_no_env_key_and_no_image() {
         !ci.to_lowercase().contains("image"),
         "docs/ci.md names an image"
     );
+}
+
+// ---------------------------------------------------------------------------
+// vars, inherit_env, cwd and what ank tells a run (ADR-ebe85b3aa79d, GitHub #787)
+// ---------------------------------------------------------------------------
+
+/// A path as `sh` takes it on the three platforms: Git for Windows' shell
+/// reads `C:/x` and not `C:\x`.
+fn sh_path(p: &Path) -> String {
+    p.display().to_string().replace('\\', "/")
+}
+
+fn spawn_with(dir: &Path, args: &[&str], extra: &[(&str, &str)]) -> Output {
+    let config = isolated_git_config();
+    let home = scratch::root();
+    let mut c = Command::new(ANK);
+    c.args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", config)
+        .env("GIT_CONFIG_SYSTEM", config)
+        .env("ANK_AGENT", "test/verifier-env")
+        .env("NO_COLOR", "1")
+        .env("XDG_CONFIG_HOME", home)
+        .env("APPDATA", home)
+        .env("TMPDIR", home)
+        .env("TMP", home)
+        .env("TEMP", home)
+        .stdin(Stdio::null());
+    for (k, v) in extra {
+        c.env(k, v);
+    }
+    c.output().unwrap_or_else(|e| panic!("ank must run: {e}"))
+}
+
+fn ok(out: Output, what: &str) -> String {
+    assert!(
+        out.status.success(),
+        "{what}: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// `<root>/repo` is the repository, on a branch `work` one commit ahead of
+/// `main`, and `<root>` is where a verifier writes what it saw: outside the
+/// tree, so nothing it writes moves a content key.
+struct Bench {
+    root: PathBuf,
+    repo: PathBuf,
+}
+
+/// The names a dump records, each into `<root>/<name>`, `UNSET` when unset.
+const DUMPED: [&str; 8] = [
+    "ANK_TASK",
+    "ANK_VERIFIER",
+    "ANK_SCOPE",
+    "ANK_BASE",
+    "FOO",
+    "SECRET_TOKEN",
+    "GIT_CONFIG_GLOBAL",
+    "PATH",
+];
+
+impl Bench {
+    fn new(what: &str) -> Bench {
+        let root = scratch::dir(what);
+        let repo = root.join("repo");
+        fs::create_dir_all(repo.join("sub")).unwrap();
+        fs::create_dir_all(repo.join("g")).unwrap();
+        fs::write(repo.join("f"), "x\n").unwrap();
+        fs::write(repo.join("sub/k"), "k\n").unwrap();
+        fs::write(repo.join("g/x"), "g\n").unwrap();
+        run("git", &repo, &["init", "-q", "-b", "main"]);
+        run(ANK, &repo, &["init"]);
+        run(ANK, &repo, &["config", "default_branch", "main"]);
+        // Only builtins, so that it runs with nothing of the caller, PATH
+        // included.
+        let mut dump: Vec<String> = DUMPED
+            .iter()
+            .map(|n| format!("printf '%s' \"${{{n}-UNSET}}\" > '{}/{n}'", sh_path(&root)))
+            .collect();
+        dump.push(format!("pwd -P > '{}/pwd'", sh_path(&root)));
+        run(
+            ANK,
+            &repo,
+            &["config", "--", "verifiers.dump.run", &dump.join("; ")],
+        );
+        run(ANK, &repo, &["config", "verifiers.dump.inputs", r#"["f"]"#]);
+        run(
+            ANK,
+            &repo,
+            &[
+                "config",
+                "--",
+                "verifiers.count.run",
+                &format!("echo x >> '{}/count'", sh_path(&root)),
+            ],
+        );
+        run(
+            ANK,
+            &repo,
+            &["config", "verifiers.count.inputs", r#"["f"]"#],
+        );
+        run("git", &repo, &["add", "-A"]);
+        run("git", &repo, &["commit", "-q", "-m", "init"]);
+        run("git", &repo, &["checkout", "-q", "-b", "work"]);
+        fs::write(repo.join("f"), "y\n").unwrap();
+        run("git", &repo, &["commit", "-q", "-am", "ahead"]);
+        Bench { root, repo }
+    }
+
+    fn seen(&self, name: &str) -> String {
+        fs::read_to_string(self.root.join(name))
+            .unwrap_or_else(|e| panic!("the verifier wrote no {name}: {e}"))
+    }
+
+    fn count(&self) -> usize {
+        fs::read_to_string(self.root.join("count"))
+            .map(|t| t.lines().count())
+            .unwrap_or(0)
+    }
+
+    fn config(&self, key: &str, value: &str) {
+        run(ANK, &self.repo, &["config", key, value]);
+    }
+
+    /// `ank verify`, with `SECRET_TOKEN` exported by the caller.
+    fn verify(&self) {
+        ok(
+            spawn_with(&self.repo, &["verify"], &[("SECRET_TOKEN", "s3cret")]),
+            "ank verify",
+        );
+    }
+
+    /// A task over `f` and `g/**` declaring `verifier`, committed, claimed and
+    /// closed by `ank done` with `SECRET_TOKEN` exported by the caller.
+    fn done(&self, verifier: &str, title: &str) -> String {
+        let new = run(
+            ANK,
+            &self.repo,
+            &[
+                "new",
+                "task",
+                "--title",
+                title,
+                "--scope",
+                "f",
+                "--scope",
+                "g/**",
+                "--criteria",
+                "it runs",
+                "--verify",
+                verifier,
+                "--json",
+            ],
+        );
+        let at = new.find("TASK-").expect("new task --json names the id");
+        let id = new[at..at + "TASK-".len() + 12].to_string();
+        run("git", &self.repo, &["add", "-A"]);
+        run("git", &self.repo, &["commit", "-q", "-m", title]);
+        run(ANK, &self.repo, &["claim", &id]);
+        ok(
+            spawn_with(&self.repo, &["done"], &[("SECRET_TOKEN", "s3cret")]),
+            "ank done",
+        );
+        run("git", &self.repo, &["add", "-A"]);
+        run("git", &self.repo, &["commit", "-q", "-m", "done"]);
+        id
+    }
+}
+
+#[test]
+fn done_tells_a_run_its_task_verifier_scope_and_base_and_verify_leaves_task_and_scope_empty() {
+    let b = Bench::new("verifier-vars-told");
+    let main = run("git", &b.repo, &["rev-parse", "main"]);
+    let id = b.done("dump", "told");
+    assert_eq!(b.seen("ANK_TASK"), id, "the full id");
+    assert_eq!(b.seen("ANK_VERIFIER"), "dump");
+    assert_eq!(b.seen("ANK_SCOPE"), "f\ng/**", "one glob per line");
+    assert_eq!(b.seen("ANK_BASE"), main, "the merge-base with main");
+    assert_eq!(b.seen("FOO"), "UNSET");
+    assert_eq!(
+        b.seen("SECRET_TOKEN"),
+        "s3cret",
+        "absent inherit_env passes the whole environment, as before"
+    );
+
+    b.verify();
+    assert_eq!(b.seen("ANK_TASK"), "", "no task under ank verify");
+    assert_eq!(b.seen("ANK_SCOPE"), "", "no scope under ank verify");
+    assert_eq!(b.seen("ANK_VERIFIER"), "dump");
+    assert_eq!(b.seen("ANK_BASE"), main);
+}
+
+#[test]
+fn vars_reach_the_run_and_inherit_env_decides_what_of_the_caller_does() {
+    let b = Bench::new("verifier-vars-inherit");
+    b.config("verifiers.dump.vars.FOO", "bar");
+    b.verify();
+    assert_eq!(b.seen("FOO"), "bar");
+    assert_eq!(b.seen("SECRET_TOKEN"), "s3cret");
+
+    b.config("verifiers.dump.inherit_env", "[PATH]");
+    b.verify();
+    assert_eq!(b.seen("SECRET_TOKEN"), "UNSET", "not listed, not passed");
+    assert_eq!(b.seen("GIT_CONFIG_GLOBAL"), "UNSET");
+    assert_ne!(b.seen("PATH"), "UNSET", "listed, passed");
+    assert_eq!(b.seen("FOO"), "bar", "vars are ank's, not the caller's");
+
+    b.config("verifiers.dump.inherit_env", "false");
+    b.verify();
+    assert_eq!(b.seen("SECRET_TOKEN"), "UNSET");
+    assert_eq!(b.seen("GIT_CONFIG_GLOBAL"), "UNSET");
+    assert_ne!(
+        b.seen("PATH"),
+        std::env::var("PATH").unwrap(),
+        "false passes nothing of the caller, PATH included"
+    );
+    assert_eq!(b.seen("ANK_VERIFIER"), "dump", "ank's own still set");
+    assert_eq!(b.seen("FOO"), "bar");
+
+    run(
+        ANK,
+        &b.repo,
+        &["config", "--unset", "verifiers.dump.inherit_env"],
+    );
+    b.verify();
+    assert_eq!(b.seen("SECRET_TOKEN"), "s3cret", "absent again, all again");
+}
+
+#[test]
+fn a_var_naming_an_ank_variable_is_refused_by_config_and_faulted_by_check() {
+    let b = Bench::new("verifier-vars-ank-name");
+    let before = config_yml(&b.repo);
+    let out = spawn(
+        ANK,
+        &b.repo,
+        &["config", "verifiers.dump.vars.ANK_TASK", "x"],
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "ANK_TASK was accepted: {err}");
+    assert!(err.contains("ANK_"), "{err}");
+    assert_eq!(config_yml(&b.repo), before, "nothing written");
+
+    fs::write(
+        b.repo.join(".ank/config.yml"),
+        before.replace(
+            "    inputs: [\"f\"]\n",
+            "    inputs: [\"f\"]\n    vars:\n      ANK_SCOPE: x\n",
+        ),
+    )
+    .unwrap();
+    assert_ne!(config_yml(&b.repo), before, "the fixture wrote no vars");
+    let out = spawn(ANK, &b.repo, &["check"]);
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(8), "{report}");
+    assert!(
+        report.contains("verifiers.dump.vars.ANK_SCOPE"),
+        "check names the key:\n{report}"
+    );
+}
+
+#[test]
+fn cwd_moves_the_run_and_one_absent_or_outside_the_root_is_refused_and_faulted() {
+    let b = Bench::new("verifier-vars-cwd");
+    b.config("verifiers.dump.cwd", "sub");
+    b.verify();
+    let pwd = b.seen("pwd");
+    assert!(
+        pwd.trim_end().ends_with("repo/sub"),
+        "the run's directory is <root>/sub: {pwd}"
+    );
+
+    let before = config_yml(&b.repo);
+    for bad in ["nope", "..", "../repo", "sub/../..", "/tmp"] {
+        let out = spawn(ANK, &b.repo, &["config", "verifiers.dump.cwd", bad]);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "cwd {bad} was accepted: {err}");
+        assert!(err.contains("verifiers.dump.cwd"), "{bad}: {err}");
+        assert_eq!(config_yml(&b.repo), before, "cwd {bad} moved config.yml");
+    }
+
+    for bad in ["nope", "../out"] {
+        fs::write(
+            b.repo.join(".ank/config.yml"),
+            before.replace("    cwd: sub\n", &format!("    cwd: {bad}\n")),
+        )
+        .unwrap();
+        assert_ne!(config_yml(&b.repo), before, "the fixture wrote no cwd");
+        let out = spawn(ANK, &b.repo, &["check"]);
+        let report = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(8), "cwd {bad}: {report}");
+        assert!(
+            report.contains("verifiers.dump.cwd"),
+            "check names the key for {bad}:\n{report}"
+        );
+    }
+}
+
+#[test]
+fn changing_vars_inherit_env_or_cwd_makes_done_run_the_verifier_again() {
+    let b = Bench::new("verifier-vars-rerun");
+    b.done("count", "first");
+    assert_eq!(b.count(), 1);
+    b.done("count", "unchanged");
+    assert_eq!(b.count(), 1, "the same definition and inputs are reused");
+
+    b.config("verifiers.count.vars.FOO", "bar");
+    b.done("count", "vars");
+    assert_eq!(b.count(), 2, "vars changed the hash");
+
+    b.config("verifiers.count.inherit_env", "[PATH]");
+    b.done("count", "inherit_env");
+    assert_eq!(b.count(), 3, "inherit_env changed the hash");
+
+    b.config("verifiers.count.cwd", "sub");
+    b.done("count", "cwd");
+    assert_eq!(b.count(), 4, "cwd changed the hash");
+
+    b.done("count", "unchanged again");
+    assert_eq!(b.count(), 4);
 }

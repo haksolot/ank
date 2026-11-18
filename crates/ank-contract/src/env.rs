@@ -55,6 +55,21 @@ pub const ANK_INDEX_STEPS: &str = "ANK_INDEX_STEPS";
 pub const ANK_INDEX_REFRESHED: &str = "ANK_INDEX_REFRESHED";
 pub const ANK_TRACE_READS: &str = "ANK_TRACE_READS";
 
+/// Set by `done` and `verify` for every verifier run they start
+/// (ADR-ebe85b3aa79d), and read by nothing of ank's: the full id of the task
+/// it proves, empty under `ank verify`.
+pub const ANK_TASK: &str = "ANK_TASK";
+/// The name of the verifier the run is, as `config.yml` declares it.
+pub const ANK_VERIFIER: &str = "ANK_VERIFIER";
+/// The task's scope globs, one per line, empty under `ank verify`.
+pub const ANK_SCOPE: &str = "ANK_SCOPE";
+/// The merge-base with the default branch, empty when none is established.
+pub const ANK_BASE: &str = "ANK_BASE";
+
+/// What every verifier run is told, in the order the page names them. Not
+/// rows of [`VARIABLES`]: ank sets these for a child and never reads them.
+pub const SET_FOR_VERIFIERS: [&str; 4] = [ANK_TASK, ANK_VERIFIER, ANK_SCOPE, ANK_BASE];
+
 /// The names the fallback identity takes its `<user>` from, first set wins.
 pub const USER_NAMES: [&str; 3] = [USERNAME, USER, LOGNAME];
 

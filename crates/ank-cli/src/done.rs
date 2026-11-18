@@ -748,7 +748,23 @@ fn run_verifiers(
     let lock = (cfg.verifier_lock && !to_run.is_empty())
         .then(|| verify::take_verifier_lock(&repo.worktree, &task, reuse.identity))
         .flatten();
-    let outcomes = run_concurrently(repo, cfg, &to_run, &task, Some(&task), cfg.verifier_jobs());
+    // What every run is told (ADR-ebe85b3aa79d): the task, its scope, and the
+    // base the branch left the default one at.
+    let base = verify::default_base(&repo.worktree, cfg);
+    let ctx = verify::RunContext {
+        task: Some(&task),
+        scope,
+        base: base.as_deref(),
+    };
+    let outcomes = run_concurrently(
+        repo,
+        cfg,
+        &to_run,
+        &task,
+        Some(&task),
+        ctx,
+        cfg.verifier_jobs(),
+    );
     drop(lock);
 
     // Recorded before the verdict, every run that finished, the failure
@@ -877,6 +893,7 @@ pub(crate) fn run_concurrently(
     declared: &[String],
     owner: &str,
     keep_for: Option<&str>,
+    ctx: verify::RunContext,
     jobs: usize,
 ) -> Vec<Result<Option<verify::Outcome>>> {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -896,7 +913,7 @@ pub(crate) fn run_concurrently(
         } else if let Some(def) = cfg.verifier(name) {
             let stop = || failed_at.load(Ordering::SeqCst) < i;
             let keep = keep_for.and_then(|task| verify::kept_output(&repo.worktree, task, name));
-            verify::run_until(&repo.worktree, name, def, keep.as_deref(), &stop)
+            verify::run_until(&repo.worktree, name, def, ctx, keep.as_deref(), &stop)
         } else {
             // Not the agent's code failing: the corpus references a verifier
             // the configuration does not declare.
