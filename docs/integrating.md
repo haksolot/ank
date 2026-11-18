@@ -592,13 +592,12 @@ On stdout, one JSON object on one line, and always exit 0:
   the agent, `ank status` and the contract pointer.
 
 Nothing on stdout means the same as allow, and is what `run` writes outside a
-corpus, on input it cannot read, and on an error of its own. With the claim and
-the `guard.edit claim` above:
+corpus, on input it cannot read, and on an error of its own. A path under
+`.ank/` is denied with the reason shown for `claude` above, as its `reason`.
+With the claim and the `guard.edit claim` above:
 
 <!-- replay hooks -->
 
-    $ echo '{"event":"pre-tool-use","tool":"read","paths":[".ank/config.yml"]}' | ank hooks run generic pre-tool-use
-    {"decision":"deny","reason":".ank/config.yml is under the corpus directory, which is reached through the ank CLI and never by opening its files: `ank show <id>` prints an entity whole, `ank find <query>` lists, `ank context <path>` serves what binds a perimeter."}
     $ echo '{"event":"pre-tool-use","tool":"edit","paths":["src/main.rs"]}' | ank hooks run generic pre-tool-use
     {"decision":"allow"}
     $ echo '{"event":"pre-tool-use","tool":"edit","paths":["docs/page.md"]}' | ank hooks run generic pre-tool-use
