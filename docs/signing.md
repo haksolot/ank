@@ -5,7 +5,8 @@ made before ADR-5e47007a75be), and a signature is what makes it answerable to
 somebody. Signing is a regime the corpus is in, not a precondition of ratifying
 (ADR-964be4d940b2): `ank accept` writes a signed tag where the repository is
 configured to sign, and an unsigned one where it is not, and it never refuses
-for want of a key. What changes is what `ank check` can say about
+for want of a key unless the repository [requires a
+signature](#requiring-a-signature). What changes is what `ank check` can say about
 the result. The rules it applies, and the four outcomes it keeps apart, are
 section 8 of the specification, in [Proof, anchoring and
 authority](specification.md); this page is how to set a repository up so they
@@ -132,6 +133,31 @@ the comment lines above a key and the comment after it as that key's `note`,
 carries a `valid-before` option as `valid_before`, appends the block without
 touching a byte above it, and deletes the file. It commits nothing: review the
 diff and land it by pull request like any other change to `config.yml`.
+
+## Requiring a signature
+
+A repository that wants every ratification signed by a declared key says so in
+`.ank/config.yml` (ADR-2e777475c4de):
+
+    ank config ratify.require_signature true
+
+`ank config` refuses `true` at 7 while `signers:` declares no key, naming `ank
+signers add`, since a requirement no key can meet would stop every `accept`
+after it. `false`, or the key absent, keeps the regime described above.
+
+Under it, `ank accept` resolves the key git would sign with, from
+`user.signingkey` and `gpg.format` as `ank signers add` reads them, and refuses
+at 7, before it writes a ref or a file, when git names no key, when `signers:`
+does not declare that one, or when its `valid_before` has passed. The refusal
+names the key. With a declared key it signs the tag whatever `commit.gpgsign`
+says.
+
+`check` then faults an unsigned ratification, or one signed by a key `signers:`
+does not declare, even where `signers:` declares nothing at all, and faults
+`config.yml` itself in that last case. Turning the key on in a corpus that
+already holds unsigned ratifications makes each of them a fault; for one carried
+by a `ratify <id>` commit, `ank accept <id> --reanchor` by the holder of a
+declared key is the repair.
 
 ## What check says afterwards
 

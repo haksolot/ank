@@ -1314,6 +1314,7 @@ config_keys!(
     "guard.corpus",
     "guard.edit",
     "check.severity.<kind>",
+    "ratify.require_signature",
 );
 
 // ---------------------------------------------------------------------------
@@ -1887,6 +1888,12 @@ pub const COMMANDS: &[CommandSpec] = &[
             refuses(
                 ExitCode::Prerequisite,
                 "--reanchor over a document whose ratify <id> commit this clone does not hold",
+            ),
+            // ADR-2e777475c4de: a refusal on the configuration and on the key
+            // at hand, before anything is written.
+            refuses(
+                ExitCode::Prerequisite,
+                "ratify.require_signature is true and git names no key to sign with, or one signers: does not declare or has retired: the key named, and nothing is written",
             ),
             refuses(
                 ExitCode::Transition,

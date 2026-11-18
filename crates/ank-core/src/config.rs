@@ -274,6 +274,12 @@ pub static KEYS: &[ConfigKey] = &[
         "raises a kind `check` reports as a signal to a fault, named as raised by the repository; only `fault` is written, a kind already a fault or unknown to `check` is refused, and nothing lowers a fault; the kinds are listed in [Reading ank check](check.md#raising-a-signal-to-a-fault) (ADR-55460a57353a)",
     ),
     key(
+        "ratify.require_signature",
+        "boolean",
+        Absent::Text("false"),
+        "`true` makes `accept` refuse, before it writes anything, when git cannot sign with a key `signers` declares, and makes `check` fault an unsigned ratification or one by an undeclared key; `ank config` refuses `true` while `signers` declares no key (ADR-2e777475c4de)",
+    ),
+    key(
         "signers.<principal>.keys[].key",
         "string",
         Absent::Required,
