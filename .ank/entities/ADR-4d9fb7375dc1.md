@@ -5,7 +5,7 @@ slug: under-json-a-refusal-is-one-document-on-stderr-a
 title: Under --json a refusal is one document on stderr, and stdout stays empty
 created: 2026-11-18T15:01:25Z
 author: claude-code/plan
-status: proposed
+status: accepted
 scope:
   - crates/ank-contract/src/exit.rs
   - crates/ank-contract/src/json.rs
@@ -15,8 +15,13 @@ scope:
 constraint: |
   Under --json a refusal writes nothing on stdout and exactly one line on stderr, a JSON document {"contract":N,"error":{"code","name","message","next","subject"}} in which code and name come from the exit table, next lists in order the commands the prose prints after ->, and subject is the entity or path refused or null; a warning under --json is one such document per line with "warning" in place of "error"; without --json stderr stays the prose it is, byte for byte; the MCP server returns the same document as the structuredContent of an isError result; the shape is part of the versioned contract and is produced by its one writer.
 amends: [ADR-6fd69efb629c]
+ratified: "184699422e74"
+anchor: bc19ea13be335b6bea035cb40f62a293c0784e30
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-11-18T22:32:00Z
 schema: 4
-version: 1
+version: 2
 ---
 
 GitHub #782. Exit codes route a script; they do not let a board, a bot or an IDE panel say why, or offer the next command. Every integration re-implements a parser of `error[<n>]:` and `  -> ` lines, and each breaks when a message is reworded.
