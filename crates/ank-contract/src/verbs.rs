@@ -414,7 +414,7 @@ const CONTEXT_PEER_BOUND_OUT: &[Field] = &[
 ];
 
 /// `context --peers`: the same document, each task carrying the peer it
-/// lives in (ADR-376bed7fa39a). A second document and not a field that is
+/// lives in (ADR-89c1e7146fe5). A second document and not a field that is
 /// always there, as for `claim` below: a caller who did not ask for the peers
 /// sees exactly the bytes it saw before.
 const CONTEXT_PEERS_OUT: &[Field] = &[
@@ -470,7 +470,7 @@ const CONTEXT_PEERS_OUT: &[Field] = &[
             f("unblocks", Type::Num),
             f("state", Type::Str),
             // The declared peer the task lives in, null for one of this
-            // corpus (ADR-376bed7fa39a). A peer's task is listed only when it
+            // corpus (ADR-89c1e7146fe5). A peer's task is listed only when it
             // is ready over there: open, unblocked and held by nobody in that
             // peer's own claims.
             opt("peer", Type::Str),
@@ -592,7 +592,7 @@ const STATUS_OUT: &[Field] = &[
 
 /// `status --peers`: the same document, every claim of each declared peer
 /// added to `elsewhere` with the peer it lives in, and `constraints` counting
-/// the peer ADRs that bind this perimeter too (ADR-376bed7fa39a).
+/// the peer ADRs that bind this perimeter too (ADR-89c1e7146fe5).
 const STATUS_PEERS_OUT: &[Field] = &[
     // The first field gained under the contract, and the demonstration of what
     // CONTRACT_VERSION promises: a document may gain a field within a version and
@@ -653,7 +653,7 @@ const STATUS_PEERS_OUT: &[Field] = &[
             opt("seen", Type::Str),
             opt("claimed", Type::Str),
             // The declared peer whose refs carry the claim, null for one of
-            // this corpus (ADR-376bed7fa39a). A peer's claim is shown and never
+            // this corpus (ADR-89c1e7146fe5). A peer's claim is shown and never
             // arbitrated: claims stay per repository (ADR-ed3e14d0f991).
             opt("peer", Type::Str),
         ]),
@@ -1761,7 +1761,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         output: &[
             when("without --peers", &[opt("corpus", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str), f("created", Type::Str), f("archived", Type::Bool), opt("anchored_by", Type::Str)]))]),
             // Each row carries the declared peer it lives in, null for one of
-            // this corpus (ADR-376bed7fa39a).
+            // this corpus (ADR-89c1e7146fe5).
             when("with --peers", &[opt("corpus", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), opt("peer", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str), f("created", Type::Str), f("archived", Type::Bool), opt("anchored_by", Type::Str)]))]),
         ],
         owner_task: None,
@@ -2430,11 +2430,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         // The command a folded signal names (ADR-df1035934387): a flag on the
-        // verb that folded, and no new surface (ADR-376bed7fa39a). Long form
+        // verb that folded, and no new surface (ADR-89c1e7146fe5). Long form
         // only: §4 gives `-k` to nothing.
-        // --peers is the fourth verb ADR-376bed7fa39a gives the flag to.
+        // --peers is the fourth verb ADR-89c1e7146fe5 gives the flag to.
         // --all is the listing before ADR-61c273118d97, and adds no surface
-        // beyond a switch on the verb that hides (ADR-376bed7fa39a).
+        // beyond a switch on the verb that hides (ADR-89c1e7146fe5).
         // --strict is ADR-55460a57353a's one-off gate: every signal a fault
         // for the run, and nothing written.
         flags: &[
@@ -2720,7 +2720,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     // After `skills` and before `update`, which is §4's order, and in their
     // group for their reason: what it installs is this binary, into the agent's
-    // own configuration, before any corpus is involved (ADR-376bed7fa39a).
+    // own configuration, before any corpus is involved (ADR-89c1e7146fe5).
     CommandSpec {
         name: "hooks",
         group: "set up a repository",

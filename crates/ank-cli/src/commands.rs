@@ -1537,7 +1537,7 @@ pub fn find(
         (hits, 0)
     };
 
-    // **Each declared peer's answer, after this corpus's** (ADR-376bed7fa39a).
+    // **Each declared peer's answer, after this corpus's** (ADR-89c1e7146fe5).
     // Read only, at the peer's default branch, and marked from the peer's own
     // claims. A peer that cannot be read is one warning and the rest of the
     // answer.
@@ -1822,7 +1822,7 @@ struct PeerListing {
 }
 
 /// Every declared peer's rows for `find --peers`, and one warning per peer
-/// that could not be read (ADR-376bed7fa39a).
+/// that could not be read (ADR-89c1e7146fe5).
 ///
 /// **Read and never written** (ADR-a1de673043b4): the corpus is the peer's
 /// default branch as [`crate::repo::peers_of`] reads it, the index is built in
