@@ -1518,7 +1518,21 @@ fn dispatch(
         // unchecked here, which costs nothing — `common_dir` answers `None`
         // when it cannot run, and two `None`s say nothing.
         warn_if_outside_repository(&inv, &repo, cwd);
-        return crate::config::run(&inv, &repo, out);
+        // A write to what decides who may do what is itself an act of the
+        // vocabulary (ADR-ddbe024ca7f2), judged by the roles in force before
+        // the write: the ones the writer was bound by.
+        let acts = acts_of(&inv);
+        let before = (!acts.is_empty())
+            .then(|| crate::config::load(&repo.config_path()).ok())
+            .flatten();
+        let code = crate::config::run(&inv, &repo, out)?;
+        if let Some(cfg) = before {
+            let identity = crate::identity::resolved().0;
+            for act in &acts {
+                cfg.warn_forbidden(&identity, act);
+            }
+        }
+        return Ok(code);
     }
     // The fourth, and the reason is its own (ADR-8bd76e8d7c4e). `tui` is a
     // reader that reaches the corpus by *running this binary*, so the
@@ -1610,6 +1624,13 @@ fn dispatch(
         _ => Err(not_implemented(spec)),
     }?;
 
+    // An act the identity's role forbids, performed all the same and said so
+    // (ADR-ddbe024ca7f2). After the verb and only when it succeeded: a verb
+    // that refused performed nothing, and the CLI never refuses on a role.
+    for act in acts_of(&inv) {
+        s.config.warn_forbidden(&s.identity, &act);
+    }
+
     // **The one place the renewal rule is applied** (§3, ADR-0bb7ea8991bc).
     // Working is what keeps the lock, so the lease moves when the verb that just
     // ran was the holder's work on the task it holds. Here rather than at each
@@ -1632,6 +1653,54 @@ fn dispatch(
         inv.positionals.first().map(String::as_str),
     );
     Ok(code)
+}
+
+/// The acts of the role vocabulary a verb performs, as the invocation names
+/// them (ADR-ddbe024ca7f2): what the verb warns about after it ran, and what
+/// the pre-tool-use hook refuses before it runs, read from one table so the
+/// two never disagree. `ank log` is left out: its read form and its write form
+/// are one verb, and only the write is the act.
+pub(crate) fn acts_of(inv: &Invocation) -> Vec<String> {
+    let first = inv.positionals.first().map(String::as_str);
+    match inv.command {
+        // A write to what decides who may do what, judged by the roles in
+        // force before the write: the ones the writer was bound by.
+        "config"
+            if !inv.has("--user")
+                && (inv.has("--unset") || inv.positionals.len() > 1)
+                && first.is_some_and(|k| {
+                    let top = k.split('.').next().unwrap_or_default();
+                    ["roles", "identities", "permissions", "check", "ratify"].contains(&top)
+                }) =>
+        {
+            vec!["config:permissions".to_string()]
+        }
+        "context" | "find" | "claim" | "done" => vec![inv.command.to_string()],
+        "close" => vec!["task:close".to_string()],
+        "new" => match inv.subcommand.as_deref() {
+            Some("task") => vec!["new:task".to_string()],
+            Some("adr") => vec!["new:adr:proposed".to_string()],
+            Some("spec") => vec!["new:spec:proposed".to_string()],
+            _ => Vec::new(),
+        },
+        "edit" if inv.has("--constraint") => vec!["adr:edit-constraint".to_string()],
+        "accept" => {
+            let mut acts: Vec<String> = inv
+                .positionals
+                .iter()
+                .map(|id| {
+                    if id.to_ascii_uppercase().starts_with("SPEC-") {
+                        "spec:accept".to_string()
+                    } else {
+                        "adr:accept".to_string()
+                    }
+                })
+                .collect();
+            acts.dedup();
+            acts
+        }
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@
 
 Every key `.ank/config.yml` may carry, with the type of its value and what an absent key means. A key not listed here is refused, and so is a file whose `schema` is newer than this build reads.
 
-This build reads `schema: 1` through `schema: 2`; a file carrying `requires_ank` declares `schema: 2`, and one without it may stay at `schema: 1`. A duration is `<n><unit>`, the unit one of `s`, `m`, `h` or `d`. `<name>` stands for a key the file chooses; `ank config <key>` reads and writes the scalar keys, and `roles` and `identities` are edited by hand.
+This build reads `schema: 1` through `schema: 2`; a file carrying `requires_ank` declares `schema: 2`, and one without it may stay at `schema: 1`. A duration is `<n><unit>`, the unit one of `s`, `m`, `h` or `d`. `<name>` stands for a key the file chooses; `ank config <key>` reads and writes each key, `signers` aside, which `ank signers` writes.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
@@ -23,9 +23,9 @@ This build reads `schema: 1` through `schema: 2`; a file carrying `requires_ank`
 | `proof.reuse_max_age` | duration | `24h` | how old a passing run recorded under `<git-common-dir>/ank/runs/` may be for `done` to reuse it rather than run the verifier again, at least `1s`; `done --fresh` reuses nothing |
 | `verifier_jobs` | integer | none | how many verifiers one `done` runs at once, at least 1; absent, the machine's available parallelism |
 | `verifier_lock` | boolean | `true` | whether `done` waits for the verifiers another `done` of the repository is running, in any of its worktrees, before it starts its own; `false` lets them run at the same time (ADR-eab130f731f3) |
-| `roles.<name>.can` | list of strings | `[]` | what the role may do, each entry a word of the role vocabulary below |
-| `roles.<name>.cannot` | list of strings | `[]` | what the role may not do, each entry a word of the role vocabulary below |
-| `identities.<identity>` | string | none | the role of an identity; one absent from the table is an `agent` |
+| `roles.<name>.can` | list of strings | none | what the role may do, each entry a word of the role vocabulary below; a list other than `["*"]` forbids every act it omits, so `can: []` forbids every act, while absent the key restricts nothing; written as one flow sequence by `ank config roles.<name>.can`, which declares the role when it is absent, and `--unset` leaves the role with no `can` key |
+| `roles.<name>.cannot` | list of strings | `[]` | what the role may not do, each entry a word of the role vocabulary below; written by `ank config roles.<name>.cannot` |
+| `identities.<identity>` | string | none | the role of an identity, one `roles` declares; one absent from the table is an `agent`; written by `ank config identities.<identity> <role>` and removed by `--unset` |
 | `permissions.enforce` | `off`, `warn` or `deny` | `off` | how roles apply: `off` not at all, `warn` and `deny` as ADR-ddbe024ca7f2 sets; `ank init` writes `warn` into the corpus it creates; moved by `ank config permissions.enforce` |
 | `weight.hot_files` | integer | `3000` | `check` signals a hot corpus holding more entity files |
 | `weight.plane_bytes` | integer | `4000000` | `check` signals claim and proof records weighing more bytes |

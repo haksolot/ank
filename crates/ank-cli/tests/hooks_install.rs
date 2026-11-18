@@ -373,3 +373,75 @@ fn run_is_silent_and_exits_zero() {
         assert!(out.stdout.is_empty(), "{event}: run printed something");
     }
 }
+
+/// The matcher of the PreToolUse entry before shell calls were guarded, and
+/// the one written since (ADR-ddbe024ca7f2): a Bash call reaches the hook only
+/// when the entry is matched to it.
+const OLD_MATCHER: &str = "\"Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep\"";
+const MATCHER: &str = "\"Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|Bash\"";
+
+/// Every shape the install tests above write into, the foreign file among them.
+fn shapes() -> Vec<&'static str> {
+    vec![
+        FOREIGN,
+        "{\n  \"hooks\": {\n    \"SessionStart\": [],\n    \"PreToolUse\": [ ]\n  }\n}\n",
+        "{\n  \"hooks\": {\n    \"Stop\": []\n  }\n}\n",
+        "{\n  \"hooks\": {}\n}\n",
+        "{\n  \"model\": \"opus\"\n}\n",
+        "{}\n",
+        "{\"model\":\"opus\",\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"x\"}]}]}}",
+        "{\r\n\t\"model\": \"opus\"\r\n}\r\n",
+    ]
+}
+
+#[test]
+fn the_pre_tool_use_entry_is_matched_to_shell_calls() {
+    let fx = Fixture::new();
+    ok(&fx.ank(&["hooks", "install", "claude"]), "install");
+    let text = fx.read();
+    assert!(text.contains(MATCHER), "{text}");
+    let doc = parse(&text);
+    assert_eq!(
+        doc["hooks"]["PreToolUse"][0]["matcher"].as_str(),
+        Some("Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|Bash")
+    );
+}
+
+/// What an earlier install wrote, the entry matched to the file tools alone:
+/// install moves its matcher and nothing else, a second install leaves the
+/// file as the first left it, and remove from either takes out exactly what
+/// install wrote (ADR-43cbb20dcbf1).
+#[test]
+fn an_entry_an_earlier_install_wrote_is_upgraded_in_place_and_removed_whole() {
+    for before in shapes() {
+        let fx = Fixture::new();
+        fs::write(fx.settings(), before).unwrap();
+        ok(&fx.ank(&["hooks", "install", "claude"]), "install");
+        let current = fx.read();
+        assert_eq!(current.matches(MATCHER).count(), 1, "{before:?}: {current}");
+        let earlier = current.replace(MATCHER, OLD_MATCHER);
+
+        // Removed whole, as the earlier binary would have removed it.
+        fs::write(fx.settings(), &earlier).unwrap();
+        ok(&fx.ank(&["hooks", "remove", "claude"]), "remove");
+        assert_eq!(fx.read(), before, "remove left a byte of {before:?}");
+
+        // Upgraded: the matcher moves, every other byte stays.
+        fs::write(fx.settings(), &earlier).unwrap();
+        let out = fx.ank(&["hooks", "install", "claude"]);
+        ok(&out, "install over the earlier entry");
+        assert_eq!(
+            fx.read(),
+            current,
+            "{before:?}: the upgrade moved another byte"
+        );
+        ok(&fx.ank(&["hooks", "install", "claude"]), "install, again");
+        assert_eq!(
+            fx.read(),
+            current,
+            "{before:?}: a second install moved a byte"
+        );
+        ok(&fx.ank(&["hooks", "remove", "claude"]), "remove");
+        assert_eq!(fx.read(), before, "{before:?}: remove after the upgrade");
+    }
+}

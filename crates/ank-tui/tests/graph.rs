@@ -971,6 +971,82 @@ fn paints_nothing(live: &Live, what: &str) {
     );
 }
 
+/// `spaces` presses of Space, returned once the reader has answered every one
+/// of them and the row under way is out of the graph's page.
+///
+/// **A screen that satisfies the wait is not a reader that answered every
+/// key** (TASK-fffdeed7bd70). The row leaves the page on the first Space at
+/// both windows, and each one after it past the end of the graph still
+/// redraws: nineteen bytes at the least -- `ESC[m` three times, `ESC[0m`,
+/// `ESC[?25l` -- and a frame wherever the claims panel's age turned a second
+/// in between. A reader stalled by load holds a screen that is already the
+/// one waited for, and still, while it owes the rest; [`paints_nothing`] then
+/// watched them land, 17564 bytes against 17545 at 160x45.
+///
+/// So the wait is on an answer and not on a picture. Keys are answered in the
+/// order they arrive, so the key list, asked for behind the spaces, is drawn
+/// only once every one of them was; and closed again, with nothing sent after
+/// the escape, nothing is owed when this returns. The list is drawn over the
+/// panels and gives back the frame it covered, so the page the spaces left
+/// is the page asserted on.
+#[cfg(unix)]
+fn paged_out(live: &mut Live, columns: u16, under_way: &str, spaces: usize) {
+    live.send(&" ".repeat(spaces));
+    live.send("?");
+    live.until("the key list, drawn behind every space", |t| {
+        t.contains("KEYS ")
+    });
+    live.send("\u{1b}");
+    live.until(
+        "the key list closed over the row under way off the page",
+        |t| {
+            !t.contains("KEYS ")
+                && graph_drawn(t)
+                && !graph_rows(t, columns).is_empty()
+                && graph_rows(t, columns)
+                    .iter()
+                    .all(|r| r.short() != under_way)
+        },
+    );
+}
+
+/// **Paged out, a reader that stalls behind its keys still answers every one
+/// of them before the session is asked to sit still** (TASK-fffdeed7bd70), at
+/// both windows.
+///
+/// The race the suite above lost under load, arranged rather than waited for:
+/// the first Space is answered and takes the row under way off the page, the
+/// reader is then stopped, and the rest are sent to it stopped -- a screen
+/// that satisfies the wait and holds still while seven keys are owed. It is
+/// continued a second later, inside the two seconds [`paints_nothing`]
+/// watches, so a paging that returned on the screen alone is a session caught
+/// writing with nobody typing.
+#[cfg(unix)]
+#[test]
+fn paged_out_behind_a_stalled_reader_every_space_is_answered_before_the_stillness() {
+    let _one = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|held| held.into_inner());
+    let fixture = taller();
+    let under_way = short_of(&fixture.under_way);
+    for (columns, rows) in WINDOWS {
+        let mut live = Live::open(&fixture.repo, columns, rows);
+        opened(&live, columns);
+        on_graph(&mut live, columns);
+        paged_out(&mut live, columns, &under_way, 1);
+        live.frame();
+        let held = live.stopped();
+        let continued = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            drop(held);
+        });
+        paged_out(&mut live, columns, &under_way, 7);
+        paints_nothing(&live, &format!("stalled, scrolled out at {columns}x{rows}"));
+        continued.join().expect("the reader is continued");
+        live.quit();
+    }
+}
+
 /// [`Repo::graphed`] and thirty tasks more, linked to nothing, so the graph
 /// is longer than a page at both windows and the row of the task under way,
 /// in the first block, can be scrolled out of it.
@@ -1005,16 +1081,7 @@ fn off_the_page_under_a_document_or_with_nothing_in_progress_nothing_is_painted(
         opened(&live, columns);
         on_graph(&mut live, columns);
         // Paged to the end of the graph: the first block leaves the page.
-        for _ in 0..8 {
-            live.send(" ");
-        }
-        live.until("the row under way to leave the page", |t| {
-            graph_drawn(t)
-                && !graph_rows(t, columns).is_empty()
-                && graph_rows(t, columns)
-                    .iter()
-                    .all(|r| r.short() != under_way)
-        });
+        paged_out(&mut live, columns, &under_way, 8);
         paints_nothing(&live, &format!("scrolled out at {columns}x{rows}"));
 
         // Back to the top, onto the row under way, and its document opened.

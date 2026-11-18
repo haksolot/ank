@@ -31,7 +31,12 @@ const READERS: &[&str] = &["Read", "Glob", "Grep"];
 const EDITORS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
 
 fn quoted(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+    )
 }
 
 /// The payload Claude Code hands a PreToolUse hook for `tool` aimed at
@@ -48,6 +53,7 @@ fn payload(cwd: &Path, tool: &str, target: &str) -> String {
         "NotebookEdit" => format!("{{\"notebook_path\":{t},\"new_source\":\"x\"}}"),
         "Glob" => format!("{{\"pattern\":\"*.md\",\"path\":{t}}}"),
         "Grep" => format!("{{\"pattern\":\"status\",\"path\":{t}}}"),
+        "Bash" => format!("{{\"command\":{t},\"description\":\"x\"}}"),
         other => panic!("no payload shape for {other}"),
     };
     format!(
@@ -99,6 +105,7 @@ impl Fixture {
             .env_remove("ANK_REPO")
             .env_remove("ANK_GUARD_CORPUS")
             .env_remove("ANK_GUARD_EDIT")
+            .env_remove("ANK_PERMISSIONS_ENFORCE")
             .env_remove("MSYS_NO_PATHCONV")
             .env_remove("MSYS2_ARG_CONV_EXCL");
         c
@@ -500,4 +507,223 @@ fn the_git_processes_of_one_invocation_do_not_grow_with_the_corpus() {
         "the git processes per invocation grew from 10 entities to 500 ({:?} against {:?})",
         measured[0], measured[1]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Under permissions.enforce deny, a shell call to a verb the role forbids is
+// refused (ADR-ddbe024ca7f2, GitHub #791 section 2)
+// ---------------------------------------------------------------------------
+
+/// An identity `init` did not map, so its role is `agent`: init's agent role
+/// lists `adr:accept` and `task:close` under cannot, and its can list omits
+/// `config:permissions` and `new:spec:proposed`.
+const WORKER: &str = "claude-code/worker";
+
+/// The hook's answer to a shell call running `command`, as `identity`.
+fn shell(f: &Fixture, repo: &Path, command: &str, env: &[(&str, &str)]) -> String {
+    let mut env = env.to_vec();
+    env.push(("ANK_AGENT", WORKER));
+    f.ask(repo, "Bash", command, &env)
+}
+
+#[test]
+fn under_deny_a_shell_call_to_a_verb_the_role_forbids_is_refused_naming_the_entry() {
+    let f = Fixture::new("hooks-guard-roles");
+    let repo = f.corpus("repo", 0);
+    f.set(&repo, "permissions.enforce", "deny");
+
+    for (command, act, entry) in [
+        (
+            "ank accept ADR-0123456789ab",
+            "adr:accept",
+            "roles.agent.cannot",
+        ),
+        (
+            "ank close TASK-0123456789ab --reason no",
+            "task:close",
+            "roles.agent.cannot",
+        ),
+        (
+            "ank config permissions.enforce off",
+            "config:permissions",
+            "roles.agent.can",
+        ),
+        (
+            "ank config roles.agent.can '[\"*\"]'",
+            "config:permissions",
+            "roles.agent.can",
+        ),
+        (
+            "ank config --unset identities.x",
+            "config:permissions",
+            "roles.agent.can",
+        ),
+        (
+            "ank new spec --title S --scope 'src/**' --body b",
+            "new:spec:proposed",
+            "roles.agent.can",
+        ),
+        (
+            "ank edit ADR-0123456789ab --constraint 'Y.'",
+            "adr:edit-constraint",
+            "roles.agent.cannot",
+        ),
+    ] {
+        let out = shell(&f, &repo, command, &[]);
+        assert!(denies(&out), "{command}: {out:?}");
+        assert!(out.contains(act) && out.contains(entry), "{command}: {out}");
+        assert!(
+            out.contains("'agent'") && out.contains(WORKER),
+            "{command}: {out}"
+        );
+        // The command a human runs instead is the one refused, as typed.
+        let typed = command.replace('"', "\\\"");
+        assert!(out.contains(&typed), "{command}: {out}");
+        assert!(out.contains("human"), "{command}: {out}");
+    }
+
+    // The forms a shell call takes around the verb: a chain, an environment
+    // prefix, a path to the binary, a pipe, a separator.
+    for command in [
+        "cd src && ank accept ADR-0123456789ab",
+        "ANK_AGENT=human:me ank accept ADR-0123456789ab",
+        "env FOO=1 ank accept ADR-0123456789ab",
+        "./target/debug/ank accept ADR-0123456789ab",
+        "/usr/local/bin/ank accept ADR-0123456789ab; echo done",
+        "true || ank close TASK-0123456789ab --reason no",
+        "echo x | ank accept ADR-0123456789ab",
+        "git status\nank accept ADR-0123456789ab",
+    ] {
+        let out = shell(&f, &repo, command, &[]);
+        assert!(denies(&out), "{command}: {out:?}");
+    }
+
+    // Let through: a verb the role allows, a config write outside the guarded
+    // keys, a command that only names ank, and the forms this parse does not
+    // reach, which the verb itself still warns about.
+    for command in [
+        "ank context src",
+        "ank claim TASK-0123456789ab",
+        "ank new task --title T --scope 'src/**' --criteria c",
+        "ank config context_budget 9000",
+        "ank config permissions.enforce",
+        "ank show ADR-0123456789ab",
+        "echo ank accept ADR-0123456789ab",
+        "git log --grep 'ank accept'",
+        "cargo test",
+        "sh -c 'ank accept ADR-0123456789ab'",
+    ] {
+        let out = shell(&f, &repo, command, &[]);
+        assert!(!denies(&out), "{command}: {out:?}");
+    }
+
+    // An identity whose role allows the act: the one init mapped to human.
+    let out = f.ask(&repo, "Bash", "ank accept ADR-0123456789ab", &[]);
+    assert!(!denies(&out), "{out:?}");
+}
+
+#[test]
+fn under_warn_or_off_the_hook_refuses_no_shell_call() {
+    let f = Fixture::new("hooks-guard-roles-warn");
+    let repo = f.corpus("repo", 0);
+    for level in ["warn", "off"] {
+        f.set(&repo, "permissions.enforce", level);
+        let out = shell(&f, &repo, "ank accept ADR-0123456789ab", &[]);
+        assert_eq!(out, "", "{level}: {out:?}");
+    }
+}
+
+#[test]
+fn ank_permissions_enforce_tightens_the_declared_level_and_a_looser_value_is_ignored_aloud() {
+    let f = Fixture::new("hooks-guard-roles-env");
+    let repo = f.corpus("repo", 0);
+    let accept = "ank accept ADR-0123456789ab";
+
+    f.set(&repo, "permissions.enforce", "warn");
+    let out = shell(&f, &repo, accept, &[("ANK_PERMISSIONS_ENFORCE", "deny")]);
+    assert!(denies(&out), "deny over warn: {out:?}");
+    f.set(&repo, "permissions.enforce", "off");
+    let out = shell(&f, &repo, accept, &[("ANK_PERMISSIONS_ENFORCE", "deny")]);
+    assert!(denies(&out), "deny over off: {out:?}");
+
+    f.set(&repo, "permissions.enforce", "deny");
+    for looser in ["off", "warn", "bogus"] {
+        let out = shell(&f, &repo, accept, &[("ANK_PERMISSIONS_ENFORCE", looser)]);
+        assert!(denies(&out), "{looser} over deny: {out:?}");
+        assert!(
+            out.contains(&format!("ANK_PERMISSIONS_ENFORCE={looser}")) && out.contains("ignored"),
+            "{looser}: the ignored value is not named: {out}"
+        );
+    }
+
+    // Declared warn, a looser value ignored: nothing is refused, and the hook
+    // still says it ignored the value.
+    f.set(&repo, "permissions.enforce", "warn");
+    let out = shell(&f, &repo, accept, &[("ANK_PERMISSIONS_ENFORCE", "off")]);
+    assert!(!denies(&out), "{out:?}");
+    assert!(
+        out.contains("ANK_PERMISSIONS_ENFORCE=off") && out.contains("ignored"),
+        "{out}"
+    );
+}
+
+/// The two file guards at their tightest say nothing about a shell call, as
+/// before shell calls reached the hook: they have no path to confront it with.
+#[test]
+fn the_file_guards_ignore_a_shell_call_whatever_it_touches() {
+    let f = Fixture::new("hooks-guard-shell-files");
+    let repo = f.corpus("repo", 0);
+    f.set(&repo, "guard.corpus", "deny");
+    f.set(&repo, "guard.edit", "claim");
+    f.set(&repo, "permissions.enforce", "off");
+    for command in [
+        "cat .ank/config.yml",
+        "echo x > docs/page.md",
+        "sed -i s/a/b/ .ank/entities/x.md",
+    ] {
+        let out = shell(&f, &repo, command, &[]);
+        assert_eq!(out, "", "{command}: {out:?}");
+    }
+}
+
+/// What the hook costs on a shell call, counted in git processes from
+/// `GIT_TRACE` (ADR-cc65f1388a71): none for a command that runs no ank, under
+/// deny too, since it is read before any corpus is resolved; and as many as
+/// the resolution and the config take for one that does.
+#[test]
+fn a_shell_call_that_runs_no_ank_costs_the_hook_no_git_process() {
+    let f = Fixture::new("hooks-guard-shell-cost");
+    let repo = f.corpus("repo", 0);
+    f.set(&repo, "permissions.enforce", "deny");
+    f.set(&repo, "guard.edit", "claim");
+    ok(f.ank(&repo, &["status"]), "status");
+    let count = |tool: &str, target: &str, i: usize| -> usize {
+        let trace = f.root.join(format!("shell-{i}.trace"));
+        let env = [("ANK_AGENT", WORKER), ("ANK_PERMISSIONS_ENFORCE", "deny")];
+        let out = f.hook(
+            &repo,
+            payload(&repo, tool, target).as_bytes(),
+            &env,
+            Some(&trace),
+        );
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let text = fs::read_to_string(trace).unwrap_or_default();
+        text.lines().filter(|l| l.contains(MARK)).count()
+    };
+    let none = [
+        count("Bash", "cargo test", 0),
+        count("Bash", "git status && ls -la", 1),
+        count("Bash", "echo bank", 2),
+    ];
+    let ank = [
+        count("Bash", "ank accept ADR-0123456789ab", 3),
+        count("Bash", "ank context src", 4),
+    ];
+    // An edit no claim of the worker covers reads the claims: the trace is
+    // shown to record git, so the zeros above are a measurement.
+    let edit = count("Edit", "docs/page.md", 5);
+    eprintln!("git processes per call: Bash with no ank {none:?}, Bash with ank {ank:?}, uncovered Edit {edit}");
+    assert_eq!(none, [0, 0, 0], "a call running no ank started git");
+    assert_eq!(ank, [0, 0], "reading the roles started git");
+    assert!(edit > 0, "the trace records no git process");
 }
