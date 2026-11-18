@@ -2792,8 +2792,8 @@ fn write_role_list(lines: &mut Vec<Line>, role: &str, field: &str, value: &str) 
             .indent
             .and_then(|g| find_key(lines, block.range.clone(), g, seg));
         let Some(j) = found else {
-            let mut at = block.range.end;
-            if at == lines.len() {
+            let start = block.range.end;
+            if start == lines.len() {
                 terminate_last(lines, &eol);
             }
             for (m, s) in path[k..].iter().enumerate() {
@@ -2804,13 +2804,12 @@ fn write_role_list(lines: &mut Vec<Line>, role: &str, field: &str, value: &str) 
                     format!("{pad}{}:", key_text(s))
                 };
                 lines.insert(
-                    at,
+                    start + m,
                     Line {
                         text,
                         eol: eol.clone(),
                     },
                 );
-                at += 1;
             }
             return Ok(());
         };
