@@ -22,6 +22,13 @@
 //! container its owner left empty (`"SessionStart": []`, `"hooks": {}`) would
 //! otherwise come out of `install` looking exactly like one ank created, and
 //! `remove` could not know whether to take the container out with the entry.
+//!
+//! **One protocol decides** (ADR-b108b24202ed). `run` translates each agent's
+//! payload into one call, `event`, `tool`, `paths` and `cwd`, answers it with
+//! one decision, `allow`, `deny` or `context`, and translates that back into
+//! the agent's own bytes. `generic` is the identity translation, which any
+//! harness with a hook can call; `claude` is a translation onto it whose bytes
+//! are the ones it wrote before the protocol existed.
 
 use crate::cli::{CliError, Invocation, Result};
 use crate::config::{Enforce, GuardCorpus, GuardEdit};
@@ -159,30 +166,242 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
     Ok(ExitCode::Ok)
 }
 
+/// The agents `run` answers for, each a translation onto the protocol
+/// (ADR-b108b24202ed): `generic` is the identity translation, and an agent
+/// `install` knows is one of them.
+const RUNNERS: &[&str] = &["claude", "generic"];
+
+/// The events of the protocol, under the names `run` is called with.
+#[derive(Clone, Copy, PartialEq)]
+enum Event {
+    SessionStart,
+    PreToolUse,
+}
+
+/// One call of the hook protocol (ADR-b108b24202ed): what every agent's payload
+/// is translated into, and what `generic` reads as it is written.
+///
+/// `tool` is `read`, `search`, `edit` or `shell`; any tool but `shell` is
+/// confronted with `guard.corpus` for every path it reaches, and `edit` with
+/// `guard.edit` as well. `paths` are relative to `cwd`, or absolute; `command`
+/// is the line a `shell` call runs.
+struct Call {
+    event: Event,
+    tool: String,
+    paths: Vec<String>,
+    command: Option<String>,
+    cwd: Option<PathBuf>,
+}
+
+/// What the protocol answers: the call goes on, with a message for the agent
+/// or none; it is refused, with the reason; or, at session start, the text the
+/// agent is served.
+enum Decision {
+    Allow(Option<String>),
+    Deny(String),
+    Context(String),
+}
+
 /// What `hooks run` prints for an event, or `None` for silence.
 ///
 /// **Every failure is silence.** An event this version does not serve, a
 /// payload that is not a JSON object, a directory no corpus answers for, a
 /// status that cannot be read: each is `None`, and `None` is a 0 with nothing
-/// on stdout, which Claude Code reads as "go on".
+/// on stdout, which Claude Code reads as "go on", and any harness wired to
+/// `generic` is told to read the same way.
+///
+/// **One place decides.** The agent's payload is translated into a [`Call`],
+/// [`decide`] answers it, and the [`Decision`] is translated back into the
+/// agent's own format: no agent's adapter makes a guard decision of its own.
 fn serve(inv: &Invocation, cwd: &Path) -> Option<String> {
     let [agent, event] = inv.positionals.as_slice() else {
         return None;
     };
-    if agent != "claude" || !matches!(event.as_str(), "session-start" | "pre-tool-use") {
+    let event = match event.as_str() {
+        "session-start" => Event::SessionStart,
+        "pre-tool-use" => Event::PreToolUse,
+        _ => return None,
+    };
+    if !RUNNERS.contains(&agent.as_str()) {
         return None;
     }
     let mut payload = Vec::new();
     std::io::stdin().read_to_end(&mut payload).ok()?;
     let payload = parse(&String::from_utf8(payload).ok()?).ok()?;
-    if event == "pre-tool-use" {
-        return pre_tool_use(&payload, cwd);
+    if agent == "claude" {
+        let call = claude_call(event, &payload, cwd)?;
+        claude_answer(event, decide(&call, cwd)?)
+    } else {
+        let call = generic_call(event, &payload)?;
+        Some(generic_answer(decide(&call, cwd)?))
     }
-    let context = session_start(cwd)?;
-    let output = Obj::new()
-        .str("hookEventName", "SessionStart")
-        .str("additionalContext", &context);
-    Some(Obj::new().obj("hookSpecificOutput", output).finish())
+}
+
+/// The protocol's answer to `call`, or `None` where it has nothing to say: no
+/// corpus answers for the directory, or an error of its own, either of which
+/// lets the call through.
+fn decide(call: &Call, cwd: &Path) -> Option<Decision> {
+    let base = call
+        .cwd
+        .clone()
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| cwd.to_path_buf());
+    match call.event {
+        Event::SessionStart => session_start(&base).map(Decision::Context),
+        // A shell call is the permissions guard's alone: the two file guards
+        // have no path to confront it with, and say nothing about it.
+        Event::PreToolUse if call.tool == "shell" => shell_call(call.command.as_deref()?, &base),
+        Event::PreToolUse => file_call(call, &base),
+    }
+}
+
+/// A `generic` document read as the protocol writes it: a JSON object whose
+/// `event`, when present, is the event `run` was called with, whose `tool`
+/// and, for a shell call, `command` are strings, whose `paths` is an array of
+/// strings, and whose `cwd` is a string. Anything else is `None`.
+fn generic_call(event: Event, doc: &Node) -> Option<Call> {
+    let text = |key: &str| -> Option<Option<String>> {
+        match doc.member(key) {
+            None => Some(None),
+            Some(n) => n.text().map(|t| Some(t.to_string())),
+        }
+    };
+    let named = match event {
+        Event::SessionStart => "session-start",
+        Event::PreToolUse => "pre-tool-use",
+    };
+    if text("event")?.is_some_and(|e| e != named) {
+        return None;
+    }
+    let cwd = text("cwd")?.map(PathBuf::from);
+    if event == Event::SessionStart {
+        return Some(Call {
+            event,
+            tool: String::new(),
+            paths: Vec::new(),
+            command: None,
+            cwd,
+        });
+    }
+    let tool = text("tool")??;
+    let paths = match doc.member("paths") {
+        None => Vec::new(),
+        Some(n) if matches!(n.kind, Kind::Array(_)) => n
+            .items()
+            .into_iter()
+            .map(|p| p.text().map(str::to_string))
+            .collect::<Option<Vec<_>>>()?,
+        Some(_) => return None,
+    };
+    let command = text("command")?;
+    if tool == "shell" && command.is_none() {
+        return None;
+    }
+    Some(Call {
+        event,
+        tool,
+        paths,
+        command,
+        cwd,
+    })
+}
+
+/// A decision as the protocol writes it, one JSON object on one line.
+fn generic_answer(decision: Decision) -> String {
+    let doc = Obj::new();
+    match decision {
+        Decision::Allow(None) => doc.str("decision", "allow"),
+        Decision::Allow(Some(message)) => doc.str("decision", "allow").str("message", &message),
+        Decision::Deny(reason) => doc.str("decision", "deny").str("reason", &reason),
+        Decision::Context(text) => doc.str("decision", "context").str("text", &text),
+    }
+    .finish()
+}
+
+/// Claude Code's payload translated into the protocol, or `None` where the
+/// handler before the protocol said nothing: a tool it does not match, a
+/// shell call with no command, a payload missing its tool.
+///
+/// **What Claude Code reads is unchanged** (ADR-b108b24202ed): the session's
+/// directory is the process's at session start, as it always was, and the
+/// paths a tool reaches are resolved here exactly as they were before, so
+/// [`decide`] confronts the same places with the corpus.
+fn claude_call(event: Event, payload: &Node, cwd: &Path) -> Option<Call> {
+    if event == Event::SessionStart {
+        return Some(Call {
+            event,
+            tool: String::new(),
+            paths: Vec::new(),
+            command: None,
+            cwd: None,
+        });
+    }
+    let tool = payload.member("tool_name")?.text()?;
+    let input = payload.member("tool_input")?;
+    let typed = payload
+        .member("cwd")
+        .and_then(Node::text)
+        .map(PathBuf::from);
+    let base = typed
+        .clone()
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let (kind, command) = match tool {
+        "Bash" => ("shell", Some(input.member("command")?.text()?.to_string())),
+        "Read" => ("read", None),
+        "Glob" | "Grep" => ("search", None),
+        t if EDITORS.contains(&t) => ("edit", None),
+        _ => return None,
+    };
+    let paths = targets(tool, input, &base)
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    Some(Call {
+        event,
+        tool: kind.to_string(),
+        paths,
+        command,
+        cwd: typed,
+    })
+}
+
+/// A decision in the bytes Claude Code reads: nothing for a call let through
+/// in silence, `systemMessage` and `additionalContext` for one let through
+/// with a message, `permissionDecision` for a refusal, and the session's
+/// `additionalContext` at its start.
+fn claude_answer(event: Event, decision: Decision) -> Option<String> {
+    let name = match event {
+        Event::SessionStart => "SessionStart",
+        Event::PreToolUse => "PreToolUse",
+    };
+    match decision {
+        Decision::Allow(None) => None,
+        Decision::Allow(Some(message)) => {
+            let output = Obj::new()
+                .str("hookEventName", name)
+                .str("additionalContext", &message);
+            Some(
+                Obj::new()
+                    .str("systemMessage", &message)
+                    .obj("hookSpecificOutput", output)
+                    .finish(),
+            )
+        }
+        Decision::Deny(reason) => {
+            let output = Obj::new()
+                .str("hookEventName", name)
+                .str("permissionDecision", "deny")
+                .str("permissionDecisionReason", &reason);
+            Some(Obj::new().obj("hookSpecificOutput", output).finish())
+        }
+        Decision::Context(text) => {
+            let output = Obj::new()
+                .str("hookEventName", name)
+                .str("additionalContext", &text);
+            Some(Obj::new().obj("hookSpecificOutput", output).finish())
+        }
+    }
 }
 
 /// What an agent is told as its session opens: `ank status` for its identity,
@@ -216,8 +435,9 @@ How to work with them is the ank skill; `ank skills --install` installs it if it
 /// the entry is matched to is one `guard.corpus` looks at.
 const EDITORS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
 
-/// What Claude Code is told before a file tool runs, or `None` to let it run
-/// in silence (ADR-43cbb20dcbf1).
+/// The protocol's answer before a tool that reaches files (ADR-43cbb20dcbf1),
+/// or `None` where no corpus answers for the directory or the guard cannot
+/// read what it needs, either of which lets the call through.
 ///
 /// **The path is the one the tool will reach, not the one it was typed as.**
 /// Relative to the session's directory, absolute, or through a symbolic link,
@@ -230,25 +450,12 @@ const EDITORS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
 /// configuration and nothing else; the edit guard adds the one reading of the
 /// claims namespace `claim::on_task` makes and the one entity file it names
 /// (ADR-cc65f1388a71).
-fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
-    let tool = payload.member("tool_name")?.text()?;
-    let input = payload.member("tool_input")?;
-    let base = payload
-        .member("cwd")
-        .and_then(Node::text)
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| cwd.to_path_buf());
-    // A shell call is the permissions guard's alone: the two file guards have
-    // no path to confront it with, and say nothing about it, as before.
-    if tool == "Bash" {
-        return shell_call(input, &base);
-    }
-    let repo = crate::repo::resolve(None, None, &base, &mut Vec::new()).ok()?;
+fn file_call(call: &Call, base: &Path) -> Option<Decision> {
+    let repo = crate::repo::resolve(None, None, base, &mut Vec::new()).ok()?;
     let cfg = crate::config::load(&repo.config_path()).ok()?;
-    let targets = targets(tool, input, &base);
+    let targets: Vec<PathBuf> = call.paths.iter().map(|p| real(&base.join(p))).collect();
     if targets.is_empty() {
-        return None;
+        return Some(Decision::Allow(None));
     }
     let corpus = real(&repo.ank);
     let worktree = real(&repo.worktree);
@@ -262,7 +469,7 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
     let under: Vec<&PathBuf> = targets.iter().filter(|t| t.starts_with(&corpus)).collect();
     if let Some(target) = under.first() {
         if level == GuardCorpus::Off {
-            return None;
+            return Some(Decision::Allow(None));
         }
         let shown = shown(target, &worktree);
         let reason = format!(
@@ -271,11 +478,11 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
              <query>` lists, `ank context <path>` serves what binds a perimeter.{}",
             note.map(|n| format!(" {n}")).unwrap_or_default()
         );
-        return Some(deny(&reason));
+        return Some(Decision::Deny(reason));
     }
 
-    if !EDITORS.contains(&tool) {
-        return None;
+    if call.tool != "edit" {
+        return Some(Decision::Allow(None));
     }
     let (level, note) = tightened(
         cfg.guard.edit,
@@ -284,7 +491,7 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
         GuardEdit::parse,
     );
     if level == GuardEdit::Off {
-        return None;
+        return Some(Decision::Allow(None));
     }
     let (identity, _) = crate::identity::resolved();
     // Outside the work tree a path is no perimeter, and nothing can cover it.
@@ -294,9 +501,11 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
         .filter_map(|rel| ank_core::normalize_path(&rel.to_string_lossy()))
         .filter(|rel| !rel.is_empty())
         .collect();
-    let path = paths.first()?;
+    let Some(path) = paths.first() else {
+        return Some(Decision::Allow(None));
+    };
     if covered(&repo, &identity, path)? {
-        return None;
+        return Some(Decision::Allow(None));
     }
     let note = note.map(|n| format!(" {n}")).unwrap_or_default();
     if level == GuardEdit::Claim {
@@ -304,27 +513,19 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
             "guard.edit is claim, and no live claim of {identity} covers {path}: `ank context \
              {path}` names the task that does, and `ank claim <id>` takes it.{note}"
         );
-        return Some(deny(&reason));
+        return Some(Decision::Deny(reason));
     }
-    let message = format!(
+    Some(Decision::Allow(Some(format!(
         "no live claim of {identity} covers {path}: `ank context {path}` names what binds it \
          and what is claimable, and `ank claim <id>` takes the task.{note}"
-    );
-    let output = Obj::new()
-        .str("hookEventName", "PreToolUse")
-        .str("additionalContext", &message);
-    Some(
-        Obj::new()
-            .str("systemMessage", &message)
-            .obj("hookSpecificOutput", output)
-            .finish(),
-    )
+    ))))
 }
 
 /// What a shell call meets under the permissions guard (ADR-ddbe024ca7f2):
 /// refused under `deny` when one of the ank verbs it runs performs an act the
 /// identity's role forbids, naming the entry and the command a human runs
-/// instead; `None` otherwise, which lets it run.
+/// instead; let through otherwise, with the note when a value the launcher
+/// set was ignored.
 ///
 /// **A command that runs no ank costs nothing.** It is split and read before
 /// any corpus is resolved, so `cargo test` or `git status` starts no git and
@@ -335,11 +536,10 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
 /// **The identity is the session's**, the `ANK_AGENT` the hook runs under,
 /// and never a prefix the command sets: `ANK_AGENT=human:me ank accept` is
 /// judged as the agent that typed it.
-fn shell_call(input: &Node, base: &Path) -> Option<String> {
-    let command = input.member("command")?.text()?;
+fn shell_call(command: &str, base: &Path) -> Option<Decision> {
     let calls = ank_calls(command);
     if calls.is_empty() {
-        return None;
+        return Some(Decision::Allow(None));
     }
     let repo = crate::repo::resolve(None, None, base, &mut Vec::new()).ok()?;
     let cfg = crate::config::load(&repo.config_path()).ok()?;
@@ -358,30 +558,20 @@ fn shell_call(input: &Node, base: &Path) -> Option<String> {
             };
             for act in crate::cli::acts_of(&inv) {
                 if let Some(f) = cfg.forbids(&identity, &act) {
-                    let reason = format!(
+                    return Some(Decision::Deny(format!(
                         "permissions.enforce is deny, and role '{}' of {identity} forbids \
                          {act} ({}): `{typed}` is a human's to run, from their own terminal \
                          under an identity whose role allows it.{suffix}",
                         f.role, f.entry
-                    );
-                    return Some(deny(&reason));
+                    )));
                 }
             }
         }
-        return None;
+        return Some(Decision::Allow(None));
     }
     // Nothing refused, and a value the launcher set was ignored: said, as the
     // file guards say it.
-    let note = note?;
-    let output = Obj::new()
-        .str("hookEventName", "PreToolUse")
-        .str("additionalContext", &note);
-    Some(
-        Obj::new()
-            .str("systemMessage", &note)
-            .obj("hookSpecificOutput", output)
-            .finish(),
-    )
+    Some(Decision::Allow(note))
 }
 
 /// The ank invocations a shell command runs, each as it was typed and as the
@@ -507,16 +697,6 @@ fn shell_words(part: &str) -> Vec<String> {
         words.push(word);
     }
     words
-}
-
-/// The answer that refuses the tool call, with the reason Claude Code shows the
-/// agent.
-fn deny(reason: &str) -> String {
-    let output = Obj::new()
-        .str("hookEventName", "PreToolUse")
-        .str("permissionDecision", "deny")
-        .str("permissionDecisionReason", reason);
-    Obj::new().obj("hookSpecificOutput", output).finish()
 }
 
 /// Whether a live claim of `identity` covers `path`, matched the way `ank
@@ -664,6 +844,19 @@ fn agent<'a>(inv: &'a Invocation, sub: &str) -> Result<&'a str> {
         )
         .with_hint(hint));
     };
+    // The protocol itself has no settings file to write: its harness wires it
+    // in its own hook configuration (ADR-b108b24202ed).
+    if name == "generic" {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!(
+                "generic is wired by hand: it is the hook protocol itself, with no settings \
+                 file for hooks {sub} to write; point the harness's own hook at `ank hooks run \
+                 generic <event>`, as docs/integrating.md shows"
+            ),
+        )
+        .with_hint("ank hooks run generic pre-tool-use"));
+    }
     if !AGENTS.contains(&name.as_str()) {
         return Err(CliError::new(
             ExitCode::Generic,
