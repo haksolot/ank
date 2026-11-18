@@ -5,7 +5,7 @@ slug: ank-is-one-executable-with-a-frozen-surface-and
 title: Ank is one executable with a frozen surface, and the surface gains --peers
 created: 2026-10-26T13:28:12Z
 author: claude-code/opus-5.5+plan
-status: accepted
+status: superseded
 scope:
   - Cargo.toml
   - crates/ank-contract/src/verbs.rs
@@ -19,7 +19,7 @@ verified:
   - by: haksolot@vmi3223161
     at: 2026-10-26T14:15:43Z
 schema: 4
-version: 2
+version: 3
 ---
 
 ## Context
