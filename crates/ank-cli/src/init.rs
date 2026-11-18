@@ -181,16 +181,43 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
 /// key, so a corpus born here and one raised afterwards read the same. The
 /// running version and not a release: `init` reaches no network, and the
 /// binary that made the corpus is the one known to read it.
-fn born_config() -> String {
+///
+/// **And mapping `identity` to `human`** (ADR-ddbe024ca7f2): the file opts the
+/// corpus into `permissions.enforce: warn`, and whoever initialises it is the
+/// maintainer, who is not to be warned on their own accept. The key is always
+/// double-quoted, because an identity is free text and YAML reads `a: b` or
+/// `#c` written plain as something else.
+fn born_config(identity: &str) -> String {
     let canonical = config::default_yaml();
     let rest = canonical
         .strip_prefix(&format!("schema: {}\n", config::MIN_SCHEMA))
         .expect("default_yaml opens on its schema");
+    let rest = rest.replacen(
+        "identities: {}\n",
+        &format!("identities:\n  {}: human\n", double_quoted(identity)),
+        1,
+    );
     format!(
         "schema: {}\nrequires_ank: {}\n{rest}",
         config::REQUIRES_ANK_SCHEMA,
         crate::update::Version::running()
     )
+}
+
+/// `text` as a YAML double-quoted scalar.
+fn double_quoted(text: &str) -> String {
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            c if c.is_control() => quoted.push_str(&format!("\\u{:04x}", c as u32)),
+            c => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -380,7 +407,8 @@ pub fn init_at(root: &Path) -> Result<Report> {
 
     let cfg = ank.join("config.yml");
     if !cfg.exists() {
-        fs::write(&cfg, born_config()).map_err(|e| io(&cfg, e))?;
+        let (identity, _) = crate::identity::resolved();
+        fs::write(&cfg, born_config(&identity)).map_err(|e| io(&cfg, e))?;
         report.wrote_config = true;
     }
 

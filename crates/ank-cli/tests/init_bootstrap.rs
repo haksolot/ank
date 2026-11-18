@@ -164,3 +164,66 @@ fn a_second_init_leaves_both_files_byte_identical() {
     let said = String::from_utf8_lossy(&out.stdout);
     assert!(said.contains(r#""added":[]"#), "{said}");
 }
+
+/// ADR-ddbe024ca7f2: a corpus `init` creates opts into `warn`, and whoever
+/// initialised it is a human, so a maintainer is not warned on their own
+/// accept. Read back through the binary that will read it.
+#[test]
+fn a_fresh_init_writes_permissions_warn_and_maps_its_identity_to_human() {
+    let repo = repository("init-permissions");
+    init(&repo, false);
+    let cfg = read(&repo.join(".ank").join("config.yml"));
+    assert!(cfg.contains("permissions:\n  enforce: warn\n"), "{cfg}");
+
+    let ask = |key: &str| {
+        let out = spawn(ANK, &repo).args(["config", key]).output().unwrap();
+        assert!(out.status.success(), "ank config {key}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    assert_eq!(ask("permissions.enforce"), "warn");
+    assert!(
+        cfg.contains("identities:\n  \"bootstrap@fixture\": human\n"),
+        "{cfg}"
+    );
+    // The file loads and check finds nothing wrong with what init wrote.
+    let out = spawn(ANK, &repo)
+        .args(["check", "--json"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(!text.contains("\"kind\":\"role-word\""), "{text}");
+    assert!(!text.contains("config.yml"), "{text}");
+
+    // A second run on the corpus it made leaves config.yml as it was, and an
+    // identity running it then is not mapped.
+    let before = read(&repo.join(".ank").join("config.yml"));
+    let out = spawn(ANK, &repo)
+        .env("ANK_AGENT", "second@fixture")
+        .arg("init")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(read(&repo.join(".ank").join("config.yml")), before);
+}
+
+/// An identity YAML would misread written plain is quoted, and read back as
+/// the identity it is.
+#[test]
+fn init_quotes_an_identity_yaml_would_misread() {
+    let repo = repository("init-permissions-quoted");
+    let out = spawn(ANK, &repo)
+        .env("ANK_AGENT", "a: \"b\" #c")
+        .arg("init")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let cfg = read(&repo.join(".ank").join("config.yml"));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&cfg).unwrap();
+    assert_eq!(
+        doc["identities"]["a: \"b\" #c"].as_str(),
+        Some("human"),
+        "{cfg}"
+    );
+    let out = spawn(ANK, &repo).arg("status").output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+}

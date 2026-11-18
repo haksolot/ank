@@ -268,10 +268,10 @@ through your normal review. Before you commit, `check` reads them:
 
     $ ank check
     signal: corpus: 5 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
-    3 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
+    2 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
     check: ok — 1 tasks, 1 adr, 1 signal(s)
 
-One signal asks for something, the uncommitted work, and three more only
+One signal asks for something, the uncommitted work, and two more only
 report; `ank check --all` prints those. Commit, and the uncommitted work is
 gone:
 
@@ -281,7 +281,7 @@ gone:
     $ ank check
     signal: corpus: 3 hot entities are cold and belong in .ank/archive/entities/, with every entry about them (ank archive)
     └── ank archive --dry-run lists them and moves nothing
-    2 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
+    1 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
     pruned refs/ank/claims/TASK-820d259af6a7
     check: ok — 1 tasks, 1 adr, 1 signal(s)
 

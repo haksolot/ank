@@ -171,6 +171,8 @@ kinds! {
     Weight => "weight",
     RequiresAnk => "requires-ank",
     ConfigBound => "config-bound",
+    RoleWord => "role-word",
+    Role => "role",
     NoConstraint => "no-constraint",
     EnforcedBy => "enforced-by",
     Reference => "reference",
@@ -348,6 +350,12 @@ const OWES: &[(Kind, Owes)] = &[
     // `ank config <key> <value>` names the repair, and the value is the
     // reader's to choose.
     (Kind::ConfigBound, Owes::Fault),
+    // A word outside the role vocabulary: the role means something other than
+    // what it reads as, and only its author knows which word was meant.
+    (Kind::RoleWord, Owes::Fault),
+    // A recorded act the actor's role forbade: owed while what it acted on is
+    // unsettled, since the record itself never changes.
+    (Kind::Role, Owes::Subject),
 ];
 
 impl Kind {
@@ -1511,11 +1519,22 @@ pub fn inspect_with(
     report.files = files;
 
     check_cycles(&entities, &mut report);
+    // Who ran each accept, read off the ratification tags once and only where
+    // roles apply (ADR-ddbe024ca7f2).
+    let ratifiers: HashMap<String, String> = if cfg.enforce == crate::config::Enforce::Off {
+        HashMap::new()
+    } else {
+        git::ratify_tags(&repo.corpus)
+            .into_iter()
+            .filter_map(|(id, t)| Some((id, t.by?)))
+            .collect()
+    };
     check_authorship(
         &entities,
         &archived_creations,
         &coord,
         &in_scope,
+        &|e: &Entity| ratifier_may_accept(cfg, &ratifiers, e),
         &mut report,
     );
 
@@ -1588,6 +1607,8 @@ pub fn inspect_with(
 
     check_weight(cfg, &mut report);
     check_requires_ank(cfg, &mut report);
+    check_role_words(repo, cfg, &mut report);
+    check_roles(cfg, &ratifiers, &entities, &in_scope, &mut report);
     check_peer_halves(repo, cfg, &entities, &mut report);
 
     settle_owed(&mut report, &entities, &coord);
@@ -3623,6 +3644,134 @@ fn check_config_bounds(repo: &Repo, bounds: &[String], report: &mut Report) {
     }
 }
 
+/// Every `roles.<name>.can` and `.cannot` entry outside the vocabulary
+/// `docs/config-keys.md` publishes, one fault each (ADR-ddbe024ca7f2).
+///
+/// **A fault in `check` and not a refusal at load**: the words are read by no
+/// verb but this one, and a typo in a role must not stop an agent from
+/// running `context`. Whatever the perimeter, since the roles are the
+/// corpus's and not a path's.
+fn check_role_words(repo: &Repo, cfg: &Config, report: &mut Report) {
+    let file = repo.config_path();
+    let subject = file
+        .strip_prefix(&repo.corpus)
+        .unwrap_or(&file)
+        .to_string_lossy()
+        .replace('\\', "/");
+    for (name, role) in &cfg.roles {
+        let can = role.can.as_deref().unwrap_or_default();
+        for (list, words) in [("can", can), ("cannot", role.cannot.as_slice())] {
+            for word in words {
+                if ank_core::config::is_role_word(word) {
+                    continue;
+                }
+                report.findings.push(Finding::fault(
+                    Kind::RoleWord,
+                    &subject,
+                    format!(
+                        "roles.{name}.{list}: '{word}' is not a word of the role vocabulary, \
+                         so it declares nothing (the words are listed in docs/config-keys.md)"
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// The act an accept of `e` is: `adr:accept` or `spec:accept`.
+fn accept_act(e: &Entity) -> &'static str {
+    match e {
+        Entity::Spec(_) => "spec:accept",
+        _ => "adr:accept",
+    }
+}
+
+/// Whether the identity that ratified `e` has a role allowing the accept,
+/// under `warn` or `deny` (ADR-ddbe024ca7f2). The ratifier is the one the tag
+/// names; a ratification older than the tags names none, and the author the
+/// self-ratified signal is about stands in for it.
+fn ratifier_may_accept(cfg: &Config, ratifiers: &HashMap<String, String>, e: &Entity) -> bool {
+    if cfg.enforce == crate::config::Enforce::Off {
+        return false;
+    }
+    let Some(who) = ratifiers
+        .get(&e.id().to_string())
+        .map(String::as_str)
+        .or_else(|| author_of(e))
+    else {
+        return false;
+    };
+    cfg.forbids(who, accept_act(e)).is_none()
+}
+
+/// Every recorded act whose actor's role forbade it, one signal each, under
+/// `warn` or `deny` (ADR-ddbe024ca7f2): a birth, by its author; an accept, by
+/// the identity its tag names; a close, by the entry `close` writes; a
+/// constraint edit, by the machinery entry the edit leaves.
+///
+/// **A signal and never a fault.** The verb already performed the act and said
+/// so; the record is what lets a reader see it later, and the reader judges
+/// what it is worth. A write to `config.yml` leaves no record in the corpus,
+/// so it is warned at the verb and nowhere else.
+fn check_roles(
+    cfg: &Config,
+    ratifiers: &HashMap<String, String>,
+    entities: &[(PathBuf, Entity)],
+    in_scope: &dyn Fn(&Entity) -> bool,
+    report: &mut Report,
+) {
+    if cfg.enforce == crate::config::Enforce::Off {
+        return;
+    }
+    let mut signal = |subject: &str, who: &str, act: &str| {
+        if let Some(f) = cfg.forbids(who, act) {
+            report.findings.push(Finding::signal(
+                Kind::Role,
+                subject,
+                format!(
+                    "{who} performed {act}, which role '{}' forbids ({})",
+                    f.role, f.entry
+                ),
+            ));
+        }
+    };
+    for (_, e) in entities.iter().filter(|(_, e)| in_scope(e)) {
+        let id = e.id().to_string();
+        let born = match e {
+            Entity::Task(_) => Some("new:task"),
+            Entity::Adr(_) => Some("new:adr:proposed"),
+            Entity::Spec(_) => Some("new:spec:proposed"),
+            Entity::Log(_) => None,
+        };
+        if let (Some(act), Some(author)) = (born, author_of(e)) {
+            signal(&id, author, act);
+        }
+        if let Some(who) = ratifiers.get(&id) {
+            if matches!(e, Entity::Adr(_) | Entity::Spec(_)) {
+                signal(&id, who, accept_act(e));
+            }
+        }
+        let Entity::Log(l) = e else { continue };
+        let Some(who) = l.author.as_deref() else {
+            continue;
+        };
+        let about = l.about.to_string();
+        match l.records.as_deref() {
+            None if l.title.starts_with("closed: ") => signal(&about, who, "task:close"),
+            Some(ank_core::model::RECORDS_EDIT)
+                if about.starts_with("ADR-")
+                    && l.title
+                        .split(" (version ")
+                        .next()
+                        .is_some_and(|f| f.split(", ").any(|f| f == "constraint")) =>
+            {
+                signal(&about, who, "adr:edit-constraint")
+            }
+            _ => {}
+        }
+    }
+}
+
 /// A binary older than the corpus's `requires_ank` (ADR-756e8b0fe416).
 ///
 /// **A fault**, where every other verb only warns and goes on: a pipeline
@@ -5307,6 +5456,7 @@ fn check_authorship(
     archived_creations: &[(String, String)],
     coord: &HashMap<EntityId, Record>,
     in_scope: &dyn Fn(&Entity) -> bool,
+    may_accept: &dyn Fn(&Entity) -> bool,
     report: &mut Report,
 ) {
     let considered: Vec<&Entity> = entities
@@ -5420,6 +5570,12 @@ fn check_authorship(
         }
         let Some(author) = author_of(e) else { continue };
         if !readings_of(e).iter().any(|v| v.by == author) {
+            continue;
+        }
+        // Nothing is owed where the repository declared that the ratifier may
+        // ratify (ADR-ddbe024ca7f2): a corpus that lets an identity accept,
+        // in a reviewed diff, has said what this signal would ask.
+        if may_accept(e) {
             continue;
         }
         report.findings.push(Finding::signal(

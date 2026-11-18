@@ -87,6 +87,7 @@ fn the_command_prints_a_row_for_every_variable_the_binary_reads() {
         "ANK_INDEX_BUSY_MS",
         "ANK_INDEX_REFRESHED",
         "ANK_INDEX_STEPS",
+        "ANK_PERMISSIONS_ENFORCE",
         "ANK_TRACE_READS",
         "ANK_UPDATE_REPOSITORY",
         "ANSICON",

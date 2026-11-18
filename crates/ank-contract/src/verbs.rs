@@ -1308,6 +1308,7 @@ config_keys!(
     "proof.reuse_max_age",
     "verifier_jobs",
     "verifier_lock",
+    "permissions.enforce",
     "weight.hot_files",
     "weight.plane_bytes",
     "guard.corpus",

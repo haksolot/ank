@@ -52,25 +52,26 @@ $ ank claim 820d && ank log "jwt.verify removed from session.ts" && ank done
 
     $ ank check
     signal: corpus: 5 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
-    3 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
+    2 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
     check: ok — 1 tasks, 1 adr, 1 signal(s)
 
 No fault, so exit 0. One signal is owed, because it names the command that
-clears it, and three more are only counted. `--all` prints them, each line
+clears it, and two more are only counted. `--all` prints them, each line
 starting with its subject:
 
 <!-- replay check -->
 
     $ ank check --all
-    signal: ADR-06d29e727d24: ratified by its own author (human:marie)
     signal: TASK-820d259af6a7: finished on another branch, main has not caught up
     signal: corpus: 5 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
     signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
-    check: ok — 1 tasks, 1 adr, 4 signal(s)
+    check: ok — 1 tasks, 1 adr, 3 signal(s)
 
-- **Ratified by its own author.** You wrote the ADR and you ratified it, and
-  `check` says so rather than deciding what it means: a solo maintainer does
-  that legitimately, and a team may want to know.
+- **Ratified by its own author, and declared allowed to.** You wrote the ADR
+  and you ratified it. `ank init` mapped you to the `human` role, whose
+  `can: ["*"]` allows `adr:accept`, so the corpus has already said you may and
+  `check` stays quiet. With `permissions.enforce` off, the same history reports
+  `self-ratified`, for a team that wants to know.
 - **Finished on another branch.** `status: done` lives in the file, so on your
   branch alone until the merge. The claim ref became a completion record at
   `done`, which is what tells every other tree the task is taken ([Claims and
@@ -90,7 +91,7 @@ Commit, and the completion record is pruned:
     $ ank check
     signal: corpus: 3 hot entities are cold and belong in .ank/archive/entities/, with every entry about them (ank archive)
     └── ank archive --dry-run lists them and moves nothing
-    2 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
+    1 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
     pruned refs/ank/claims/TASK-820d259af6a7
     check: ok — 1 tasks, 1 adr, 1 signal(s)
 
@@ -134,7 +135,7 @@ $ f=.ank/entities/TASK-51c2a0f6d418.md && sed 's/names no JWT/names nothing/' "$
     signal: corpus: 2 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
     signal: corpus: 3 hot entities are cold and belong in .ank/archive/entities/, with every entry about them (ank archive)
     └── ank archive --dry-run lists them and moves nothing
-    2 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
+    1 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
     check: 1 fault(s) — 2 tasks, 1 adr, 3 signal(s)
     exit 8
 
@@ -172,6 +173,17 @@ A covering task lowers nothing else. A scope git records as renamed or deleted,
 or one whose history is too shallow to say, is reported as ADR-3094538d831e
 says, whatever task covers it. Once the file is committed the scope matches,
 and there is no finding at all.
+
+## An act a role forbids
+
+With `permissions.enforce` at `warn` or `deny`, each recorded act whose actor's
+role forbids it is a signal of kind `role`, on the entity acted on: a birth, by
+its author; an accept, by the identity its ratification tag names; a close; a
+constraint edit. The line names the actor, the act and the entry of
+`.ank/config.yml` that forbids it, the entry the verb printed on stderr when it
+performed the act. A write to `config.yml` leaves no record in the corpus, so
+that warning is all there is of it. `ank check --kind role` lists them, and with
+`permissions.enforce` off roles apply to nothing and `check` reports none.
 
 ## What check reads beyond the files
 

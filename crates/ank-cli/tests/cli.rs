@@ -13976,13 +13976,18 @@ fn config_refuses_an_unknown_key_by_name_and_writes_nothing() {
     }
     assert_eq!(r.config_text(), AWKWARD);
 
-    // Known to the parser, structured, and refused by name rather than guessed
-    // at -- a different message from "no such key".
-    for key in ["roles", "identities", "roles.agent.can"] {
+    // Known to the parser, a mapping or a list given none, and refused by name
+    // rather than guessed at -- a different message from "no such key".
+    for (key, says) in [
+        ("roles", "two lists"),
+        ("identities", "address one identity"),
+        ("roles.agent.can", "list of role words"),
+    ] {
         let out = r.ank("claude-code@ank", &["config", key, "x"]);
         assert_eq!(out.status.code(), Some(1), "{key}");
-        assert!(erred(&out).contains("structured"), "{key}: {}", erred(&out));
+        assert!(erred(&out).contains(says), "{key}: {}", erred(&out));
     }
+    assert_eq!(r.config_text(), AWKWARD);
 
     // A timeout cannot declare a verifier, and the refusal names what can.
     let out = r.ank(
@@ -28001,4 +28006,676 @@ fn config_reading_one_key_keeps_value_a_string_and_adds_its_type() {
             assert!(doc["value"].as_str().is_some(), "{key}: value retyped");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// permissions.enforce and the role vocabulary (ADR-ddbe024ca7f2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn permissions_enforce_reads_off_when_absent_and_writes_only_the_three_levels() {
+    let r = Repo::new();
+    let before = r.config_text();
+    assert!(!before.contains("permissions"), "{before}");
+
+    let out = r.ank("claude-code@ank", &["config", "permissions.enforce"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert_eq!(said(&out).trim(), "off (default)");
+    assert_eq!(r.config_text(), before, "a read materialised the default");
+
+    for level in ["warn", "deny", "off"] {
+        let out = r.ank("claude-code@ank", &["config", "permissions.enforce", level]);
+        assert_eq!(code(&out), 0, "{level}: {}", erred(&out));
+        let out = r.ank("claude-code@ank", &["config", "permissions.enforce"]);
+        assert_eq!(said(&out).trim(), level, "{}", r.config_text());
+        // The file still loads for a verb that parses it.
+        let out = r.ank("claude-code@ank", &["status"]);
+        assert_eq!(code(&out), 0, "{level}: {}", erred(&out));
+    }
+    let written = r.config_text();
+    assert!(written.contains("permissions:\n"), "{written}");
+
+    for bad in ["strict", "on", "true", "claim"] {
+        let out = r.ank("claude-code@ank", &["config", "permissions.enforce", bad]);
+        assert_eq!(code(&out), 1, "{bad}: {}", said(&out));
+        let err = erred(&out);
+        for level in ["off", "warn", "deny"] {
+            assert!(err.contains(level), "{bad}: refusal names {level}: {err}");
+        }
+        assert_eq!(r.config_text(), written, "{bad} wrote");
+    }
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "--unset", "permissions.enforce"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let out = r.ank("claude-code@ank", &["config", "permissions.enforce"]);
+    assert_eq!(said(&out).trim(), "off (default)");
+
+    // A level written by hand outside the set is refused by every verb that
+    // loads the file, naming the key.
+    r.set_config("schema: 1\ndefault_branch: main\npermissions:\n  enforce: strict\n");
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 1, "{}", said(&out));
+    assert!(
+        erred(&out).contains("permissions.enforce"),
+        "{}",
+        erred(&out)
+    );
+}
+
+#[test]
+fn check_faults_a_role_word_outside_the_vocabulary_and_not_one_inside_it() {
+    let r = Repo::new();
+    let base = "schema: 1\ndefault_branch: main\n";
+    // Every word this repository's own config.yml and init's default block
+    // use, and the one the permissions decision adds.
+    r.set_config(&format!(
+        "{base}roles:\n  agent:\n    can: [context, find, claim, log, done, new:task, new:adr:proposed]\n    \
+         cannot: [adr:accept, adr:edit-constraint, task:close, delete, config:permissions]\n  \
+         human:\n    can: [\"*\"]\n"
+    ));
+    let out = r.ank("claude-code@ank", &["check", "--kind", "role-word"]);
+    assert!(!said(&out).contains("role-word"), "{}", said(&out));
+    let out = r.ank("claude-code@ank", &["check", "--json"]);
+    assert!(
+        !said(&out).contains("\"kind\":\"role-word\""),
+        "{}",
+        said(&out)
+    );
+
+    r.set_config(&format!(
+        "{base}roles:\n  agent:\n    can: [context, bogus-verb]\n    cannot: [fly]\n"
+    ));
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 8, "{}\n{}", said(&out), erred(&out));
+    let text = said(&out);
+    assert!(text.contains(".ank/config.yml"), "{text}");
+    assert!(
+        text.contains("roles.agent.can") && text.contains("bogus-verb"),
+        "{text}"
+    );
+    assert!(
+        text.contains("roles.agent.cannot") && text.contains("fly"),
+        "{text}"
+    );
+    assert!(text.contains("docs/config-keys.md"), "{text}");
+
+    let out = r.ank("claude-code@ank", &["check", "--json"]);
+    assert_eq!(code(&out), 8);
+    let doc: serde_yaml::Value = serde_yaml::from_str(&said(&out)).unwrap();
+    let words: Vec<_> = doc["findings"]
+        .as_sequence()
+        .expect("findings")
+        .iter()
+        .filter(|f| f["kind"].as_str() == Some("role-word"))
+        .collect();
+    assert_eq!(words.len(), 2, "{doc:?}");
+    for f in words {
+        assert_eq!(f["level"].as_str(), Some("fault"));
+        assert_eq!(f["subject"].as_str(), Some(".ank/config.yml"));
+    }
+
+    // Other verbs still run on the file: the vocabulary is check's to judge.
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+}
+
+#[test]
+fn the_config_keys_page_publishes_the_role_vocabulary_and_permissions_enforce() {
+    let page = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/config-keys.md"),
+    )
+    .unwrap();
+    assert!(page.contains("| `permissions.enforce` |"), "{page}");
+    for word in [
+        "*",
+        "context",
+        "find",
+        "claim",
+        "log",
+        "done",
+        "new:task",
+        "new:adr:proposed",
+        "adr:accept",
+        "adr:edit-constraint",
+        "task:close",
+        "delete",
+        "config:permissions",
+    ] {
+        assert!(
+            page.contains(&format!("\n- `{word}`: ")),
+            "{word} not listed"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ank config writes roles and identities (ADR-ddbe024ca7f2, GitHub #784)
+// ---------------------------------------------------------------------------
+
+const ROLES_BASE: &str = "\
+schema: 1
+default_branch: main
+# who does what
+roles:
+  agent:
+    can: [context, find]   # the agent's acts
+    cannot: [delete]
+  human:
+    can: [\"*\"]
+identities: {}
+weight:
+  hot_files: 3000
+";
+
+#[test]
+fn config_writes_and_unsets_an_identity_and_touches_nothing_else() {
+    let r = Repo::new();
+    r.set_config(ROLES_BASE);
+
+    let out = r.ank("claude-code@ank", &["config", "identities.marie@laptop"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert_eq!(said(&out).trim(), "(unset)");
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "identities.marie@laptop", "human"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert_eq!(
+        r.config_text(),
+        ROLES_BASE.replace("identities: {}\n", "identities:\n  marie@laptop: human\n")
+    );
+
+    // An identity carrying dots is one key, and one carrying a colon is
+    // written quoted so that it reads back as itself.
+    for (who, role) in [("claude-code/opus-5.5+w", "agent"), ("ci:bot", "agent")] {
+        let key = format!("identities.{who}");
+        let out = r.ank("claude-code@ank", &["config", &key, role]);
+        assert_eq!(code(&out), 0, "{who}: {}", erred(&out));
+        let out = r.ank("claude-code@ank", &["config", &key]);
+        assert_eq!(said(&out).trim(), role, "{who}: {}", r.config_text());
+    }
+    assert_eq!(
+        r.config_text(),
+        ROLES_BASE.replace(
+            "identities: {}\n",
+            "identities:\n  marie@laptop: human\n  claude-code/opus-5.5+w: agent\n  \"ci:bot\": agent\n"
+        )
+    );
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "the file still loads: {}", erred(&out));
+
+    // Rewritten in place.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "identities.claude-code/opus-5.5+w", "human"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(
+        r.config_text()
+            .contains("  claude-code/opus-5.5+w: human\n"),
+        "{}",
+        r.config_text()
+    );
+
+    // A role roles does not declare is refused, naming it, and nothing moves.
+    let written = r.config_text();
+    let out = r.ank("claude-code@ank", &["config", "identities.eve", "ghost"]);
+    assert_eq!(code(&out), 1, "{}", said(&out));
+    let err = erred(&out);
+    assert!(err.contains("ghost"), "{err}");
+    assert!(err.contains("roles.ghost.can"), "{err}");
+    assert_eq!(r.config_text(), written);
+
+    // --unset removes the mapping, and the last one leaves the `{}` it found.
+    for who in ["claude-code/opus-5.5+w", "ci:bot", "marie@laptop"] {
+        let out = r.ank(
+            "claude-code@ank",
+            &["config", "--unset", &format!("identities.{who}")],
+        );
+        assert_eq!(code(&out), 0, "{who}: {}", erred(&out));
+    }
+    assert_eq!(r.config_text(), ROLES_BASE);
+}
+
+#[test]
+fn config_reads_and_writes_a_role_list_as_one_flow_sequence() {
+    let r = Repo::new();
+    r.set_config(ROLES_BASE);
+
+    let out = r.ank("claude-code@ank", &["config", "roles.agent.can"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert_eq!(said(&out).trim(), "[context, find]");
+    let out = r.ank("claude-code@ank", &["config", "roles.human.can", "--json"]);
+    let doc: serde_yaml::Value = serde_yaml::from_str(&said(&out)).unwrap();
+    assert_eq!(doc["type"].as_str(), Some("list"), "{doc:?}");
+    assert_eq!(doc["typed"][0].as_str(), Some("*"), "{doc:?}");
+    let out = r.ank("claude-code@ank", &["config", "roles.human.cannot"]);
+    assert_eq!(said(&out).trim(), "[] (default)", "{}", erred(&out));
+
+    // The value is spliced where it was; the comment beside it stays.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "roles.agent.can", "[context, \"find\", new:task]"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "roles.agent.cannot", "[delete, task:close]"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let edited = ROLES_BASE
+        .replace("[context, find]   #", "[context, find, new:task]   #")
+        .replace("cannot: [delete]", "cannot: [delete, task:close]");
+    assert_eq!(r.config_text(), edited);
+
+    // A role nobody declared is declared by its first list, at the end of
+    // roles and not at the end of the file.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "roles.reviewer.cannot", "[\"*\"]"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let declared = edited.replace(
+        "    can: [\"*\"]\nidentities",
+        "    can: [\"*\"]\n  reviewer:\n    cannot: [\"*\"]\nidentities",
+    );
+    assert_eq!(r.config_text(), declared);
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "identities.rita", "reviewer"],
+    );
+    assert_eq!(
+        code(&out),
+        0,
+        "a declared role is mappable: {}",
+        erred(&out)
+    );
+    let out = r.ank("claude-code@ank", &["config", "--unset", "identities.rita"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "the file still loads: {}", erred(&out));
+
+    // A word outside the vocabulary, and a value that is no list, are refused
+    // and nothing moves.
+    for bad in ["[context, fly]", "context", "[\"*\", bogus-verb]"] {
+        let out = r.ank("claude-code@ank", &["config", "roles.agent.can", bad]);
+        assert_eq!(code(&out), 1, "{bad}: {}", said(&out));
+        assert_eq!(r.config_text(), declared, "{bad} wrote");
+    }
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "roles.agent.can", "[context, fly]"],
+    );
+    let err = erred(&out);
+    assert!(
+        err.contains("fly") && err.contains("docs/config-keys.md"),
+        "{err}"
+    );
+
+    // --unset takes the list out and nothing beside it; the role stays
+    // declared, as an empty mapping, so an identity mapped to it still names a
+    // role.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "--unset", "roles.agent.cannot"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert_eq!(
+        r.config_text(),
+        declared.replace("    cannot: [delete, task:close]\n", "")
+    );
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "--unset", "roles.reviewer.cannot"],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(
+        r.config_text().contains("  reviewer: {}\n"),
+        "{}",
+        r.config_text()
+    );
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "the file still loads: {}", erred(&out));
+}
+
+#[test]
+fn the_config_keys_page_no_longer_says_roles_are_edited_by_hand() {
+    let page = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/config-keys.md"),
+    )
+    .unwrap();
+    assert!(!page.contains("edited by hand"), "{page}");
+    assert!(page.contains("ank config roles.<name>.can"), "{page}");
+    assert!(page.contains("ank config identities.<identity>"), "{page}");
+}
+
+// ---------------------------------------------------------------------------
+// A forbidden act is warned at the verb and signalled by check (ADR-ddbe024ca7f2,
+// GitHub #785)
+// ---------------------------------------------------------------------------
+
+/// The roles every case below reads: an agent that may write tasks and nothing
+/// else of the vocabulary's acts, by its `can` list, and that is refused the
+/// ratification and the close by name, by its `cannot` list.
+fn with_permissions(r: &Repo, level: Option<&str>) {
+    let mut config = r.config_text();
+    config.push_str(
+        "roles:\n  agent:\n    can: [context, find, claim, log, done, new:task]\n    \
+         cannot: [adr:accept, task:close]\n  human:\n    can: [\"*\"]\n\
+         identities:\n  human:marie: human\n",
+    );
+    if let Some(level) = level {
+        config.push_str(&format!("permissions:\n  enforce: {level}\n"));
+    }
+    r.set_config(&config);
+}
+
+/// Every act of the criterion an unmapped agent performs, each exiting as it
+/// would have; what each wrote to stderr, keyed by the act.
+fn forbidden_acts(r: &Repo) -> (String, String, String, Vec<(&'static str, String)>) {
+    let agent = "claude-code/opus-5";
+    let mut warned = Vec::new();
+
+    let adr = new_adr(r, agent, "Do not do X.");
+    // `new_adr` asserts the exit; the warning is read off a second birth.
+    let out = r.ank(
+        agent,
+        &[
+            "new",
+            "adr",
+            "--title",
+            "Another",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "Y.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    warned.push(("new:adr:proposed", erred(&out)));
+
+    let out = r.ank(
+        agent,
+        &[
+            "new", "spec", "--title", "A spec", "--scope", "src/**", "--body", "Text.", "--json",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let spec = created_id(&out);
+    warned.push(("new:spec:proposed", erred(&out)));
+
+    let out = r.ank(
+        agent,
+        &[
+            "new", "task", "--title", "Allowed", "--scope", "src/**", "--json",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let task = created_id(&out);
+    warned.push(("new:task", erred(&out)));
+
+    let out = r.ank(agent, &["edit", &adr, "--constraint", "Do not do X, ever."]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    warned.push(("adr:edit-constraint", erred(&out)));
+
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank(agent, &["accept", &adr]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    warned.push(("adr:accept", erred(&out)));
+
+    let out = r.ank(agent, &["close", &task, "--reason", "not needed"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    warned.push(("task:close", erred(&out)));
+
+    let out = r.ank(agent, &["config", "identities.someone", "agent"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    warned.push(("config:permissions", erred(&out)));
+
+    (adr, spec, task, warned)
+}
+
+fn role_findings(r: &Repo) -> Vec<serde_yaml::Value> {
+    let out = r.ank("human:marie", &["check", "--all", "--json"]);
+    let doc: serde_yaml::Value = serde_yaml::from_str(&said(&out)).unwrap();
+    doc["findings"]
+        .as_sequence()
+        .expect("findings")
+        .iter()
+        .filter(|f| f["kind"].as_str() == Some("role"))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_forbidden_act_is_performed_warned_at_the_verb_and_signalled_by_check() {
+    for level in ["warn", "deny"] {
+        let r = ready_to_ratify();
+        with_permissions(&r, Some(level));
+        let (adr, spec, task, said) = forbidden_acts(&r);
+
+        for (act, err) in &said {
+            if *act == "new:task" {
+                assert!(
+                    !err.contains("forbids"),
+                    "{level}: an allowed act warned: {err}"
+                );
+                continue;
+            }
+            assert!(
+                err.contains(&format!("forbids {act}")) && err.contains("role 'agent'"),
+                "{level} {act}: {err}"
+            );
+            let entry = if matches!(*act, "adr:accept" | "task:close") {
+                "roles.agent.cannot lists it"
+            } else {
+                "roles.agent.can omits it"
+            };
+            assert!(err.contains(entry), "{level} {act}: {err}");
+        }
+        // Performed: the ADR is accepted and the task closed.
+        assert!(r.adr_text(&adr).contains("status: accepted"), "{level}");
+        assert!(r.task_text(&task).contains("status: closed"), "{level}");
+        assert!(r.config_text().contains("someone: agent"), "{level}");
+
+        let found = role_findings(&r);
+        let on = |id: &str, act: &str| {
+            found.iter().any(|f| {
+                f["subject"].as_str() == Some(id)
+                    && f["level"].as_str() == Some("signal")
+                    && f["message"].as_str().is_some_and(|m| {
+                        m.contains(act)
+                            && m.contains("claude-code/opus-5")
+                            && m.contains("roles.agent.")
+                    })
+            })
+        };
+        assert!(on(&adr, "new:adr:proposed"), "{level}: {found:?}");
+        assert!(on(&adr, "adr:edit-constraint"), "{level}: {found:?}");
+        assert!(on(&adr, "adr:accept"), "{level}: {found:?}");
+        assert!(on(&spec, "new:spec:proposed"), "{level}: {found:?}");
+        assert!(on(&task, "task:close"), "{level}: {found:?}");
+        assert!(
+            !on(&task, "new:task"),
+            "{level}: an allowed act signalled: {found:?}"
+        );
+        // The second ADR, born forbidden, is signalled too.
+        assert_eq!(
+            found
+                .iter()
+                .filter(|f| f["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("new:adr:proposed")))
+                .count(),
+            2,
+            "{level}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn with_permissions_off_no_verb_warns_and_check_signals_no_role() {
+    for level in [None, Some("off")] {
+        let r = ready_to_ratify();
+        with_permissions(&r, level);
+        let (_, _, _, said) = forbidden_acts(&r);
+        for (act, err) in &said {
+            assert!(!err.contains("forbids"), "{level:?} {act}: {err}");
+        }
+        let found = role_findings(&r);
+        assert!(found.is_empty(), "{level:?}: {found:?}");
+    }
+}
+
+#[test]
+fn self_ratified_goes_quiet_when_the_ratifiers_role_allows_the_accept() {
+    // Declared: marie is a human, and a human's role allows adr:accept.
+    let r = ready_to_ratify();
+    with_permissions(&r, Some("warn"));
+    let id = new_adr(&r, "human:marie", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank("human:marie", &["accept", &id]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(!erred(&out).contains("forbids"), "{}", erred(&out));
+    let out = r.ank("human:marie", &["check", "--all"]);
+    assert!(
+        !said(&out).contains("ratified by its own author"),
+        "{}",
+        said(&out)
+    );
+
+    // Off, the same history keeps its signal: nothing is declared to apply.
+    r.set_config(&r.config_text().replace("enforce: warn", "enforce: off"));
+    let out = r.ank("human:marie", &["check", "--all"]);
+    assert!(
+        said(&out).contains(&format!(
+            "signal: {id}: ratified by its own author (human:marie)"
+        )),
+        "{}",
+        said(&out)
+    );
+
+    // An agent whose role cannot accept, ratifying its own decision, keeps the
+    // signal, and earns the role one beside it.
+    let r = ready_to_ratify();
+    with_permissions(&r, Some("warn"));
+    let id = new_adr(&r, "claude-code/opus-5", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank("claude-code/opus-5", &["accept", &id]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let out = r.ank("human:marie", &["check", "--all"]);
+    let text = said(&out);
+    assert!(
+        text.contains(&format!(
+            "signal: {id}: ratified by its own author (claude-code/opus-5)"
+        )),
+        "{text}"
+    );
+    assert!(text.contains("adr:accept"), "{text}");
+}
+
+// ---------------------------------------------------------------------------
+// A written can: [] forbids every act, and an absent can restricts nothing
+// (ADR-ddbe024ca7f2, TASK-a85d4a2325e7)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_written_empty_can_forbids_every_act_and_an_absent_can_restricts_nothing() {
+    let r = ready_to_ratify();
+    let mut config = r.config_text();
+    config.push_str(
+        "roles:\n  locked:\n    can: []\n  loose:\n    cannot: [task:close]\n  \
+         human:\n    can: [\"*\"]\n\
+         identities:\n  human:marie: human\n  bot/locked: locked\n  bot/loose: loose\n\
+         permissions:\n  enforce: warn\n",
+    );
+    r.set_config(&config);
+
+    let task = |who: &str, title: &str| -> (String, String) {
+        let out = r.ank(
+            who,
+            &[
+                "new", "task", "--title", title, "--scope", "src/**", "--json",
+            ],
+        );
+        assert_eq!(code(&out), 0, "{}", erred(&out));
+        (created_id(&out), erred(&out))
+    };
+
+    // Written empty: every act is outside the list.
+    let (locked_task, err) = task("bot/locked", "Locked");
+    assert!(
+        err.contains("forbids new:task") && err.contains("roles.locked.can omits it"),
+        "{err}"
+    );
+    let out = r.ank("bot/locked", &["close", &locked_task, "--reason", "no"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(
+        erred(&out).contains("forbids task:close"),
+        "{}",
+        erred(&out)
+    );
+    let adr = new_adr(&r, "human:marie", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank("bot/locked", &["accept", &adr]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(
+        erred(&out).contains("forbids adr:accept") && erred(&out).contains("roles.locked.can"),
+        "{}",
+        erred(&out)
+    );
+
+    // No can key: only what cannot lists is forbidden.
+    let (loose_task, err) = task("bot/loose", "Loose");
+    assert!(!err.contains("forbids"), "{err}");
+    let out = r.ank("bot/loose", &["close", &loose_task, "--reason", "no"]);
+    assert!(
+        erred(&out).contains("forbids task:close")
+            && erred(&out).contains("roles.loose.cannot lists it"),
+        "{}",
+        erred(&out)
+    );
+    let out = r.ank("bot/loose", &["context", "src"]);
+    assert!(!erred(&out).contains("forbids"), "{}", erred(&out));
+
+    // An absent can reads as absent, and --unset leaves no can key behind.
+    let out = r.ank("human:marie", &["config", "roles.loose.can"]);
+    assert_eq!(said(&out).trim(), "(unset)", "{}", erred(&out));
+    let out = r.ank("human:marie", &["config", "roles.locked.can"]);
+    assert_eq!(said(&out).trim(), "[]", "{}", erred(&out));
+    let out = r.ank("human:marie", &["config", "--unset", "roles.locked.can"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    let text = r.config_text();
+    assert!(text.contains("  locked: {}\n"), "{text}");
+    let out = r.ank("human:marie", &["config", "roles.locked.can"]);
+    assert_eq!(said(&out).trim(), "(unset)");
+    let (_, err) = task("bot/locked", "Unlocked");
+    assert!(!err.contains("forbids"), "{err}");
+}
+
+#[test]
+fn the_config_keys_page_states_that_a_written_empty_can_differs_from_none() {
+    let page = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/config-keys.md"),
+    )
+    .unwrap();
+    let row = page
+        .lines()
+        .find(|l| l.starts_with("| `roles.<name>.can` |"))
+        .expect("the can row");
+    assert!(
+        row.contains("`can: []`") && row.contains("forbids every act"),
+        "{row}"
+    );
+    assert!(
+        row.contains("absent") && row.contains("restricts nothing"),
+        "{row}"
+    );
 }

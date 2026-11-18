@@ -72,7 +72,7 @@ fn corpus(what: &str) -> (PathBuf, PathBuf, PathBuf) {
 fn an_absent_guard_prints_its_default_and_leaves_the_file_as_it_was() {
     let (repo, home, cfg) = corpus("guard-defaults");
     let before = fs::read(&cfg).unwrap();
-    assert!(!String::from_utf8_lossy(&before).contains("guard"));
+    assert!(!String::from_utf8_lossy(&before).contains("guard:"));
 
     // Printed the way every absent key is, the value and then where it came
     // from; the document carries the value alone.

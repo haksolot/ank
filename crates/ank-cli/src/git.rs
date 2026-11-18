@@ -2884,6 +2884,10 @@ pub struct RatifyTag {
     /// previous anchor was taken over, which is what lets `check` recompute
     /// it from the current constraint or body.
     pub previous_scope: Vec<String>,
+    /// The `by: <identity>` line: who ran the `accept` that wrote the tag,
+    /// the one record of the ratifier a reading cannot stand in for, since
+    /// `ank read` leaves a reading too (ADR-ddbe024ca7f2).
+    pub by: Option<String>,
     /// The blob the tag points at: the entity file as the ratification wrote
     /// it.
     pub object: String,
@@ -2942,6 +2946,7 @@ fn parse_ratify_tag(name: &str, kind: &str, body: &[u8]) -> Option<RatifyTag> {
     let mut reanchors = None;
     let mut previous = None;
     let mut previous_scope = Vec::new();
+    let mut by = None;
     for l in lines {
         let Some((key, value)) = l.trim().split_once(": ") else {
             continue;
@@ -2954,6 +2959,7 @@ fn parse_ratify_tag(name: &str, kind: &str, body: &[u8]) -> Option<RatifyTag> {
             "reanchors" => reanchors = Some(value.trim().to_string()),
             "previous" => previous = Some(value.trim().to_string()),
             "previous-scope" => previous_scope.push(value.trim().to_string()),
+            "by" if by.is_none() => by = Some(value.trim().to_string()),
             _ => {}
         }
     }
@@ -2967,6 +2973,7 @@ fn parse_ratify_tag(name: &str, kind: &str, body: &[u8]) -> Option<RatifyTag> {
         reanchors,
         previous,
         previous_scope,
+        by,
         object,
         tagged,
         signed,

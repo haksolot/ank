@@ -49,6 +49,57 @@ pub const DEFAULT_GUARD_EDIT: &str = "warn";
 /// The values `guard.edit` takes, loosest first.
 pub const GUARD_EDIT_VALUES: &[&str] = &["off", "warn", "claim"];
 
+/// How roles apply when the file says nothing (ADR-ddbe024ca7f2): not at all,
+/// so a corpus that predates the key behaves as it did. `ank init` writes
+/// [`INIT_PERMISSIONS_ENFORCE`] into the corpus it creates.
+pub const DEFAULT_PERMISSIONS_ENFORCE: &str = "off";
+/// The level `ank init` opts a new corpus into.
+pub const INIT_PERMISSIONS_ENFORCE: &str = "warn";
+/// The values `permissions.enforce` takes, loosest first.
+pub const PERMISSIONS_ENFORCE_VALUES: &[&str] = &["off", "warn", "deny"];
+
+/// The fixed vocabulary of `roles.<name>.can` and `.cannot`
+/// (ADR-ddbe024ca7f2), each word with the act it names. A word outside it is
+/// a fault `check` reports on `config.yml`: a typo in `cannot` would otherwise
+/// declare nothing and look like a rule.
+pub static ROLE_WORDS: &[(&str, &str)] = &[
+    (
+        "*",
+        "every act; `can: [\"*\"]` is the only list that allows everything",
+    ),
+    ("context", "`ank context`"),
+    ("find", "`ank find`"),
+    ("claim", "`ank claim`"),
+    ("log", "`ank log`, which writes an entry"),
+    ("done", "`ank done`"),
+    ("new:task", "`ank new task`"),
+    (
+        "new:adr:proposed",
+        "`ank new adr`, which writes a proposed ADR",
+    ),
+    (
+        "new:spec:proposed",
+        "`ank new spec`, which writes a proposed spec",
+    ),
+    ("adr:accept", "`ank accept` on an ADR"),
+    ("spec:accept", "`ank accept` on a spec"),
+    (
+        "adr:edit-constraint",
+        "a change to the constraint of an ADR",
+    ),
+    ("task:close", "`ank close`"),
+    ("delete", "removing an entity"),
+    (
+        "config:permissions",
+        "a write to `roles`, `identities`, `permissions`, `check` or `ratify` in this file",
+    ),
+];
+
+/// Whether `word` is one of [`ROLE_WORDS`].
+pub fn is_role_word(word: &str) -> bool {
+    ROLE_WORDS.iter().any(|(w, _)| *w == word)
+}
+
 /// What an absent key means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Absent {
@@ -171,20 +222,26 @@ pub static KEYS: &[ConfigKey] = &[
     key(
         "roles.<name>.can",
         "list of strings",
-        Absent::Text("[]"),
-        "what the role may do, declared",
+        Absent::None,
+        "what the role may do, each entry a word of the role vocabulary below; a list other than `[\"*\"]` forbids every act it omits, so `can: []` forbids every act, while absent the key restricts nothing; written as one flow sequence by `ank config roles.<name>.can`, which declares the role when it is absent, and `--unset` leaves the role with no `can` key",
     ),
     key(
         "roles.<name>.cannot",
         "list of strings",
         Absent::Text("[]"),
-        "what the role may not do, declared",
+        "what the role may not do, each entry a word of the role vocabulary below; written by `ank config roles.<name>.cannot`",
     ),
     key(
         "identities.<identity>",
         "string",
         Absent::None,
-        "the role of an identity; one absent from the table is an `agent`",
+        "the role of an identity, one `roles` declares; one absent from the table is an `agent`; written by `ank config identities.<identity> <role>` and removed by `--unset`",
+    ),
+    key(
+        "permissions.enforce",
+        "`off`, `warn` or `deny`",
+        Absent::Text(DEFAULT_PERMISSIONS_ENFORCE),
+        "how roles apply: `off` not at all, `warn` and `deny` as ADR-ddbe024ca7f2 sets; `ank init` writes `warn` into the corpus it creates; moved by `ank config permissions.enforce`",
     ),
     key(
         "weight.hot_files",
