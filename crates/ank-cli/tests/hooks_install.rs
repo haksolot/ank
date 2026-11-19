@@ -326,7 +326,7 @@ fn help_lists_hooks_and_declares_it_writes_nothing_in_the_corpus() {
     let out = fx.ank(&["help"]);
     ok(&out, "help");
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("ank hooks <install|remove|run>"),
+        String::from_utf8_lossy(&out.stdout).contains("ank hooks <install|remove|run|status>"),
         "help lists hooks:\n{}",
         String::from_utf8_lossy(&out.stdout)
     );

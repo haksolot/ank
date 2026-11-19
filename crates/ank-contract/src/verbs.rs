@@ -126,6 +126,37 @@ const HOOKS_OUT: &[Field] = &[
     f("changed", Type::Bool),
 ];
 
+/// `hooks status --json`: every agent `install` knows, whether its entries are
+/// in that agent's settings, the binary they call and whether it is the one
+/// answering; then the corpus in force, `null` outside one, and each guard as
+/// it declares it and as it runs once `ANK_GUARD_*` is applied
+/// (ADR-89c1e7146fe5, ADR-43cbb20dcbf1). `guards` is empty outside a corpus.
+const HOOKS_STATUS_OUT: &[Field] = &[
+    f(
+        "agents",
+        Type::Array(&[
+            f("agent", Type::Str),
+            f("settings", Type::Str),
+            f("installed", Type::Bool),
+            f("events", Type::Strings),
+            opt("binary", Type::Str),
+            f("current", Type::Bool),
+        ]),
+    ),
+    opt("corpus", Type::Str),
+    f(
+        "guards",
+        Type::Array(&[
+            f("key", Type::Str),
+            f("declared", Type::Str),
+            f("in_force", Type::Str),
+            f("variable", Type::Str),
+            opt("set", Type::Str),
+            opt("ignored", Type::Str),
+        ]),
+    ),
+];
+
 /// The opening frame of the reader, as data (§4, ADR-8bd76e8d7c4e).
 ///
 /// `tui` draws a screen and, under `--json`, answers what that screen holds:
@@ -2791,21 +2822,26 @@ pub const COMMANDS: &[CommandSpec] = &[
         open_world: false,
         // It resolves no corpus to install or remove, and asks git nothing.
         coordinates: false,
-        summary: "installs into an agent harness's user-level settings the entries that call ank hooks run at its events, removes exactly them, and runs them",
-        subcommands: &["install", "remove", "run"],
+        summary: "installs into an agent harness's user-level settings the entries that call ank hooks run at its events, removes exactly them, runs them, and says which are installed and which guard levels are in force",
+        subcommands: &["install", "remove", "run", "status"],
         kinds: &[],
-        min_positionals: 1,
+        // `status` names no agent: it answers for every one.
+        min_positionals: 0,
         max_positionals: 2,
-        positional_help: "<agent> [<event>]",
+        positional_help: "[<agent>] [<event>]",
         flags: &[],
         refuses: &[
             refuses(
                 ExitCode::Generic,
-                "an agent other than claude, the only one this version installs for",
+                "install or remove without an agent, or naming one this version does not install for: claude is the one it installs for, and generic is wired by hand",
             ),
             refuses(
                 ExitCode::Generic,
                 "install or remove with an event, which they take none of: they write every event's entry",
+            ),
+            refuses(
+                ExitCode::Generic,
+                "status with an argument: it answers for every agent install knows",
             ),
             refuses(
                 ExitCode::Generic,
@@ -2822,14 +2858,19 @@ pub const COMMANDS: &[CommandSpec] = &[
             UNPARSEABLE_CALL,
         ],
         notes: &[
+            "the agents: claude, which install and remove write the settings of, and generic, the hook protocol itself, which any harness wires by hand to ank hooks run generic <event> as docs/integrating.md shows",
             "claude's file is settings.json in CLAUDE_CONFIG_DIR, or in .claude under the home directory when it is unset or empty",
             "install adds one SessionStart entry running <this binary> hooks run claude session-start and one PreToolUse entry running <this binary> hooks run claude pre-tool-use, by the absolute path of the binary that installed them; no script file is written",
             "install changes no byte it did not add: a second install leaves the file byte-identical, and an entry naming another path to ank is replaced",
             "remove takes out exactly the entries install wrote, and gives the file back byte-identical to what the first install found",
             "run is silent and exits 0 outside a corpus, and an error of its own lets the tool call through rather than blocking the harness",
+            "status lists every agent install knows, whether its entries are installed, the binary they call and whether it is this one, then guard.corpus and guard.edit as the corpus declares them and as in force after ANK_GUARD_CORPUS and ANK_GUARD_EDIT; it writes nothing",
         ],
         refuses_globals: &[],
-        output: &[one(HOOKS_OUT)],
+        output: &[
+            when("installing or removing, `ank hooks install|remove <agent>`", HOOKS_OUT),
+            when("reading, `ank hooks status`", HOOKS_STATUS_OUT),
+        ],
         owner_task: None,
     },
     // After `skills` and before `help`, which is §4's order, and in their group
