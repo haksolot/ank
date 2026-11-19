@@ -60,6 +60,33 @@ is in [config.yml keys](config-keys.md).
 A verifier runs under `sh -c` from the root of the working tree, on all three
 operating systems, and passes when it exits 0.
 
+### What a run is given
+
+Three keys shape the process a verifier starts in, and each one is written with
+`ank config` like the others:
+
+- `verifiers.<name>.vars.<NAME>` gives every run a variable with a fixed value.
+  A name beginning `ANK_` is refused, because ank sets those itself.
+- `verifiers.<name>.inherit_env` lists the variables of your environment a run
+  receives, for example `[PATH, HOME]`. Written `false`, it passes none of them,
+  `PATH` included, so a verifier that needs `PATH` lists it. Left out, the
+  whole environment passes.
+- `verifiers.<name>.cwd` is the directory the run starts in, relative to the
+  root. `ank config` refuses a directory that is absent or outside the root,
+  `ank check` reports one as a fault, and `ank done` refuses to start the run
+  at exit 9.
+
+Every run also receives four variables from ank: `ANK_TASK`, the full id of the
+task it proves; `ANK_VERIFIER`, its own name; `ANK_SCOPE`, the task's scope
+globs, one per line; and `ANK_BASE`, the merge-base with the default branch.
+Under `ank verify` there is no task, so `ANK_TASK` and `ANK_SCOPE` are empty;
+`ANK_BASE` is empty when no merge-base can be found.
+
+The definition hash covers `run`, `timeout`, `inputs` and these three keys. A
+change to any of them is a change to the verifier, and `done` runs it again:
+a run recorded before the change has another key. A verifier that declares
+none of them keeps the hash it had before they existed.
+
 ## A task names its list when it is written
 
 Declare the verifiers first. A task that names one `config.yml` does not know is

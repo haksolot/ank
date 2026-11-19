@@ -202,6 +202,24 @@ pub static KEYS: &[ConfigKey] = &[
         "the files whose content can change the result, relative to the root; absent, the whole tree; written as one flow sequence, never empty",
     ),
     key(
+        "verifiers.<name>.vars.<NAME>",
+        "string",
+        Absent::None,
+        "a variable every run of the verifier is given, with this fixed value; a name beginning `ANK_` is refused, since ank sets those itself (ADR-ebe85b3aa79d)",
+    ),
+    key(
+        "verifiers.<name>.inherit_env",
+        "`false` or list of names",
+        Absent::None,
+        "the variables of the caller's environment a run receives; `false` passes none, `PATH` included; absent, the whole environment; written as one flow sequence holding at least one name",
+    ),
+    key(
+        "verifiers.<name>.cwd",
+        "path",
+        Absent::None,
+        "the directory a run starts in, relative to the root and inside it, which must exist; absent, the root",
+    ),
+    key(
         "proof.reuse_max_age",
         "duration",
         Absent::Text(DEFAULT_PROOF_REUSE_MAX_AGE),
