@@ -5,7 +5,7 @@ slug: the-data-model
 title: The data model
 created: 2026-10-24T18:12:31Z
 author: claude-code/opus-5.5+w7956
-status: accepted
+status: superseded
 scope:
   - crates/ank-core/**
   - docs/format.md
@@ -17,7 +17,7 @@ verified:
   - by: haksolot@vmi3223161
     at: 2026-10-24T21:46:59Z
 schema: 4
-version: 4
+version: 5
 ---
 
 One of the ten documents that carry the Ank specification (ADR-5a690829388d).
