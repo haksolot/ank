@@ -44,6 +44,7 @@ mod help_new;
 mod hooks_guard;
 mod hooks_install;
 mod hooks_run;
+mod hooks_status;
 mod index_per_schema;
 mod init_at;
 mod init_bootstrap;

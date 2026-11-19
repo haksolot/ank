@@ -96,6 +96,9 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
         }
         return Ok(ExitCode::Ok);
     }
+    if sub == "status" {
+        return status(inv, cwd, out);
+    }
     let agent = agent(inv, sub)?;
     if let Some(extra) = inv.positionals.get(1) {
         return Err(CliError::new(
@@ -164,6 +167,262 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
         (_, false) => writeln!(out, "no {agent} hooks to remove in {shown}"),
     };
     Ok(ExitCode::Ok)
+}
+
+// ---------------------------------------------------------------------------
+// status
+// ---------------------------------------------------------------------------
+
+/// What one agent's settings hold of ank's: the events carrying an entry, and
+/// the binary the first of them calls.
+struct Installed {
+    agent: &'static str,
+    settings: PathBuf,
+    events: Vec<&'static str>,
+    binary: Option<String>,
+    current: bool,
+}
+
+/// One guard, as the corpus declares it and as it runs.
+struct GuardState {
+    key: &'static str,
+    declared: &'static str,
+    in_force: &'static str,
+    variable: &'static str,
+    set: Option<String>,
+    ignored: Option<String>,
+}
+
+/// `hooks status` (ADR-89c1e7146fe5): which agents have ank's entries, calling
+/// which binary, and which guard levels are in force here. It reads the
+/// settings file and the configuration and **writes nothing**: no settings
+/// file is created where there is none, and no corpus is touched.
+///
+/// **A corpus is optional.** Outside one the agents are still listed, and the
+/// answer says no guard applies, since a guard is a corpus's declaration; an
+/// address the caller wrote, `--repo` or `--worktree`, naming nothing is
+/// refused as every verb refuses it.
+fn status(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
+    if let Some(extra) = inv.positionals.first() {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!(
+                "extra argument '{extra}': hooks status answers for every agent install knows, \
+                 and takes none"
+            ),
+        )
+        .with_hint("ank hooks status"));
+    }
+    let mut agents = Vec::new();
+    for agent in AGENTS {
+        agents.push(inspect(agent)?);
+    }
+    let corpus = corpus(inv, cwd)?;
+    let guards = match &corpus {
+        Some(repo) => guards(&crate::config::load(&repo.config_path())?),
+        None => Vec::new(),
+    };
+    let corpus = corpus.map(|r| r.corpus.display().to_string());
+
+    if inv.json() {
+        let agents = agents.iter().map(|a| {
+            Obj::new()
+                .str("agent", a.agent)
+                .str("settings", &a.settings.display().to_string())
+                .bool("installed", a.events.len() == EVENTS.len())
+                .strings("events", &a.events)
+                .opt_str("binary", a.binary.as_deref())
+                .bool("current", a.current)
+                .finish()
+        });
+        let guards = guards.iter().map(|g| {
+            Obj::new()
+                .str("key", g.key)
+                .str("declared", g.declared)
+                .str("in_force", g.in_force)
+                .str("variable", g.variable)
+                .opt_str("set", g.set.as_deref())
+                .opt_str("ignored", g.ignored.as_deref())
+                .finish()
+        });
+        let doc = Obj::document()
+            .array("agents", agents)
+            .opt_str("corpus", corpus.as_deref())
+            .array("guards", guards)
+            .finish();
+        let _ = writeln!(out, "{doc}");
+        return Ok(ExitCode::Ok);
+    }
+
+    for a in &agents {
+        let shown = a.settings.display();
+        let state = if a.events.is_empty() {
+            "not installed".to_string()
+        } else if a.events.len() == EVENTS.len() {
+            format!("installed ({})", a.events.join(", "))
+        } else {
+            format!("partly installed ({})", a.events.join(", "))
+        };
+        let _ = writeln!(out, "{} {state} in {shown}", a.agent);
+        if let Some(binary) = &a.binary {
+            let which = if a.current {
+                "this binary"
+            } else {
+                "not this binary"
+            };
+            let _ = writeln!(out, "  calls {binary}, {which}");
+        }
+    }
+    let _ = writeln!(
+        out,
+        "generic is wired by hand: point a harness's own hook at `ank hooks run generic <event>`"
+    );
+    match &corpus {
+        None => {
+            let _ = writeln!(
+                out,
+                "no corpus is in force here, so no guard applies: guard.corpus and guard.edit \
+                 are a corpus's declaration"
+            );
+        }
+        Some(path) => {
+            let _ = writeln!(out, "corpus {path}");
+            for g in &guards {
+                let set = match (&g.set, &g.ignored) {
+                    (Some(set), None) => format!(", {}={set}", g.variable),
+                    _ => String::new(),
+                };
+                let _ = writeln!(
+                    out,
+                    "{} {}, declared {}{set}",
+                    g.key, g.in_force, g.declared
+                );
+                if let Some(why) = &g.ignored {
+                    let _ = writeln!(out, "  {why}");
+                }
+            }
+        }
+    }
+    Ok(ExitCode::Ok)
+}
+
+/// The corpus `status` reads its guards from, or `None` where no walk finds
+/// one; an address the caller wrote that names nothing is refused.
+fn corpus(inv: &Invocation, cwd: &Path) -> Result<Option<crate::repo::Repo>> {
+    let addressed = inv.repo().is_some() || inv.worktree().is_some();
+    let mut notes = Vec::new();
+    match crate::repo::resolve(inv.repo(), inv.worktree(), cwd, &mut notes) {
+        Ok(repo) => {
+            if !inv.quiet() {
+                let style = inv.style().on_stderr();
+                for note in notes {
+                    crate::cli::warn(style, &note.to_string(), &[], None);
+                }
+            }
+            Ok(Some(repo))
+        }
+        Err(e) if addressed => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
+/// What `agent`'s settings hold of ank's entries, read and never written.
+fn inspect(agent: &'static str) -> Result<Installed> {
+    let settings = settings_path()?;
+    let mut found = Installed {
+        agent,
+        settings: settings.clone(),
+        events: Vec::new(),
+        binary: None,
+        current: false,
+    };
+    let Some(text) = read(&settings)? else {
+        return Ok(found);
+    };
+    let root = parse(&text).map_err(|e| malformed(&settings, e))?;
+    let Some(hooks) = root.member("hooks") else {
+        return Ok(found);
+    };
+    if !matches!(hooks.kind, Kind::Object(_)) {
+        return Err(malformed(&settings, "its hooks is not an object".into()));
+    }
+    for (name, event, _) in EVENTS {
+        let Some(array) = hooks.member(name) else {
+            continue;
+        };
+        let Kind::Array(items) = &array.kind else {
+            return Err(malformed(
+                &settings,
+                format!("its hooks.{name} is not an array"),
+            ));
+        };
+        let Some(command) = items.iter().find_map(|i| ours(i, event)) else {
+            continue;
+        };
+        found.events.push(*name);
+        if found.binary.is_none() {
+            found.binary = Some(binary_of(&command, event));
+        }
+    }
+    if let Some(binary) = &found.binary {
+        let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+        let that = std::fs::canonicalize(binary).ok();
+        found.current = this.is_some() && this == that;
+    }
+    Ok(found)
+}
+
+/// The binary an entry's command runs: what precedes `hooks run claude
+/// <event>`, its quotes taken off.
+fn binary_of(command: &str, event: &str) -> String {
+    let path = command
+        .strip_suffix(&format!(" hooks run claude {event}"))
+        .unwrap_or(command)
+        .trim();
+    path.strip_prefix('"')
+        .and_then(|p| p.strip_suffix('"'))
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// The two guards of `cfg`, each with what the launch environment made of it.
+fn guards(cfg: &crate::config::Config) -> Vec<GuardState> {
+    let set = |var: &str| {
+        std::env::var(var)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let var = ank_contract::env::ANK_GUARD_CORPUS;
+    let (level, ignored) = tightened(cfg.guard.corpus, var, "guard.corpus", GuardCorpus::parse);
+    let corpus = GuardState {
+        key: "guard.corpus",
+        declared: named(cfg.guard.corpus, GuardCorpus::parse),
+        in_force: named(level, GuardCorpus::parse),
+        variable: var,
+        set: set(var),
+        ignored,
+    };
+    let var = ank_contract::env::ANK_GUARD_EDIT;
+    let (level, ignored) = tightened(cfg.guard.edit, var, "guard.edit", GuardEdit::parse);
+    let edit = GuardState {
+        key: "guard.edit",
+        declared: named(cfg.guard.edit, GuardEdit::parse),
+        in_force: named(level, GuardEdit::parse),
+        variable: var,
+        set: set(var),
+        ignored,
+    };
+    vec![corpus, edit]
+}
+
+/// The name of a guard level, by asking the parse which name reads as it: the
+/// table of names stays the config's.
+fn named<L: Copy + PartialEq>(level: L, parse: fn(&str) -> Option<L>) -> &'static str {
+    ["deny", "off", "warn", "claim"]
+        .into_iter()
+        .find(|n| parse(n) == Some(level))
+        .unwrap_or_default()
 }
 
 /// The agents `run` answers for, each a translation onto the protocol
@@ -809,12 +1068,7 @@ fn tightened<L: Copy + Ord>(
     match parse(set) {
         Some(level) if level >= declared => (level, None),
         Some(_) => {
-            // The name of the declared level, by asking the parse which name
-            // reads as it: the table of names stays the config's.
-            let named = ["deny", "off", "warn", "claim"]
-                .into_iter()
-                .find(|n| parse(n) == Some(declared))
-                .unwrap_or_default();
+            let named = named(declared, parse);
             (
                 declared,
                 Some(format!(
@@ -838,7 +1092,8 @@ fn agent<'a>(inv: &'a Invocation, sub: &str) -> Result<&'a str> {
         return Err(CliError::new(
             ExitCode::Generic,
             format!(
-                "hooks {sub} names its agent, and {} is the only one",
+                "hooks {sub} names its agent: {} is the one it installs for, and generic is \
+                 wired by hand",
                 AGENTS.join(", ")
             ),
         )
@@ -861,7 +1116,8 @@ fn agent<'a>(inv: &'a Invocation, sub: &str) -> Result<&'a str> {
         return Err(CliError::new(
             ExitCode::Generic,
             format!(
-                "no agent named '{name}': {} is the only one this version installs for",
+                "no agent named '{name}': {} is the one this version installs for, and generic \
+                 is wired by hand",
                 AGENTS.join(", ")
             ),
         )

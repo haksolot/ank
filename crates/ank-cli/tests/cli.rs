@@ -21608,8 +21608,9 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
     // gave a failing `done` one, pinned in `tests/done_output.rs`, and
     // thirty-nine since TASK-fa89fb00791f, which gave `config --list` one, and
     // forty since TASK-351d5cf24884, which gave `reject` one, pinned in
-    // `tests/reject.rs`.
-    assert_eq!(checked, 40, "one fixture per document the surface returns");
+    // `tests/reject.rs`, and forty-one since TASK-e74920bd2d0f, which gave
+    // `hooks status` one, pinned in `tests/hooks_status.rs`.
+    assert_eq!(checked, 41, "one fixture per document the surface returns");
     // **A declaration is unexercised when no instance of it anywhere carries a
     // row**, which is the reading this list is about (TASK-fbdf25e30058). It
     // used to be one instance at a time: a path went on the list every time the

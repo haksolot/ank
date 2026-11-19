@@ -445,8 +445,8 @@ For an agent harness the binary is also the hook handler (ADR-43cbb20dcbf1).
 `ank hooks install <agent>` writes into that agent's user-level settings the
 entries that call `ank hooks run <agent> <event>`, and nothing beside them: no
 script file, so there is nothing to keep in step but the binary. Claude Code is
-the only agent this version installs for, and `ank help hooks` is the whole
-verb.
+the agent this version installs for, `generic` is the protocol any other harness
+wires by hand (below), and `ank help hooks` is the whole verb.
 
 **Install and remove.** Claude Code's file is `settings.json` in
 `CLAUDE_CONFIG_DIR`, or in `.claude` under the home directory when that is unset
@@ -536,6 +536,26 @@ So an orchestrator that launches its workers with `ANK_GUARD_EDIT=claim` holds
 them to their claims whatever the corpus declares, and a corpus that declares
 `claim` cannot be loosened by a launch. Both variables are in [the environment
 reference](environment.md).
+
+**`status` says what is in force.** `ank hooks status` lists every agent
+install knows, whether its entries are in that agent's settings, the binary
+they call and whether it is the one answering, then each guard as the corpus
+declares it and as it runs once the launch environment is applied, naming a
+value it ignored. It only reads, and outside a corpus it lists the agents and
+says guards apply inside one. Here the entries were removed above, and the
+launch tightens `guard.edit` (the line naming the corpus directory is left
+out):
+
+<!-- replay hooks -->
+
+    $ ANK_GUARD_EDIT=claim ank hooks status | grep -v '^corpus '
+    claude not installed in /home/me/.claude/settings.json
+    generic is wired by hand: point a harness's own hook at `ank hooks run generic <event>`
+    guard.corpus deny, declared deny
+    guard.edit claim, declared claim, ANK_GUARD_EDIT=claim
+
+`--json` carries the same facts, with `installed`, `binary` and `current` per
+agent and `declared`, `in_force`, `set` and `ignored` per guard.
 
 **A third guard reads shell calls.** Under `permissions.enforce deny`, a `Bash`
 call whose command runs an ank verb the identity's role forbids is refused,
