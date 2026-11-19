@@ -9051,7 +9051,7 @@ pub fn close(
     // and exiting zero; the exit code was already right and this is the middle
     // term. Standard error in both modes, beside `done`'s.
     if let Some(w) = deleted.sync.revocation_warning() {
-        eprintln!("{} {w}", inv.style().on_stderr().yellow("warning:"));
+        crate::cli::warn(inv.style().on_stderr(), &w.to_string(), &[], None);
     }
     if inv.json() {
         let doc = Obj::document()
@@ -9514,7 +9514,7 @@ pub fn amend(
             }
         }
         for w in &unmerged {
-            eprintln!("{} {w}", inv.style().yellow("warning:"));
+            crate::cli::warn(inv.style(), &w.to_string(), &[], None);
         }
     }
     // A dropped reference is **not** resolved against the corpus, and that is
@@ -9803,10 +9803,14 @@ pub fn amend(
                 if let Some(holder) = holder {
                     // Standard error: not the answer, and stdout under `--json`
                     // is a parser's input (§4, TASK-2eefcdd80124).
-                    eprintln!(
-                        "{} {id} is held by {holder}, and the scope change moves \
-                         the constraints its claim anchors",
-                        inv.style().on_stderr().yellow("warning:")
+                    crate::cli::warn(
+                        inv.style().on_stderr(),
+                        &format!(
+                            "{id} is held by {holder}, and the scope change moves \
+                             the constraints its claim anchors"
+                        ),
+                        &[],
+                        Some(&id.to_string()),
                     );
                 }
             }

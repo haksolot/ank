@@ -126,14 +126,25 @@ $ grep -l "^records: edit" .ank/entities/*.md
     error[4]: TASK-6da126c832be held by tool/1.0 (expires in 30m)
       -> ank context
 
-## A refusal leaves stdout empty, and a warning may not
+## A refusal leaves stdout empty, and stderr carries it as a document
 
-Under `--json` a refusal writes **nothing at all** to stdout. Not an error
-document, not an empty object: zero bytes. The message and its hint go to
-stderr, the code goes to the exit status, and that is the whole answer.
-Measured across three codes -- `show TASK-9999` (2), `done` with no claim held
-(6), `close` with no `--reason` (7) -- stdout was 0 bytes every time. So parse stdout only once the code says 0; a parse error
-on a refusal is a client reading the wrong stream.
+Under `--json` a refusal writes **nothing at all** to stdout: zero bytes. The
+code goes to the exit status, and stderr carries the refusal as one line, a
+JSON document with the same fields the prose has:
+
+<!-- replay state -->
+
+    $ ank show TASK-9999 --json 2>/dev/null; echo "exit $?"
+    exit 2
+    $ ank show TASK-9999 --json
+    {"contract":1,"error":{"code":2,"name":"NotFound","message":"entity not found: TASK-9999","next":["ank find TASK-9999"],"subject":"TASK-9999"}}
+
+`code` and `name` come from the exit table, `message` is the prose's first
+line, `next` lists in order every command the prose prints after `->`, and
+`subject` is the entity or path refused, `null` when the refusal names
+neither. So parse stdout once the code says 0, and parse the line on stderr
+when it says anything else. Without `--json` stderr is the prose shown above,
+byte for byte.
 
 **A warning is the other case, and it does not all go to one stream.** There are
 two kinds and the split is deliberate.
@@ -182,15 +193,17 @@ $ ank claim TASK-2773
     {"contract":1,"task":"TASK-277368641a6e","status":"done","commit":"8db44652564828e480ea7e5be3768b14f9c03893","branch":"main","proofs":1,"outside_scope":[]}
     exit 0
 
-and the warning on stderr:
+and the warning on stderr, under `--json` one document per line keyed
+`warning`, with the fields of a refusal less `code` and `name`:
 
 <!-- replay unreachable -->
 
     $ cat stderr.txt
-    warning: claim not pushed: it holds in this clone only, and another clone can take the same task
+    {"contract":1,"warning":{"message":"claim not pushed: it holds in this clone only, and another clone can take the same task","next":[],"subject":null}}
 
 So read stderr, and do not assume it is empty on success -- but do not look
-there for what the document already carries.
+there for what the document already carries. Without `--json` the same warning
+is the line `warning: <message>`, followed by a `  -> ` line per command.
 
 ## The global flags
 

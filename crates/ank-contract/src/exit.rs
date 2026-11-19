@@ -137,6 +137,25 @@ impl ExitCode {
         }
     }
 
+    /// The variant's name, as the refusal document of ADR-4d9fb7375dc1 carries
+    /// it beside the code and the reference page prints it in its second
+    /// column. Written out rather than taken from `Debug`, which promises no
+    /// stable spelling and is the contract here.
+    pub const fn name(self) -> &'static str {
+        match self {
+            ExitCode::Ok => "Ok",
+            ExitCode::Generic => "Generic",
+            ExitCode::NotFound => "NotFound",
+            ExitCode::Conflict => "Conflict",
+            ExitCode::Unavailable => "Unavailable",
+            ExitCode::Proof => "Proof",
+            ExitCode::Transition => "Transition",
+            ExitCode::Prerequisite => "Prerequisite",
+            ExitCode::Findings => "Findings",
+            ExitCode::Environment => "Environment",
+        }
+    }
+
     /// The integer a process exits with.
     ///
     /// `const` so a table or a test can name it where a function call would not
@@ -154,20 +173,14 @@ impl fmt::Display for ExitCode {
     /// printed a variant name would be a second rendering of a value whose whole
     /// purpose is to have exactly one.
     ///
-    /// **`--json` prints nothing at all on a refusal**, which is the opposite of
-    /// what this comment claimed until TASK-78431b544d01 measured it. Six
-    /// refusals across six verbs, each run twice to separate the streams:
-    /// `show TASK-9999 --json` (2), `claim TASK-9999 --json` (2), `attest <id>
-    /// --proof bogus --json` (5), `done --json` (5), `new task --json` (7) and
-    /// `config nosuchkey --json` (1) each left **zero bytes** on standard
-    /// output and put `error[<code>]: <message>` on standard error. That is §4
-    /// holding: a refusal is not a document, so nothing is written where a
-    /// parser reads, and the code reaches the caller as the process status and
-    /// in the line beside it. A caller that waits for a `"code"` field waits
-    /// forever — the tool emits that key in exactly two places, neither of them
-    /// an error path: the `refuses` array of `ank help --json`, where it is the
-    /// code a verb *would* return, and the MCP server's error envelope, which
-    /// is a protocol of its own (ADR-fd98).
+    /// **Under `--json` a refusal is a document, and it goes to standard
+    /// error** (ADR-4d9fb7375dc1). Standard output stays empty, as it always
+    /// has, so a caller that treats a non-empty stdout as an answer is not
+    /// handed one; stderr carries one line, `{"contract":N,"error":{"code",
+    /// "name","message","next","subject"}}`, written by
+    /// [`crate::json::refusal`]. Without `--json` stderr is the prose,
+    /// `error[<code>]:` followed by its `  -> ` lines, and that prose is what
+    /// this `Display` is the first half of.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.code())
     }
@@ -187,15 +200,16 @@ pub fn reference_page() -> String {
          script can route without parsing output. They are stable. `ank help --json` publishes \
          which verb returns which, under each verb's `refuses`.\n\n\
          A refusal writes `error[<code>]: <message>` on stderr, followed by the exact command to \
-         run next; under `--json` it leaves stdout empty.\n\n\
+         run next; under `--json` it leaves stdout empty and writes the same refusal on stderr as \
+         one JSON document, `{\"contract\":N,\"error\":{\"code\",\"name\",\"message\",\"next\",\"subject\"}}`.\n\n\
          | Code | Name | Meaning |\n\
          |---|---|---|\n",
     );
     for code in ExitCode::ALL {
         page.push_str(&format!(
-            "| {} | `{:?}` | {} |\n",
+            "| {} | `{}` | {} |\n",
             code.code(),
-            code,
+            code.name(),
             code.meaning()
         ));
     }

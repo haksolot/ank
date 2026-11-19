@@ -453,10 +453,11 @@ pub fn record_outcomes(
             reference: o.reference(head, false),
         };
         if let Err(e) = record(dir, &run) {
-            eprintln!(
-                "{} the run of {} was not recorded for reuse: {e}",
-                style.on_stderr().yellow("warning:"),
-                o.name
+            crate::cli::warn(
+                style.on_stderr(),
+                &format!("the run of {} was not recorded for reuse: {e}", o.name),
+                &[],
+                None,
             );
         }
     }
@@ -625,9 +626,11 @@ pub fn run_verb(
     if base.is_none() && !inv.quiet() {
         // Selecting less than a change touches is the one direction this verb
         // must not err in, so the gap is said out loud.
-        eprintln!(
-            "{} no merge-base with the default branch: only the work tree's changes are selected from",
-            style.on_stderr().yellow("warning:"),
+        crate::cli::warn(
+            style.on_stderr(),
+            "no merge-base with the default branch: only the work tree's changes are selected from",
+            &[],
+            None,
         );
     }
 
@@ -675,9 +678,11 @@ pub fn run_verb(
             let ran: Vec<&RunKey> = keys.iter().collect();
             record_outcomes(dir, &ran, &outcomes, identity, &head, style);
         }
-        _ if !selected.is_empty() => eprintln!(
-            "{} no content key could be established: these runs are not recorded for reuse",
-            style.on_stderr().yellow("warning:"),
+        _ if !selected.is_empty() => crate::cli::warn(
+            style.on_stderr(),
+            "no content key could be established: these runs are not recorded for reuse",
+            &[],
+            None,
         ),
         _ => {}
     }
@@ -970,7 +975,12 @@ pub fn run_until(
                 Ok(()) => kept = Some(path.to_path_buf()),
                 // The verdict stands without the file: a code 5 is still the
                 // answer, and the tail printed below still says why.
-                Err(e) => eprintln!("warning: cannot keep the output at {}: {e}", path.display()),
+                Err(e) => crate::cli::warn(
+                    crate::style::PLAIN,
+                    &format!("cannot keep the output at {}: {e}", path.display()),
+                    &[],
+                    Some(&path.display().to_string()),
+                ),
             }
         }
     }

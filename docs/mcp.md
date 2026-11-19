@@ -63,8 +63,8 @@ no `--repo` the server takes that directory. The failure mode is not an error:
 it is a process quietly speaking for a corpus nobody meant, or for none. The
 configuration is also where it is named rather than something a call may
 override; a call that tries is refused, below. A path with no corpus under it is
-refused before any client is listening, rather than after, so it reaches a
-person rather than a log:
+refused before any client is listening, so it reaches a person, where a refusal
+after the start would reach only a log:
 
 <!-- replay mcp dir=/tmp -->
 
@@ -127,7 +127,8 @@ the leading dashes stripped. Where a verb takes a fixed word first, as `hooks`,
 run without a positional, `arguments` is `required` and `minItems` counts what
 it needs. What a call gets back is the document `--json`
 returns, as `structuredContent` and as the text block beside it, with the exit
-code next to both; a refusal answers no document and carries none. Every tool
+code next to both; a refusal carries the refusal document the CLI writes on
+stderr, in the same two places. Every tool
 also carries `readOnlyHint`, `destructiveHint` and `openWorldHint`, all three
 and always, derived from what `ank help --json` declares for the verb:
 read-only where `writes` and `outside` are both `nothing`, destructive where
@@ -175,8 +176,8 @@ corpus the client did not ask for:
 >> {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"ank_find","arguments":{"corpus":"/srv/back"}}}
 -->
 
-    <-- {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"error[9]: no corpus is declared under 0000000000000000000000000000000000000000, and this server reaches no corpus nobody declared\n  -> ank config --user corpora.0000000000000000000000000000000000000000 <path>"}],"isError":true,"exitCode":9,"stderr":"error[9]: no corpus is declared under 0000000000000000000000000000000000000000, and this server reaches no corpus nobody declared\n  -> ank config --user corpora.0000000000000000000000000000000000000000 <path>"}}
-    <-- {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"error[9]: '/srv/back' is not a repository identity\n  -> a corpus is named by its root commit, never a path, a remote or a slug: ank status --json prints it under \"corpus\""}],"isError":true,"exitCode":9,"stderr":"error[9]: '/srv/back' is not a repository identity\n  -> a corpus is named by its root commit, never a path, a remote or a slug: ank status --json prints it under \"corpus\""}}
+    <-- {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{\"contract\":1,\"error\":{\"code\":9,\"name\":\"Environment\",\"message\":\"no corpus is declared under 0000000000000000000000000000000000000000, and this server reaches no corpus nobody declared\",\"next\":[\"ank config --user corpora.0000000000000000000000000000000000000000 <path>\"],\"subject\":null}}"}],"isError":true,"exitCode":9,"structuredContent":{"contract":1,"error":{"code":9,"name":"Environment","message":"no corpus is declared under 0000000000000000000000000000000000000000, and this server reaches no corpus nobody declared","next":["ank config --user corpora.0000000000000000000000000000000000000000 <path>"],"subject":null}},"stderr":"{\"contract\":1,\"error\":{\"code\":9,\"name\":\"Environment\",\"message\":\"no corpus is declared under 0000000000000000000000000000000000000000, and this server reaches no corpus nobody declared\",\"next\":[\"ank config --user corpora.0000000000000000000000000000000000000000 <path>\"],\"subject\":null}}"}}
+    <-- {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"{\"contract\":1,\"error\":{\"code\":9,\"name\":\"Environment\",\"message\":\"'/srv/back' is not a repository identity\",\"next\":[\"a corpus is named by its root commit, never a path, a remote or a slug: ank status --json prints it under \\\"corpus\\\"\"],\"subject\":null}}"}],"isError":true,"exitCode":9,"structuredContent":{"contract":1,"error":{"code":9,"name":"Environment","message":"'/srv/back' is not a repository identity","next":["a corpus is named by its root commit, never a path, a remote or a slug: ank status --json prints it under \"corpus\""],"subject":null}},"stderr":"{\"contract\":1,\"error\":{\"code\":9,\"name\":\"Environment\",\"message\":\"'/srv/back' is not a repository identity\",\"next\":[\"a corpus is named by its root commit, never a path, a remote or a slug: ank status --json prints it under \\\"corpus\\\"\"],\"subject\":null}}"}}
 
 Both are **9**, and 9 is the right code for both: what is missing is a
 declaration in the reader's configuration, not anything in either corpus.
@@ -206,7 +207,11 @@ answer is no:
 >> {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ank_show","arguments":{"arguments":["TASK-9999"]}}}
 -->
 
-    <-- {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"error[2]: entity not found: TASK-9999\n  -> ank find TASK-9999"}],"isError":true,"exitCode":2,"stderr":"error[2]: entity not found: TASK-9999\n  -> ank find TASK-9999"}}
+    <-- {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"contract\":1,\"error\":{\"code\":2,\"name\":\"NotFound\",\"message\":\"entity not found: TASK-9999\",\"next\":[\"ank find TASK-9999\"],\"subject\":\"TASK-9999\"}}"}],"isError":true,"exitCode":2,"structuredContent":{"contract":1,"error":{"code":2,"name":"NotFound","message":"entity not found: TASK-9999","next":["ank find TASK-9999"],"subject":"TASK-9999"}},"stderr":"{\"contract\":1,\"error\":{\"code\":2,\"name\":\"NotFound\",\"message\":\"entity not found: TASK-9999\",\"next\":[\"ank find TASK-9999\"],\"subject\":\"TASK-9999\"}}"}}
+
+The refusal is the document the CLI writes on stderr under `--json`, and it is
+the result's `structuredContent` as well as its text, so a client reads the
+code, the message, the next command and the subject as fields.
 
 `exitCode` is present on every call including a successful one, so a client that
 branches on it never has to tell absence from zero; `stderr` is carried

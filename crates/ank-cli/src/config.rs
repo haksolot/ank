@@ -718,12 +718,17 @@ impl Config {
     /// is done; the line is so that it does not go unnoticed.
     pub fn warn_forbidden(&self, identity: &str, act: &str) {
         if let Some(f) = self.forbidding(identity, act) {
-            eprintln!(
-                "warning: role '{}' of {identity} forbids {act} ({}); performed, \
-                 since permissions.enforce {} warns and never refuses at the verb",
-                f.role,
-                f.entry,
-                self.enforce.as_str()
+            crate::cli::warn(
+                crate::style::PLAIN,
+                &format!(
+                    "role '{}' of {identity} forbids {act} ({}); performed, \
+                     since permissions.enforce {} warns and never refuses at the verb",
+                    f.role,
+                    f.entry,
+                    self.enforce.as_str()
+                ),
+                &[],
+                None,
             );
         }
     }

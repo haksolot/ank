@@ -144,3 +144,24 @@ pub const fn opt(name: &'static str, ty: Type) -> Field {
         nullable: true,
     }
 }
+
+/// The refusal document's inner object, under `error` (ADR-4d9fb7375dc1).
+///
+/// Not a verb's shape: every verb can refuse, and the document goes to
+/// standard error, where no verb's answer does. Declared here because the
+/// shape is part of the versioned contract all the same.
+pub const REFUSAL: &[Field] = &[
+    f("code", Type::Num),
+    f("name", Type::Str),
+    f("message", Type::Str),
+    f("next", Type::Strings),
+    opt("subject", Type::Str),
+];
+
+/// A warning's inner object, under `warning`: the refusal's fields without the
+/// two a warning has no value for.
+pub const WARNING: &[Field] = &[
+    f("message", Type::Str),
+    f("next", Type::Strings),
+    opt("subject", Type::Str),
+];
