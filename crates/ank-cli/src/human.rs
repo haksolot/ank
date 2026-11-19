@@ -776,6 +776,7 @@ pub fn check(
     });
     let mut report = inspect_with(repo, cfg, path.as_deref(), !strict, origin)?;
     check_config_bounds(repo, bounds, &mut report);
+    check_verifier_cwds(repo, cfg, &mut report);
     if inv.has("--peers") {
         report.require_peers();
     }
@@ -3742,6 +3743,40 @@ fn check_config_bounds(repo: &Repo, bounds: &[String], report: &mut Report) {
             Finding::fault(Kind::ConfigBound, &subject, message)
                 .with_note(vec![format!("ank config {key} <value>")]),
         );
+    }
+}
+
+/// A verifier `cwd` naming no directory of the work tree, or one outside it
+/// once links resolve (ADR-ebe85b3aa79d), one fault each on `config.yml`.
+///
+/// **Here and not at load**, because the parser reads text and knows no work
+/// tree, and because a directory a fresh checkout lacks must not stop every
+/// verb: `done` refuses the run itself at exit 9. A `cwd` whose text already
+/// leaves the root is a bound, and [`check_config_bounds`] has said so.
+fn check_verifier_cwds(repo: &Repo, cfg: &Config, report: &mut Report) {
+    let file = repo.config_path();
+    let subject = file
+        .strip_prefix(&repo.corpus)
+        .unwrap_or(&file)
+        .to_string_lossy()
+        .replace('\\', "/");
+    for (name, v) in &cfg.verifiers {
+        let Some(cwd) = &v.cwd else { continue };
+        if crate::config::cwd_shape_problem(cwd).is_some() {
+            continue;
+        }
+        if let Some(why) = crate::config::cwd_problem(&repo.worktree, cwd) {
+            report.findings.push(
+                Finding::fault(
+                    Kind::ConfigBound,
+                    &subject,
+                    format!("verifiers.{name}.cwd: '{cwd}' {why}"),
+                )
+                .with_note(vec![format!(
+                    "ank config verifiers.{name}.cwd <a directory under the repository root>"
+                )]),
+            );
+        }
     }
 }
 

@@ -279,6 +279,13 @@ fn every_config_key_is_printed_with_its_type_and_default() {
             ("`verifiers.<name>.timeout`", "duration", "`10m`"),
             ("`verifiers.<name>.default`", "boolean", "`false`"),
             ("`verifiers.<name>.inputs`", "list of globs", "none"),
+            ("`verifiers.<name>.vars.<NAME>`", "string", "none"),
+            (
+                "`verifiers.<name>.inherit_env`",
+                "`false` or list of names",
+                "none"
+            ),
+            ("`verifiers.<name>.cwd`", "path", "none"),
             ("`proof.reuse_max_age`", "duration", "`24h`"),
             ("`verifier_jobs`", "integer", "none"),
             ("`verifier_lock`", "boolean", "`true`"),

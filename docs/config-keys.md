@@ -20,6 +20,9 @@ This build reads `schema: 1` through `schema: 2`; a file carrying `requires_ank`
 | `verifiers.<name>.timeout` | duration | `10m` | how long `done` lets the command run; at least `1s` |
 | `verifiers.<name>.default` | boolean | `false` | `true` writes the verifier into every task `ank new task` creates |
 | `verifiers.<name>.inputs` | list of globs | none | the files whose content can change the result, relative to the root; absent, the whole tree; written as one flow sequence, never empty |
+| `verifiers.<name>.vars.<NAME>` | string | none | a variable every run of the verifier is given, with this fixed value; a name beginning `ANK_` is refused, since ank sets those itself (ADR-ebe85b3aa79d) |
+| `verifiers.<name>.inherit_env` | `false` or list of names | none | the variables of the caller's environment a run receives; `false` passes none, `PATH` included; absent, the whole environment; written as one flow sequence holding at least one name |
+| `verifiers.<name>.cwd` | path | none | the directory a run starts in, relative to the root and inside it, which must exist; absent, the root |
 | `proof.reuse_max_age` | duration | `24h` | how old a passing run recorded under `<git-common-dir>/ank/runs/` may be for `done` to reuse it rather than run the verifier again, at least `1s`; `done --fresh` reuses nothing |
 | `verifier_jobs` | integer | none | how many verifiers one `done` runs at once, at least 1; absent, the machine's available parallelism |
 | `verifier_lock` | boolean | `true` | whether `done` waits for the verifiers another `done` of the repository is running, in any of its worktrees, before it starts its own; `false` lets them run at the same time (ADR-eab130f731f3) |
