@@ -237,9 +237,7 @@ fn field(line: &str, key: &str) -> Option<String> {
         let end = stripped.find('"')?;
         return Some(stripped[..end].to_string());
     }
-    let end = rest
-        .find(|c: char| c == ',' || c == '}')
-        .unwrap_or(rest.len());
+    let end = rest.find([',', '}']).unwrap_or(rest.len());
     Some(rest[..end].trim().to_string())
 }
 

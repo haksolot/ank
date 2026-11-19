@@ -2691,7 +2691,7 @@ fn all_ratifications(cwd: &Path) -> Result<HashMap<String, Ratification>> {
         // An empty field is a field, so counting is what a separator could not
         // do.
         let fields: Vec<&str> = text.split('\0').collect();
-        for record in fields.chunks_exact(5) {
+        for record in fields.as_chunks::<5>().0 {
             let sha = record[0];
             // `--format` implies `--pretty`, whose own `commit <sha>` line
             // precedes the format output. `%H` is the last line of this field

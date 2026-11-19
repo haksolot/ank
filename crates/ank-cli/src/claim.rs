@@ -482,7 +482,7 @@ fn live_claims_where(
         }
         held.push((id, c));
     }
-    held.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
+    held.sort_by_key(|a| a.0.to_string());
     Ok(held)
 }
 
@@ -2418,23 +2418,23 @@ fn lost_the_race(
 // Pruning — exposed here, called by `check`
 // ---------------------------------------------------------------------------
 
-/// Deletes the refs of tasks that appear `done` or `closed` **on the default
-/// branch**: the information the ref carried is then present where everybody
-/// reads it, and the ref has no further use.
-///
-/// The predicate is the file as the branch carries it, never the reachability
-/// of the recorded commit (ADR-6d8736c04cfa): `done` writes to the working
-/// tree, so the commit it records is frequently already an ancestor, and an
-/// agent that branched and finished before its first commit would see its ref
-/// vanish within the second — reopening the exact window the mechanism closes.
-///
-/// `tasks_prefix` is repository-relative and `/`-separated, git's own syntax on
-/// the three platforms — `.ank/tasks` in the ordinary layout.
-///
-/// **Nothing in this module calls it.** `check` does (TASK-a7b8c9d0e1f2): a
-/// reader does not sanitise the coordination plane underneath everyone else,
-/// and concentrating maintenance in one command is what makes its timing
-/// predictable.
+// Deletes the refs of tasks that appear `done` or `closed` **on the default
+// branch**: the information the ref carried is then present where everybody
+// reads it, and the ref has no further use.
+//
+// The predicate is the file as the branch carries it, never the reachability
+// of the recorded commit (ADR-6d8736c04cfa): `done` writes to the working
+// tree, so the commit it records is frequently already an ancestor, and an
+// agent that branched and finished before its first commit would see its ref
+// vanish within the second — reopening the exact window the mechanism closes.
+//
+// `tasks_prefix` is repository-relative and `/`-separated, git's own syntax on
+// the three platforms — `.ank/tasks` in the ordinary layout.
+//
+// **Nothing in this module calls it.** `check` does (TASK-a7b8c9d0e1f2): a
+// reader does not sanitise the coordination plane underneath everyone else,
+// and concentrating maintenance in one command is what makes its timing
+// predictable.
 // The predicate itself lives in `human::maintain`, which is what `check` runs.
 // A second implementation stood here for a long time, documented as "called by
 // check" and called by nothing outside its own tests (TASK-4981a1370c0b): two
@@ -4013,7 +4013,7 @@ mod tests {
         ] {
             assert_eq!(parse_utc(bad), None, "{bad}");
         }
-        assert_eq!(parse_utc(&now_utc()).is_some(), true);
+        assert!(parse_utc(&now_utc()).is_some());
     }
 
     // -----------------------------------------------------------------------

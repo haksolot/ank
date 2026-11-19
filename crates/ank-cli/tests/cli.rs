@@ -10021,7 +10021,7 @@ fn context_names_the_method_after_the_claim_done_ignores_it_and_amend_replaces_i
         .unwrap_or_else(|| panic!("no method line:\n{page}"));
     assert_eq!(page.matches("METHOD").count(), 1, "{page}");
     assert_eq!(lines[at - 2], "  A verifiable criterion.", "{page}");
-    assert!(lines[..at].iter().any(|l| *l == "DONE_CRITERIA"), "{page}");
+    assert!(lines[..at].contains(&"DONE_CRITERIA"), "{page}");
 
     // No entry recording the method was ever written, and done closes green on
     // its verifiers alone: it never reads the field.
@@ -11542,15 +11542,17 @@ fn a_corpus_wider_than_a_command_line_is_hashed_correctly() {
     const ENTITIES: usize = 1000;
     const PATH_WIDTH: usize = ".ank/entities/TASK-000000000000.md".len() + 1;
 
+    // Settled by the compiler: both sides are constants, so a fixture shrunk
+    // under the limit fails the build rather than a run.
+    const _: () = assert!(
+        ENTITIES * PATH_WIDTH > 32_767,
+        "the fixture is inside a Windows command line, so it asserts nothing"
+    );
+
     let r = Repo::new();
     for n in 0..ENTITIES {
         r.seed_task(&format!("TASK-{n:012x}"), Some("A verifiable criterion."));
     }
-    assert!(
-        ENTITIES * PATH_WIDTH > 32_767,
-        "the fixture is inside a Windows command line, so it asserts nothing: {}",
-        ENTITIES * PATH_WIDTH
-    );
 
     // Committed, so the working copy and the branch carry the same bytes: the
     // drift count is then a statement about the hashing and about nothing else.

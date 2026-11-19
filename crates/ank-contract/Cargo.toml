@@ -25,3 +25,6 @@ description = "The Ank machine contract: the verb table, the refusals and the ex
 # on by all of them at once. What it holds is `const` data and two enums; a
 # dependency here would buy nothing and cost every consumer.
 [dependencies]
+
+[lints]
+workspace = true

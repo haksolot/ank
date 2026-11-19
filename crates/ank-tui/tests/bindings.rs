@@ -31,8 +31,6 @@
 
 #![cfg(unix)]
 
-use crate::terminal;
-
 use crate::terminal::{Live, Repo, ONE_AT_A_TIME};
 use ank_tui::bindings::{self, BINDINGS};
 

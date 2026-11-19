@@ -59,6 +59,11 @@
 //! facts about a process and a git repository, so all three are asserted
 //! against a real one.
 
+// The driven session is `#[cfg(unix)]`, and the fixture it drives with is
+// shared with the tests that run everywhere: off unix, the parts only the
+// session reaches are unused, and that is the platform split, not dead code.
+#![cfg_attr(not(unix), allow(dead_code))]
+
 #[cfg(unix)]
 use crate::fixture;
 use crate::scratch;
@@ -676,14 +681,11 @@ impl Screen {
                     if at + width > bytes.len() {
                         break;
                     }
-                    match std::str::from_utf8(&bytes[at..at + width]) {
-                        Ok(s) => {
-                            for c in s.chars() {
-                                self.put(c);
-                            }
+                    // Not a character: dropped rather than guessed at.
+                    if let Ok(s) = std::str::from_utf8(&bytes[at..at + width]) {
+                        for c in s.chars() {
+                            self.put(c);
                         }
-                        // Not a character: dropped rather than guessed at.
-                        Err(_) => {}
                     }
                     at += width;
                 }
@@ -2281,13 +2283,13 @@ fn the_event_and_the_reload_reach_the_same_displayed_state() {
     let told = Live::open(
         &repo,
         READER,
-        &[("XDG_CONFIG_HOME".into(), following.0.display().to_string())],
+        &[("XDG_CONFIG_HOME", following.0.display().to_string())],
     );
     told.opened();
     let mut asking = Live::open(
         &repo,
         READER,
-        &[("XDG_CONFIG_HOME".into(), alone.0.display().to_string())],
+        &[("XDG_CONFIG_HOME", alone.0.display().to_string())],
     );
     asking.opened();
     assert!(
@@ -2360,9 +2362,9 @@ fn a_screen_with_the_stream_connected_asks_nothing_while_it_is_idle() {
         &repo,
         READER,
         &[
-            ("XDG_CONFIG_HOME".into(), home.0.display().to_string()),
-            ("PATH".into(), shim.path()),
-            ("ANK_GIT_LOG".into(), shim.log.display().to_string()),
+            ("XDG_CONFIG_HOME", home.0.display().to_string()),
+            ("PATH", shim.path()),
+            ("ANK_GIT_LOG", shim.log.display().to_string()),
         ],
     );
     live.opened();
@@ -2432,7 +2434,7 @@ fn an_event_repaints_the_list_and_renews_no_claim() {
     let mut live = Live::open(
         &repo,
         HOLDER,
-        &[("XDG_CONFIG_HOME".into(), home.0.display().to_string())],
+        &[("XDG_CONFIG_HOME", home.0.display().to_string())],
     );
     live.opened();
     // Opening the task you hold renews the lease, and it is supposed to: it is

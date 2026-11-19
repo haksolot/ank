@@ -139,3 +139,6 @@ rusqlite = { version = "0.40", default-features = false, features = ["bundled"] 
 [[test]]
 name = "integration"
 path = "tests/main.rs"
+
+[lints]
+workspace = true

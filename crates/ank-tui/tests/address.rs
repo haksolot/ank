@@ -15,8 +15,6 @@
 
 #![cfg(unix)]
 
-use crate::terminal;
-
 use crate::terminal::{ids_of, scratch, Live, Repo};
 
 /// Wide enough that a panel title is not cut before its count.

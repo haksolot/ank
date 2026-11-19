@@ -304,7 +304,7 @@ fn a_repository_that_signs_writes_a_signed_tag() {
         "signed where the repository signs: {object}"
     );
     assert!(
-        object.starts_with(&format!("object ")) && object.contains(&format!("ratify {A}\n")),
+        object.starts_with("object ") && object.contains(&format!("ratify {A}\n")),
         "{object}"
     );
 }

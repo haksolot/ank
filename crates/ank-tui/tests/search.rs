@@ -25,8 +25,6 @@
 
 #![cfg(unix)]
 
-use crate::terminal;
-
 use crate::terminal::{ids_of, short_of, Live, Repo, ONE_AT_A_TIME};
 use ank_tui::view::SEARCH;
 

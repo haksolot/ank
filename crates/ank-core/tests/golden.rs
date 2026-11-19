@@ -775,9 +775,8 @@ fn every_message_of_the_previous_layout_survives_becoming_an_entity() {
         message_fields(&whole),
         (split.title.clone(), split.body.clone())
     );
-    assert_eq!(
+    assert!(
         split.title.chars().count() <= MESSAGE_LINE_MAX,
-        true,
         "the title is bounded: {}",
         split.title
     );

@@ -21,8 +21,6 @@
 
 #![cfg(unix)]
 
-use crate::terminal;
-
 use crate::terminal::{Live, Repo};
 use ank_tui::input::Command;
 

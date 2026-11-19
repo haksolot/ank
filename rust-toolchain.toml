@@ -4,5 +4,5 @@
 # it is a pull request. The MSRV is `rust-version` in the manifests, not this.
 [toolchain]
 channel = "1.99.1"
-components = ["rustfmt"]
+components = ["rustfmt", "clippy"]
 profile = "minimal"

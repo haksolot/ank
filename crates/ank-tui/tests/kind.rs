@@ -34,8 +34,6 @@
 
 #![cfg(unix)]
 
-use crate::terminal;
-
 use crate::terminal::{Live, Repo};
 use ank_tui::bindings::{self, Runs, BINDINGS};
 use ank_tui::keys::Press;
