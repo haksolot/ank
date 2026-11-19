@@ -423,10 +423,17 @@ fn a_refused_call_carries_the_code_the_table_declares() {
         "a refusal is an error result and not a silent success: {reply}"
     );
     // The refusal is the CLI's own, inherited rather than re-derived: the
-    // self-correcting hint travels with it.
-    assert!(
-        reply.contains("error[2]") && reply.contains("ank find"),
-        "the CLI's own error and its hint must survive the passthrough: {reply}"
+    // document the binary wrote on stderr under `--json` is the result's
+    // `structuredContent`, whole, hint included (ADR-4d9fb7375dc1).
+    let parsed: serde_yaml::Value = serde_yaml::from_str(reply).unwrap();
+    let expected: serde_yaml::Value = serde_yaml::from_str(&format!(
+        r#"{{"contract":{},"error":{{"code":2,"name":"NotFound","message":"entity not found: TASK-000000000000","next":["ank find TASK-000000000000"],"subject":"TASK-000000000000"}}}}"#,
+        ank_contract::CONTRACT_VERSION
+    ))
+    .unwrap();
+    assert_eq!(
+        parsed["result"]["structuredContent"], expected,
+        "the refusal document must survive the passthrough: {reply}"
     );
 
     let _ = std::fs::remove_dir_all(&repo);
@@ -631,8 +638,16 @@ fn two_corpora_through_one_server_land_two_claims_and_no_third() {
         "every refusal names the command that resolves it (§4): {}",
         replies[2]
     );
-    assert!(
-        !replies[2].contains("\"contract\""),
+    // Nothing ran: what the result carries is a refusal document and no
+    // answer, so its only keys are the contract version and the error.
+    let refused: serde_yaml::Value = serde_yaml::from_str(&replies[2]).unwrap();
+    let keys: Vec<&str> = refused["result"]["structuredContent"]
+        .as_mapping()
+        .map(|m| m.keys().filter_map(|k| k.as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        keys,
+        ["contract", "error"],
         "the refused call answered a document, so something ran: {}",
         replies[2]
     );
@@ -1205,6 +1220,10 @@ const LEGAL_CALLS: &[(&str, &str)] = &[
     ),
     ("read", r#"{"arguments":["TASK-000000000000"]}"#),
     (
+        "reject",
+        r#"{"arguments":["ADR-000000000000"],"reason":"never to bind"}"#,
+    ),
+    (
         "close",
         r#"{"arguments":["TASK-000000000000"],"reason":"superseded"}"#,
     ),
@@ -1461,7 +1480,7 @@ fn every_tool_carries_annotations_derived_from_the_table() {
     };
     assert_eq!(
         named(&|d| d.3),
-        ["accept", "close", "migrate", "archive"],
+        ["accept", "reject", "close", "migrate", "archive"],
         "the verbs declaring destructive"
     );
     assert_eq!(
@@ -1480,8 +1499,8 @@ fn every_tool_carries_annotations_derived_from_the_table() {
 }
 
 /// A call whose verb answers `--json` carries that document as
-/// `structuredContent` beside the text block, and a refusal, which answers no
-/// document, carries none (GitHub #781).
+/// `structuredContent` beside the text block (GitHub #781), and a refusal
+/// carries the refusal document the binary wrote on stderr (ADR-4d9fb7375dc1).
 ///
 /// The structured half is compared with the text half parsed, so the two are
 /// one document and not two renderings that could drift.
@@ -1516,11 +1535,15 @@ fn a_call_that_answers_a_document_carries_it_as_structured_content() {
 
     let refused: serde_yaml::Value = serde_yaml::from_str(&replies[1]).unwrap();
     assert_eq!(refused["result"]["isError"].as_bool(), Some(true));
-    assert!(
-        refused["result"]["structuredContent"].is_null(),
-        "a refusal answers no document and carries one: {}",
+    assert_eq!(
+        refused["result"]["structuredContent"]["error"]["code"].as_u64(),
+        Some(2),
+        "a refusal carries its document as structuredContent: {}",
         replies[1]
     );
+    let text = refused["result"]["content"][0]["text"].as_str().unwrap();
+    let parsed: serde_yaml::Value = serde_yaml::from_str(text).unwrap();
+    assert_eq!(refused["result"]["structuredContent"], parsed);
     let _ = std::fs::remove_dir_all(&repo);
 }
 

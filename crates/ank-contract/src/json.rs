@@ -176,6 +176,46 @@ impl Obj {
     }
 }
 
+/// A refusal, as the one line `--json` writes on standard error
+/// (ADR-4d9fb7375dc1).
+///
+/// `next` is what the prose prints after each `  -> `, in order, and `subject`
+/// the entity or path refused, `null` when the refusal is about neither. The
+/// fields are the ones [`crate::shape::REFUSAL`] declares, in that order.
+pub fn refusal(
+    code: crate::ExitCode,
+    message: &str,
+    next: &[String],
+    subject: Option<&str>,
+) -> String {
+    Obj::document()
+        .obj(
+            "error",
+            Obj::new()
+                .num("code", code.code())
+                .str("name", code.name())
+                .str("message", message)
+                .strings("next", next)
+                .opt_str("subject", subject),
+        )
+        .finish()
+}
+
+/// A warning, as the one line `--json` writes on standard error for each
+/// (ADR-4d9fb7375dc1): the refusal's document keyed `warning`, with no code,
+/// since a warning ends no process and the exit table has no row for it.
+pub fn warning(message: &str, next: &[String], subject: Option<&str>) -> String {
+    Obj::document()
+        .obj(
+            "warning",
+            Obj::new()
+                .str("message", message)
+                .strings("next", next)
+                .opt_str("subject", subject),
+        )
+        .finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +271,29 @@ mod tests {
             .obj("identity", Obj::new().str("value", "human:marie"))
             .finish();
         assert_eq!(doc, r#"{"identity":{"value":"human:marie"}}"#);
+    }
+
+    /// The field order is the declaration's: what `refusal` writes and what
+    /// `shape::REFUSAL` says it writes are compared here, key by key.
+    #[test]
+    fn a_refusal_writes_the_fields_its_shape_declares() {
+        let doc = refusal(
+            crate::ExitCode::NotFound,
+            "entity not found: NOPE",
+            &["ank find NOPE".to_string()],
+            Some("NOPE"),
+        );
+        assert_eq!(
+            doc,
+            r#"{"contract":1,"error":{"code":2,"name":"NotFound","message":"entity not found: NOPE","next":["ank find NOPE"],"subject":"NOPE"}}"#
+        );
+        let names: Vec<&str> = crate::shape::REFUSAL.iter().map(|f| f.name).collect();
+        assert_eq!(names, ["code", "name", "message", "next", "subject"]);
+        let names: Vec<&str> = crate::shape::WARNING.iter().map(|f| f.name).collect();
+        assert_eq!(names, ["message", "next", "subject"]);
+        assert_eq!(
+            warning("w", &[], None),
+            r#"{"contract":1,"warning":{"message":"w","next":[],"subject":null}}"#
+        );
     }
 }

@@ -313,7 +313,7 @@ pub fn run(
     // status nobody diffs. The two planes sort into one list rather than into
     // two sections, so the id stays the thing a reader scans.
     //
-    // **Each declared peer's claims, under `--peers`** (ADR-376bed7fa39a), after
+    // **Each declared peer's claims, under `--peers`** (ADR-89c1e7146fe5), after
     // this corpus's: one `for-each-ref` and one batch over the peer's own
     // `refs/ank/*`, read and never written, and a title loaded for each claimed
     // task alone rather than the peer's corpus parsed to name a few. Shown and
@@ -323,7 +323,7 @@ pub fn run(
     if let Some((peers, warnings)) = &peered {
         if !inv.quiet() {
             for w in warnings {
-                eprintln!("warning: {w}");
+                crate::cli::warn(crate::style::PLAIN, &w.to_string(), &[], None);
             }
         }
         for peer in peers {
@@ -407,7 +407,7 @@ pub fn run(
         .count();
     // The peer ADRs that bind this perimeter, under `--peers`: the resolution
     // `context` serves them by, over the peers already opened above, so each is
-    // opened once and an unreadable one warned about once (ADR-376bed7fa39a).
+    // opened once and an unreadable one warned about once (ADR-89c1e7146fe5).
     let constraints = constraints
         + peered.as_ref().map_or(0, |(peers, _)| {
             context::peer_adrs_in(repo, peers, None, &mut Vec::new())
@@ -1038,7 +1038,7 @@ struct Held {
     /// as "here only".
     seen: Option<Seen>,
     /// The declared peer whose refs carry the claim, `None` for one of this
-    /// corpus (ADR-376bed7fa39a).
+    /// corpus (ADR-89c1e7146fe5).
     peer: Option<String>,
 }
 

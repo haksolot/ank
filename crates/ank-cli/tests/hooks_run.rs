@@ -14,6 +14,10 @@
 
 use crate::scratch;
 
+/// The protocol `claude` translates onto, beside the suite that pins `claude`.
+#[path = "hooks_generic.rs"]
+mod hooks_generic;
+
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

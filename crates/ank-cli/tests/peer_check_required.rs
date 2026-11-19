@@ -1,5 +1,5 @@
 //! `check --peers` makes a declared peer that cannot be read a fault
-//! (TASK-35af3b803257, ADR-376bed7fa39a).
+//! (TASK-35af3b803257, ADR-89c1e7146fe5).
 //!
 //! A laptop without the sibling checkout is not wrong: there, a peer that
 //! cannot be read is a signal and `check` exits 0. CI is the place that

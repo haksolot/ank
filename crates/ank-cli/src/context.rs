@@ -265,7 +265,7 @@ pub struct TaskLine {
     pub created: String,
     pub ready: bool,
     /// The declared peer the task lives in, `None` for one of this corpus
-    /// (ADR-376bed7fa39a). Only `context --peers` lists a peer's task, and only
+    /// (ADR-89c1e7146fe5). Only `context --peers` lists a peer's task, and only
     /// one that is ready over there.
     pub peer: Option<String>,
 }
@@ -372,7 +372,7 @@ pub struct View {
     pub finished_elsewhere: usize,
     pub warnings: Vec<String>,
     /// Whether the caller asked for `--peers`, which is what gives every task
-    /// of the JSON document its `peer` key (ADR-376bed7fa39a).
+    /// of the JSON document its `peer` key (ADR-89c1e7146fe5).
     pub peers: bool,
     /// Under a claim, what each declared peer binds onto the task's scope
     /// (ADR-50952ba5e226): shown in a section of its own and never part of
@@ -706,7 +706,7 @@ pub fn build(
 }
 
 /// [`build`], and with `peers` each declared peer's ready tasks added after
-/// this corpus's in orientation (ADR-376bed7fa39a). Execution mode is about the
+/// this corpus's in orientation (ADR-89c1e7146fe5). Execution mode is about the
 /// task held and is untouched: the flag changes what is offered, and under a
 /// claim nothing is.
 pub fn build_with(
@@ -1150,7 +1150,7 @@ pub(crate) fn peer_adrs(
 
 /// [`peer_adrs`] over peers the caller has already opened, so that a verb
 /// reading the peers for a second question opens each one once and warns about
-/// an unreadable one once (ADR-376bed7fa39a).
+/// an unreadable one once (ADR-89c1e7146fe5).
 pub(crate) fn peer_adrs_in(
     repo: &Repo,
     peers: &[crate::repo::Peer],
@@ -1227,7 +1227,7 @@ fn peer_adrs_where(
 }
 
 /// The tasks each declared peer offers, for `context --peers`
-/// (ADR-376bed7fa39a): ready over there, which is open, every local blocker of
+/// (ADR-89c1e7146fe5): ready over there, which is open, every local blocker of
 /// the peer done, no edge to a further peer, and no claim or completion on the
 /// peer's own `refs/ank/*`. Read at the peer's default branch and never
 /// written: the index is built in memory, and the claims are one

@@ -184,7 +184,7 @@ pub fn new(
                 }
             }
             for w in &unmerged {
-                eprintln!("{} {w}", inv.style().yellow("warning:"));
+                crate::cli::warn(inv.style(), &w.to_string(), &[], None);
             }
             Entity::Task(Task {
                 id: id.clone(),
@@ -833,7 +833,7 @@ fn create_filled(
                 )?;
             }
             for w in &unmerged {
-                eprintln!("{} {w}", inv.style().yellow("warning:"));
+                crate::cli::warn(inv.style(), &w.to_string(), &[], None);
             }
             check_verifiers(&t.verify, cfg)?;
             // A name typed into the template is checked where the flag is, and
@@ -1537,7 +1537,7 @@ pub fn find(
         (hits, 0)
     };
 
-    // **Each declared peer's answer, after this corpus's** (ADR-376bed7fa39a).
+    // **Each declared peer's answer, after this corpus's** (ADR-89c1e7146fe5).
     // Read only, at the peer's default branch, and marked from the peer's own
     // claims. A peer that cannot be read is one warning and the rest of the
     // answer.
@@ -1552,7 +1552,7 @@ pub fn find(
         )?;
         if !inv.quiet() {
             for w in &warnings {
-                eprintln!("warning: {w}");
+                crate::cli::warn(crate::style::PLAIN, &w.to_string(), &[], None);
             }
         }
         Some(listings)
@@ -1822,7 +1822,7 @@ struct PeerListing {
 }
 
 /// Every declared peer's rows for `find --peers`, and one warning per peer
-/// that could not be read (ADR-376bed7fa39a).
+/// that could not be read (ADR-89c1e7146fe5).
 ///
 /// **Read and never written** (ADR-a1de673043b4): the corpus is the peer's
 /// default branch as [`crate::repo::peers_of`] reads it, the index is built in
@@ -2137,7 +2137,7 @@ pub fn scope(
     let mut peer_adrs = context::peer_adrs(repo, cfg, perimeter.as_deref(), &mut warnings);
     peer_adrs.sort_by(|a, b| a.short.cmp(&b.short));
     for w in &warnings {
-        eprintln!("warning: {w}");
+        crate::cli::warn(crate::style::PLAIN, &w.to_string(), &[], None);
     }
     let total = hits.len() + peer_adrs.len();
 
@@ -2444,7 +2444,7 @@ fn warn_before_acting(inv: &Invocation, warnings: &[String]) {
     }
     let style = inv.style().on_stderr();
     for w in warnings {
-        eprintln!("{} {w}", style.yellow("warning:"));
+        crate::cli::warn(style, &w.to_string(), &[], None);
     }
 }
 
@@ -3044,7 +3044,7 @@ pub fn release(
     // class of warning: it is not the answer, and `release --json` is a
     // parser's input (ADR-6fd69efb629c).
     if let Some(w) = deleted.sync.revocation_warning() {
-        eprintln!("{} {w}", inv.style().on_stderr().yellow("warning:"));
+        crate::cli::warn(inv.style().on_stderr(), &w.to_string(), &[], None);
     }
 
     if inv.json() {

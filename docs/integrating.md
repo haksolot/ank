@@ -126,14 +126,25 @@ $ grep -l "^records: edit" .ank/entities/*.md
     error[4]: TASK-6da126c832be held by tool/1.0 (expires in 30m)
       -> ank context
 
-## A refusal leaves stdout empty, and a warning may not
+## A refusal leaves stdout empty, and stderr carries it as a document
 
-Under `--json` a refusal writes **nothing at all** to stdout. Not an error
-document, not an empty object: zero bytes. The message and its hint go to
-stderr, the code goes to the exit status, and that is the whole answer.
-Measured across three codes -- `show TASK-9999` (2), `done` with no claim held
-(6), `close` with no `--reason` (7) -- stdout was 0 bytes every time. So parse stdout only once the code says 0; a parse error
-on a refusal is a client reading the wrong stream.
+Under `--json` a refusal writes **nothing at all** to stdout: zero bytes. The
+code goes to the exit status, and stderr carries the refusal as one line, a
+JSON document with the same fields the prose has:
+
+<!-- replay state -->
+
+    $ ank show TASK-9999 --json 2>/dev/null; echo "exit $?"
+    exit 2
+    $ ank show TASK-9999 --json
+    {"contract":1,"error":{"code":2,"name":"NotFound","message":"entity not found: TASK-9999","next":["ank find TASK-9999"],"subject":"TASK-9999"}}
+
+`code` and `name` come from the exit table, `message` is the prose's first
+line, `next` lists in order every command the prose prints after `->`, and
+`subject` is the entity or path refused, `null` when the refusal names
+neither. So parse stdout once the code says 0, and parse the line on stderr
+when it says anything else. Without `--json` stderr is the prose shown above,
+byte for byte.
 
 **A warning is the other case, and it does not all go to one stream.** There are
 two kinds and the split is deliberate.
@@ -182,15 +193,17 @@ $ ank claim TASK-2773
     {"contract":1,"task":"TASK-277368641a6e","status":"done","commit":"8db44652564828e480ea7e5be3768b14f9c03893","branch":"main","proofs":1,"outside_scope":[]}
     exit 0
 
-and the warning on stderr:
+and the warning on stderr, under `--json` one document per line keyed
+`warning`, with the fields of a refusal less `code` and `name`:
 
 <!-- replay unreachable -->
 
     $ cat stderr.txt
-    warning: claim not pushed: it holds in this clone only, and another clone can take the same task
+    {"contract":1,"warning":{"message":"claim not pushed: it holds in this clone only, and another clone can take the same task","next":[],"subject":null}}
 
 So read stderr, and do not assume it is empty on success -- but do not look
-there for what the document already carries.
+there for what the document already carries. Without `--json` the same warning
+is the line `warning: <message>`, followed by a `  -> ` line per command.
 
 ## The global flags
 
@@ -432,8 +445,8 @@ For an agent harness the binary is also the hook handler (ADR-43cbb20dcbf1).
 `ank hooks install <agent>` writes into that agent's user-level settings the
 entries that call `ank hooks run <agent> <event>`, and nothing beside them: no
 script file, so there is nothing to keep in step but the binary. Claude Code is
-the only agent this version installs for, and `ank help hooks` is the whole
-verb.
+the agent this version installs for, `generic` is the protocol any other harness
+wires by hand (below), and `ank help hooks` is the whole verb.
 
 **Install and remove.** Claude Code's file is `settings.json` in
 `CLAUDE_CONFIG_DIR`, or in `.claude` under the home directory when that is unset
@@ -524,6 +537,26 @@ them to their claims whatever the corpus declares, and a corpus that declares
 `claim` cannot be loosened by a launch. Both variables are in [the environment
 reference](environment.md).
 
+**`status` says what is in force.** `ank hooks status` lists every agent
+install knows, whether its entries are in that agent's settings, the binary
+they call and whether it is the one answering, then each guard as the corpus
+declares it and as it runs once the launch environment is applied, naming a
+value it ignored. It only reads, and outside a corpus it lists the agents and
+says guards apply inside one. Here the entries were removed above, and the
+launch tightens `guard.edit` (the line naming the corpus directory is left
+out):
+
+<!-- replay hooks -->
+
+    $ ANK_GUARD_EDIT=claim ank hooks status | grep -v '^corpus '
+    claude not installed in /home/me/.claude/settings.json
+    generic is wired by hand: point a harness's own hook at `ank hooks run generic <event>`
+    guard.corpus deny, declared deny
+    guard.edit claim, declared claim, ANK_GUARD_EDIT=claim
+
+`--json` carries the same facts, with `installed`, `binary` and `current` per
+agent and `declared`, `in_force`, `set` and `ignored` per guard.
+
 **A third guard reads shell calls.** Under `permissions.enforce deny`, a `Bash`
 call whose command runs an ank verb the identity's role forbids is refused,
 naming the role, the entry of `.ank/config.yml` that forbids the act, and the
@@ -559,6 +592,57 @@ payload it cannot read, or an error of its own, lets the tool call through:
     exit 0
     $ cd /srv/plain && echo '{"tool_name":"Read","tool_input":{"file_path":".ank/config.yml"}}' | ank hooks run claude pre-tool-use; echo "exit $?"
     exit 0
+
+**Any other harness wires `generic`.** Every agent `run` handles is a
+translation onto one protocol (ADR-b108b24202ed), and `ank hooks run generic
+<event>` reads and writes that protocol unchanged, so a harness with any hook
+that can run a command and read its stdout gets the same guards. There is no
+settings file to write, so `ank hooks install generic` and `ank hooks remove
+generic` refuse: you add the entry to the harness's own hook configuration by
+hand, one for `session-start` and one for `pre-tool-use`.
+
+On stdin, one JSON object:
+
+- **`event`**, `session-start` or `pre-tool-use`, optional; when present it
+  has to name the event `run` was called with.
+- **`tool`**, for `pre-tool-use`: `read`, `search`, `edit` or `shell`. Any
+  tool but `shell` is confronted with `guard.corpus` for every path it
+  reaches, and `edit` with `guard.edit` too.
+- **`paths`**, an array of strings: the files a tool reads or writes, and the
+  directory a search starts from, relative to `cwd` or absolute.
+- **`command`**, for `shell`: the line it runs, read by the permissions guard.
+- **`cwd`**, the session's directory; the process's own when it is absent or
+  not absolute.
+
+On stdout, one JSON object on one line, and always exit 0:
+
+- **`{"decision":"allow"}`**, with a `message` for the agent when the guard
+  has something to say and lets the call through anyway, as `guard.edit warn`
+  does.
+- **`{"decision":"deny","reason":...}`**: refuse the call, and show the agent
+  the reason.
+- **`{"decision":"context","text":...}`**: at session start, the text to serve
+  the agent, `ank status` and the contract pointer.
+
+Nothing on stdout means the same as allow, and is what `run` writes outside a
+corpus, on input it cannot read, and on an error of its own. A path under
+`.ank/` is denied with the reason shown for `claude` above, as its `reason`.
+With the claim and the `guard.edit claim` above:
+
+<!-- replay hooks -->
+
+    $ echo '{"event":"pre-tool-use","tool":"edit","paths":["src/main.rs"]}' | ank hooks run generic pre-tool-use
+    {"decision":"allow"}
+    $ echo '{"event":"pre-tool-use","tool":"edit","paths":["docs/page.md"]}' | ank hooks run generic pre-tool-use
+    {"decision":"deny","reason":"guard.edit is claim, and no live claim of tool/1.0 covers docs/page.md: `ank context docs/page.md` names the task that does, and `ank claim <id>` takes it."}
+    $ ank hooks install generic; echo "exit $?"
+    error[1]: generic is wired by hand: it is the hook protocol itself, with no settings file for hooks install to write; point the harness's own hook at `ank hooks run generic <event>`, as docs/integrating.md shows
+      -> ank hooks run generic pre-tool-use
+    exit 1
+
+The protocol is documented and versioned like the `--json` contract. `claude`
+is a translation onto it, and its bytes are the ones shown above: the guards
+decide once, in the protocol, and each agent only translates.
 
 ## What binds and what does not
 

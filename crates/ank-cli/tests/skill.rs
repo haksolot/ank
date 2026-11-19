@@ -279,9 +279,22 @@ fn help_order() -> Vec<String> {
 /// and it left in the commit of TASK-3a7a73ccf2b7 that ships it.
 ///
 /// `hooks` was declared here ahead of the ratification of the §4 document that
-/// lists it, SPEC-79012ba18769 (ADR-376bed7fa39a, ADR-43cbb20dcbf1), and left
+/// lists it, SPEC-79012ba18769 (ADR-89c1e7146fe5, ADR-43cbb20dcbf1), and left
 /// in the commit of TASK-f248037e8bab that ships it.
 const NOT_YET_DISPATCHED: [&str; 0] = [];
+
+/// Verbs the binary dispatches ahead of the §4 document that lists them: the
+/// other direction from [`NOT_YET_DISPATCHED`].
+///
+/// `reject` entered the surface by ADR-89c1e7146fe5, and the specification
+/// moves after the code here: the successor of SPEC-79012ba18769 that lists it
+/// is written proposed, and only a human's `accept` makes it the document this
+/// suite reads. Remove the entry once that successor is accepted.
+///
+/// **No reverse guard**, unlike the list above: an `accept` commits nothing,
+/// so a guard failing the moment §4 lists the verb would turn the default
+/// branch red on a human act nobody can fold into the same change.
+const DISPATCHED_AHEAD_OF_SECTION_4: [&str; 1] = ["reject"];
 
 /// A verb the binary answers to and §4 never mentions. `attest`, `init` and
 /// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the
@@ -290,6 +303,9 @@ const NOT_YET_DISPATCHED: [&str; 0] = [];
 fn every_dispatched_verb_is_listed_in_section_4() {
     let spec = section_4_order();
     for verb in help_order() {
+        if DISPATCHED_AHEAD_OF_SECTION_4.contains(&verb.as_str()) {
+            continue;
+        }
         assert!(
             spec.contains(&verb),
             "`ank {verb}` is dispatched and §4's Commands block does not list \
@@ -349,8 +365,13 @@ fn help_prints_section_4s_order_inside_every_group() {
             .filter(|v| printed.contains(v))
             .cloned()
             .collect();
+        let printed: Vec<String> = printed
+            .iter()
+            .filter(|v| !DISPATCHED_AHEAD_OF_SECTION_4.contains(&v.as_str()))
+            .cloned()
+            .collect();
         assert_eq!(
-            expected, *printed,
+            expected, printed,
             "'{heading}' must print §4's order, minus what it does not hold"
         );
     }
@@ -549,7 +570,9 @@ fn the_skill_stays_within_one_page() {
 #[test]
 fn the_skill_teaches_nothing_beyond_what_is_frozen() {
     let text = skill();
-    for verb in ["accept", "close", "attest", "edit"] {
+    // `reject` is `accept`'s other half and a human act on its terms
+    // (ADR-0f4248812651), so it is shown no more than `accept` is.
+    for verb in ["accept", "reject", "close", "attest", "edit"] {
         assert!(
             !text.contains(&format!("ank {verb}")),
             "SKILL.md shows `ank {verb}`, which is outside the content it is \

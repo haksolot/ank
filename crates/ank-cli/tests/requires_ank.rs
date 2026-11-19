@@ -138,6 +138,15 @@ impl Run {
     }
 }
 
+/// The same warning under `--json`: one document on stderr
+/// (ADR-4d9fb7375dc1), carrying the same message and the same next command.
+fn warning_json(declared: &str, running: &str) -> String {
+    format!(
+        "{{\"contract\":{},\"warning\":{{\"message\":\"this corpus requires ank {declared} or newer, and this binary is {running}\",\"next\":[\"ank update\"],\"subject\":null}}}}\n",
+        ank_contract::CONTRACT_VERSION
+    )
+}
+
 /// The warning a verb prints below the requirement, whole.
 fn warning(declared: &str, running: &str) -> String {
     format!(
@@ -207,7 +216,7 @@ fn a_read_verb_warns_once_and_answers_as_without_the_key() {
 
     let with_json = ank(&dir, FIND_JSON);
     assert_eq!(with_json.code, 0, "{}", with_json.said());
-    assert_eq!(with_json.stderr, warning(&declared, &running));
+    assert_eq!(with_json.stderr, warning_json(&declared, &running));
 
     require(&dir, None);
     let without = ank(&dir, FIND);
@@ -247,7 +256,7 @@ fn a_write_verb_warns_once_and_writes_as_without_the_key() {
 
     let with_json = ank(&dir, &new_task(true));
     assert_eq!(with_json.code, 0, "{}", with_json.said());
-    assert_eq!(with_json.stderr, warning(&declared, &running));
+    assert_eq!(with_json.stderr, warning_json(&declared, &running));
 
     require(&dir, None);
     let without_json = ank(&dir, &new_task(true));

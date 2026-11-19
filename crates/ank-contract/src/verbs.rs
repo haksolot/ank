@@ -126,6 +126,37 @@ const HOOKS_OUT: &[Field] = &[
     f("changed", Type::Bool),
 ];
 
+/// `hooks status --json`: every agent `install` knows, whether its entries are
+/// in that agent's settings, the binary they call and whether it is the one
+/// answering; then the corpus in force, `null` outside one, and each guard as
+/// it declares it and as it runs once `ANK_GUARD_*` is applied
+/// (ADR-89c1e7146fe5, ADR-43cbb20dcbf1). `guards` is empty outside a corpus.
+const HOOKS_STATUS_OUT: &[Field] = &[
+    f(
+        "agents",
+        Type::Array(&[
+            f("agent", Type::Str),
+            f("settings", Type::Str),
+            f("installed", Type::Bool),
+            f("events", Type::Strings),
+            opt("binary", Type::Str),
+            f("current", Type::Bool),
+        ]),
+    ),
+    opt("corpus", Type::Str),
+    f(
+        "guards",
+        Type::Array(&[
+            f("key", Type::Str),
+            f("declared", Type::Str),
+            f("in_force", Type::Str),
+            f("variable", Type::Str),
+            opt("set", Type::Str),
+            opt("ignored", Type::Str),
+        ]),
+    ),
+];
+
 /// The opening frame of the reader, as data (§4, ADR-8bd76e8d7c4e).
 ///
 /// `tui` draws a screen and, under `--json`, answers what that screen holds:
@@ -414,7 +445,7 @@ const CONTEXT_PEER_BOUND_OUT: &[Field] = &[
 ];
 
 /// `context --peers`: the same document, each task carrying the peer it
-/// lives in (ADR-376bed7fa39a). A second document and not a field that is
+/// lives in (ADR-89c1e7146fe5). A second document and not a field that is
 /// always there, as for `claim` below: a caller who did not ask for the peers
 /// sees exactly the bytes it saw before.
 const CONTEXT_PEERS_OUT: &[Field] = &[
@@ -470,7 +501,7 @@ const CONTEXT_PEERS_OUT: &[Field] = &[
             f("unblocks", Type::Num),
             f("state", Type::Str),
             // The declared peer the task lives in, null for one of this
-            // corpus (ADR-376bed7fa39a). A peer's task is listed only when it
+            // corpus (ADR-89c1e7146fe5). A peer's task is listed only when it
             // is ready over there: open, unblocked and held by nobody in that
             // peer's own claims.
             opt("peer", Type::Str),
@@ -592,7 +623,7 @@ const STATUS_OUT: &[Field] = &[
 
 /// `status --peers`: the same document, every claim of each declared peer
 /// added to `elsewhere` with the peer it lives in, and `constraints` counting
-/// the peer ADRs that bind this perimeter too (ADR-376bed7fa39a).
+/// the peer ADRs that bind this perimeter too (ADR-89c1e7146fe5).
 const STATUS_PEERS_OUT: &[Field] = &[
     // The first field gained under the contract, and the demonstration of what
     // CONTRACT_VERSION promises: a document may gain a field within a version and
@@ -653,7 +684,7 @@ const STATUS_PEERS_OUT: &[Field] = &[
             opt("seen", Type::Str),
             opt("claimed", Type::Str),
             // The declared peer whose refs carry the claim, null for one of
-            // this corpus (ADR-376bed7fa39a). A peer's claim is shown and never
+            // this corpus (ADR-89c1e7146fe5). A peer's claim is shown and never
             // arbitrated: claims stay per repository (ADR-ed3e14d0f991).
             opt("peer", Type::Str),
         ]),
@@ -1305,6 +1336,9 @@ config_keys!(
     "verifiers.<name>.timeout",
     "verifiers.<name>.default",
     "verifiers.<name>.inputs",
+    "verifiers.<name>.vars.<NAME>",
+    "verifiers.<name>.inherit_env",
+    "verifiers.<name>.cwd",
     "proof.reuse_max_age",
     "verifier_jobs",
     "verifier_lock",
@@ -1314,6 +1348,7 @@ config_keys!(
     "guard.corpus",
     "guard.edit",
     "check.severity.<kind>",
+    "ratify.require_signature",
 );
 
 // ---------------------------------------------------------------------------
@@ -1760,7 +1795,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         output: &[
             when("without --peers", &[opt("corpus", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str), f("created", Type::Str), f("archived", Type::Bool), opt("anchored_by", Type::Str)]))]),
             // Each row carries the declared peer it lives in, null for one of
-            // this corpus (ADR-376bed7fa39a).
+            // this corpus (ADR-89c1e7146fe5).
             when("with --peers", &[opt("corpus", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), opt("peer", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str), f("created", Type::Str), f("archived", Type::Bool), opt("anchored_by", Type::Str)]))]),
         ],
         owner_task: None,
@@ -1888,6 +1923,12 @@ pub const COMMANDS: &[CommandSpec] = &[
                 ExitCode::Prerequisite,
                 "--reanchor over a document whose ratify <id> commit this clone does not hold",
             ),
+            // ADR-2e777475c4de: a refusal on the configuration and on the key
+            // at hand, before anything is written.
+            refuses(
+                ExitCode::Prerequisite,
+                "ratify.require_signature is true and git names no key to sign with, or one signers: does not declare or has retired: the key named, and nothing is written",
+            ),
             refuses(
                 ExitCode::Transition,
                 "--rescope over a document that is not accepted, one no ref carries, one whose scope is the one ratified, or one whose constraint or body changed since its ratification; nothing is written",
@@ -1947,6 +1988,59 @@ pub const COMMANDS: &[CommandSpec] = &[
         ],
         refuses_globals: &[],
         output: &[one(&[f("entity", Type::Str), f("kind", Type::Str), f("by", Type::Str), f("at", Type::Str), f("readings", Type::Num)])],
+        owner_task: None,
+    },
+    // Beside `accept`, whose terms it is a human act on (ADR-0f4248812651):
+    // the other way a proposal ends, anchored like the one that binds.
+    CommandSpec {
+        name: "reject",
+        group: "shape the work",
+        renews: Renews::Never,
+        writes: Writes::Both,
+        outside: crate::writes::Outside::Nothing,
+        destructive: true,
+        open_world: false,
+        coordinates: true,
+        summary: "turns a proposed ADR or spec down for good, with a mandatory --reason; one tag at refs/ank/reject/<id>, signed where the repository signs; commits nothing, on any branch",
+        subcommands: &[],
+        kinds: &[],
+        min_positionals: 1,
+        max_positionals: 1,
+        positional_help: "<id>",
+        flags: &[flag("--reason")],
+        refuses: &[
+            refuses(
+                ExitCode::Generic,
+                "no --reason: a proposal turned down with nothing said is one nobody can learn from",
+            ),
+            refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
+            UNPARSEABLE_CALL,
+            ENTITY_MOVED,
+            refuses(
+                ExitCode::Generic,
+                "the id names a task or a log entry: only an ADR or a spec is proposed",
+            ),
+            refuses(
+                ExitCode::Prerequisite,
+                "the document is not proposed: an accepted, superseded or rejected one is past the point a proposal is turned down",
+            ),
+            refuses(
+                ExitCode::Prerequisite,
+                "ratify.require_signature is true and git names no key to sign with, or one signers: does not declare or has retired: the key named, and nothing is written",
+            ),
+            refuses(
+                ExitCode::Environment,
+                "the tag or the ref could not be written, or the push of refs/ank/reject/<id> did not reach the remote; nothing is kept",
+            ),
+        ],
+        notes: &[
+            "it is a human act on the terms of accept: a role that may not accept may not reject",
+            "the reason is a log entry of the document, rejected: <reason>; the document stays readable, binds nobody and leaves the review queue",
+            "a successor whose supersedes names a rejected document is ratified by accept and marks nothing superseded",
+            PUSH_FAILS,
+        ],
+        refuses_globals: &[],
+        output: &[one(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("tag", Type::Str)])],
         owner_task: None,
     },
     CommandSpec {
@@ -2423,11 +2517,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         // The command a folded signal names (ADR-df1035934387): a flag on the
-        // verb that folded, and no new surface (ADR-376bed7fa39a). Long form
+        // verb that folded, and no new surface (ADR-89c1e7146fe5). Long form
         // only: §4 gives `-k` to nothing.
-        // --peers is the fourth verb ADR-376bed7fa39a gives the flag to.
+        // --peers is the fourth verb ADR-89c1e7146fe5 gives the flag to.
         // --all is the listing before ADR-61c273118d97, and adds no surface
-        // beyond a switch on the verb that hides (ADR-376bed7fa39a).
+        // beyond a switch on the verb that hides (ADR-89c1e7146fe5).
         // --strict is ADR-55460a57353a's one-off gate: every signal a fault
         // for the run, and nothing written.
         flags: &[
@@ -2713,7 +2807,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     // After `skills` and before `update`, which is §4's order, and in their
     // group for their reason: what it installs is this binary, into the agent's
-    // own configuration, before any corpus is involved (ADR-376bed7fa39a).
+    // own configuration, before any corpus is involved (ADR-89c1e7146fe5).
     CommandSpec {
         name: "hooks",
         group: "set up a repository",
@@ -2728,21 +2822,26 @@ pub const COMMANDS: &[CommandSpec] = &[
         open_world: false,
         // It resolves no corpus to install or remove, and asks git nothing.
         coordinates: false,
-        summary: "installs into an agent harness's user-level settings the entries that call ank hooks run at its events, removes exactly them, and runs them",
-        subcommands: &["install", "remove", "run"],
+        summary: "installs into an agent harness's user-level settings the entries that call ank hooks run at its events, removes exactly them, runs them, and says which are installed and which guard levels are in force",
+        subcommands: &["install", "remove", "run", "status"],
         kinds: &[],
-        min_positionals: 1,
+        // `status` names no agent: it answers for every one.
+        min_positionals: 0,
         max_positionals: 2,
-        positional_help: "<agent> [<event>]",
+        positional_help: "[<agent>] [<event>]",
         flags: &[],
         refuses: &[
             refuses(
                 ExitCode::Generic,
-                "an agent other than claude, the only one this version installs for",
+                "install or remove without an agent, or naming one this version does not install for: claude is the one it installs for, and generic is wired by hand",
             ),
             refuses(
                 ExitCode::Generic,
                 "install or remove with an event, which they take none of: they write every event's entry",
+            ),
+            refuses(
+                ExitCode::Generic,
+                "status with an argument: it answers for every agent install knows",
             ),
             refuses(
                 ExitCode::Generic,
@@ -2759,14 +2858,19 @@ pub const COMMANDS: &[CommandSpec] = &[
             UNPARSEABLE_CALL,
         ],
         notes: &[
+            "the agents: claude, which install and remove write the settings of, and generic, the hook protocol itself, which any harness wires by hand to ank hooks run generic <event> as docs/integrating.md shows",
             "claude's file is settings.json in CLAUDE_CONFIG_DIR, or in .claude under the home directory when it is unset or empty",
             "install adds one SessionStart entry running <this binary> hooks run claude session-start and one PreToolUse entry running <this binary> hooks run claude pre-tool-use, by the absolute path of the binary that installed them; no script file is written",
             "install changes no byte it did not add: a second install leaves the file byte-identical, and an entry naming another path to ank is replaced",
             "remove takes out exactly the entries install wrote, and gives the file back byte-identical to what the first install found",
             "run is silent and exits 0 outside a corpus, and an error of its own lets the tool call through rather than blocking the harness",
+            "status lists every agent install knows, whether its entries are installed, the binary they call and whether it is this one, then guard.corpus and guard.edit as the corpus declares them and as in force after ANK_GUARD_CORPUS and ANK_GUARD_EDIT; it writes nothing",
         ],
         refuses_globals: &[],
-        output: &[one(HOOKS_OUT)],
+        output: &[
+            when("installing or removing, `ank hooks install|remove <agent>`", HOOKS_OUT),
+            when("reading, `ank hooks status`", HOOKS_STATUS_OUT),
+        ],
         owner_task: None,
     },
     // After `skills` and before `help`, which is §4's order, and in their group

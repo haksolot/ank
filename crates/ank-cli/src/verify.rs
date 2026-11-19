@@ -135,7 +135,55 @@ pub fn definition_hash(v: &Verifier) -> String {
             put(&mut h, g);
         }
     }
+    // The keys of ADR-ebe85b3aa79d, each appended only when declared, for the
+    // reason `inputs` is: a verifier declaring none of them keeps the hash
+    // every run recorded before they existed.
+    if !v.vars.is_empty() {
+        h.update(b"\0vars");
+        for (name, value) in &v.vars {
+            put(&mut h, name);
+            put(&mut h, value);
+        }
+    }
+    if let Some(names) = &v.inherit_env {
+        h.update(b"\0inherit_env");
+        if names.is_empty() {
+            h.update(b"\0false");
+        } else {
+            let names: std::collections::BTreeSet<&str> =
+                names.iter().map(String::as_str).collect();
+            for n in names {
+                put(&mut h, n);
+            }
+        }
+    }
+    if let Some(cwd) = &v.cwd {
+        h.update(b"\0cwd");
+        put(&mut h, cwd);
+    }
     hex::encode(h.finalize())[..12].to_string()
+}
+
+/// What a run is told about why it runs (ADR-ebe85b3aa79d): the task it
+/// proves and its scope, both absent under `ank verify`, and the merge-base
+/// with the default branch, absent when none was established.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunContext<'a> {
+    pub task: Option<&'a str>,
+    pub scope: &'a [String],
+    pub base: Option<&'a str>,
+}
+
+/// The merge-base of HEAD with the default branch `cfg` resolves to, the
+/// local branch first and the remote-tracking one second, as `verify`
+/// measures its changes from.
+pub fn default_base(worktree: &Path, cfg: &crate::config::Config) -> Option<String> {
+    let origin = crate::git::origin_head(worktree).ok().flatten();
+    let d = crate::git::resolve_default_branch(cfg.default_branch.as_deref(), origin.as_deref())
+        .ok()?;
+    [d.clone(), format!("refs/remotes/origin/{d}")]
+        .iter()
+        .find_map(|rev| crate::git::merge_base(worktree, rev, "HEAD").ok().flatten())
 }
 
 fn put(h: &mut Sha256, s: &str) {
@@ -405,10 +453,11 @@ pub fn record_outcomes(
             reference: o.reference(head, false),
         };
         if let Err(e) = record(dir, &run) {
-            eprintln!(
-                "{} the run of {} was not recorded for reuse: {e}",
-                style.on_stderr().yellow("warning:"),
-                o.name
+            crate::cli::warn(
+                style.on_stderr(),
+                &format!("the run of {} was not recorded for reuse: {e}", o.name),
+                &[],
+                None,
             );
         }
     }
@@ -577,9 +626,11 @@ pub fn run_verb(
     if base.is_none() && !inv.quiet() {
         // Selecting less than a change touches is the one direction this verb
         // must not err in, so the gap is said out loud.
-        eprintln!(
-            "{} no merge-base with the default branch: only the work tree's changes are selected from",
-            style.on_stderr().yellow("warning:"),
+        crate::cli::warn(
+            style.on_stderr(),
+            "no merge-base with the default branch: only the work tree's changes are selected from",
+            &[],
+            None,
         );
     }
 
@@ -615,6 +666,11 @@ pub fn run_verb(
         &selected,
         "config.yml",
         None,
+        RunContext {
+            task: None,
+            scope: &[],
+            base: base.as_deref(),
+        },
         cfg.verifier_jobs(),
     );
     match (&registry, &keys) {
@@ -622,9 +678,11 @@ pub fn run_verb(
             let ran: Vec<&RunKey> = keys.iter().collect();
             record_outcomes(dir, &ran, &outcomes, identity, &head, style);
         }
-        _ if !selected.is_empty() => eprintln!(
-            "{} no content key could be established: these runs are not recorded for reuse",
-            style.on_stderr().yellow("warning:"),
+        _ if !selected.is_empty() => crate::cli::warn(
+            style.on_stderr(),
+            "no content key could be established: these runs are not recorded for reuse",
+            &[],
+            None,
         ),
         _ => {}
     }
@@ -748,7 +806,10 @@ fn on_path(name: &str) -> Option<PathBuf> {
 /// that is waiting for it to exit, and a test suite is exactly the kind of
 /// command that prints a lot.
 pub fn run(cwd: &Path, name: &str, v: &Verifier) -> Result<Outcome> {
-    Ok(run_until(cwd, name, v, None, &|| false)?.expect("a run nothing stops is never cancelled"))
+    Ok(
+        run_until(cwd, name, v, RunContext::default(), None, &|| false)?
+            .expect("a run nothing stops is never cancelled"),
+    )
 }
 
 /// [`run`], polling `stop` while the verifier runs: once it answers true the
@@ -763,13 +824,32 @@ pub fn run(cwd: &Path, name: &str, v: &Verifier) -> Result<Outcome> {
 /// previous failure left there, and what a passing run removes; `None` keeps
 /// nothing. A cancelled run touches neither: it has no answer.
 pub fn run_until(
-    cwd: &Path,
+    root: &Path,
     name: &str,
     v: &Verifier,
+    ctx: RunContext,
     keep: Option<&Path>,
     stop: &dyn Fn() -> bool,
 ) -> Result<Option<Outcome>> {
     let sh = find_sh()?;
+    // `cwd` is judged again where it is used: config.yml can arrive by a merge
+    // naming a directory this checkout does not hold, and that is the
+    // environment to repair, never the agent's code failing.
+    let cwd = match &v.cwd {
+        None => root.to_path_buf(),
+        Some(dir) => {
+            if let Some(why) = crate::config::cwd_problem(root, dir) {
+                return Err(CliError::new(
+                    ExitCode::Environment,
+                    format!("verifier '{name}' cannot start: verifiers.{name}.cwd '{dir}' {why}"),
+                )
+                .with_hint(format!(
+                    "ank config verifiers.{name}.cwd <a directory under the repository root>"
+                )));
+            }
+            root.join(dir)
+        }
+    };
     let out_path = std::env::temp_dir().join(format!(
         "ank-verify-{}-{}.out",
         std::process::id(),
@@ -795,8 +875,28 @@ pub fn run_until(
     // shell alone leaves `b` running with nobody waiting for it.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    // What of the caller reaches the run, then what the verifier fixes, then
+    // what ank tells it, each overriding the one before (ADR-ebe85b3aa79d).
+    if let Some(names) = &v.inherit_env {
+        command.env_clear();
+        for n in names {
+            if let Some(value) = std::env::var_os(n) {
+                command.env(n, value);
+            }
+        }
+    }
+    command.envs(&v.vars);
+    let scope = ctx.scope.join("\n");
+    for (var, value) in [
+        (ank_contract::env::ANK_TASK, ctx.task.unwrap_or("")),
+        (ank_contract::env::ANK_VERIFIER, name),
+        (ank_contract::env::ANK_SCOPE, scope.as_str()),
+        (ank_contract::env::ANK_BASE, ctx.base.unwrap_or("")),
+    ] {
+        command.env(var, value);
+    }
     let mut child = command
-        .current_dir(cwd)
+        .current_dir(&cwd)
         .arg("-c")
         .arg(&v.run)
         .stdin(Stdio::null())
@@ -875,7 +975,12 @@ pub fn run_until(
                 Ok(()) => kept = Some(path.to_path_buf()),
                 // The verdict stands without the file: a code 5 is still the
                 // answer, and the tail printed below still says why.
-                Err(e) => eprintln!("warning: cannot keep the output at {}: {e}", path.display()),
+                Err(e) => crate::cli::warn(
+                    crate::style::PLAIN,
+                    &format!("cannot keep the output at {}: {e}", path.display()),
+                    &[],
+                    Some(&path.display().to_string()),
+                ),
             }
         }
     }
@@ -1041,6 +1146,9 @@ mod tests {
             run: run.to_string(),
             timeout: Duration::from_secs(secs),
             inputs: None,
+            vars: Default::default(),
+            inherit_env: None,
+            cwd: None,
         }
     }
 
@@ -1137,6 +1245,48 @@ mod tests {
         )
         .unwrap();
         assert!(out.ok, "code {:?}", out.code);
+    }
+
+    /// The hashes a verifier declaring none of vars, inherit_env and cwd
+    /// carried before those keys existed (ADR-ebe85b3aa79d): pinned from the
+    /// binary that predates them, so that every run already recorded stays
+    /// reusable after an upgrade.
+    #[test]
+    fn a_verifier_declaring_none_of_the_new_keys_keeps_its_hash() {
+        let plain = verifier("cargo test --workspace", 600);
+        let mut with_inputs = verifier("cargo test --workspace", 600);
+        with_inputs.inputs = Some(vec!["src/**".into(), "Cargo.toml".into()]);
+        assert_eq!(definition_hash(&plain), "e6e4f5c89dd4");
+        assert_eq!(definition_hash(&with_inputs), "359ca72ef7f7");
+    }
+
+    #[test]
+    fn vars_inherit_env_and_cwd_each_move_the_hash_and_order_does_not() {
+        let base = verifier("cargo test", 600);
+        let h = definition_hash(&base);
+        let mut vars = base.clone();
+        vars.vars.insert("FOO".into(), "bar".into());
+        let mut other = base.clone();
+        other.vars.insert("FOO".into(), "baz".into());
+        let mut listed = base.clone();
+        listed.inherit_env = Some(vec!["A".into(), "B".into()]);
+        let mut reordered = base.clone();
+        reordered.inherit_env = Some(vec!["B".into(), "A".into()]);
+        let mut none = base.clone();
+        none.inherit_env = Some(vec![]);
+        let mut cwd = base.clone();
+        cwd.cwd = Some("sub".into());
+        for (what, v) in [
+            ("vars", &vars),
+            ("inherit_env", &listed),
+            ("false", &none),
+            ("cwd", &cwd),
+        ] {
+            assert_ne!(definition_hash(v), h, "{what} did not move the hash");
+        }
+        assert_ne!(definition_hash(&vars), definition_hash(&other));
+        assert_ne!(definition_hash(&listed), definition_hash(&none));
+        assert_eq!(definition_hash(&listed), definition_hash(&reordered));
     }
 
     #[test]

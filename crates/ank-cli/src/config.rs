@@ -122,6 +122,17 @@ struct ConfigFile {
     /// `check:`, the repository's policy over `check` (ADR-55460a57353a).
     #[serde(default)]
     check: CheckFile,
+    /// `ratify:`, what a ratification must carry (ADR-2e777475c4de).
+    #[serde(default)]
+    ratify: RatifyFile,
+}
+
+/// `ratify:` as written.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RatifyFile {
+    #[serde(default)]
+    require_signature: Option<bool>,
 }
 
 /// `check:` as written. Each severity is read as whatever YAML resolved it to
@@ -496,9 +507,21 @@ struct VerifierFile {
     /// input; an empty list is refused, because it would say nothing can.
     #[serde(default)]
     inputs: Option<Vec<String>>,
+    /// Names to fixed string values set for every run (ADR-ebe85b3aa79d).
+    /// Called `vars` and not `env`, which stays free for an executor.
+    #[serde(default)]
+    vars: Option<BTreeMap<String, String>>,
+    /// `false`, or the names of the caller's environment a run receives;
+    /// absent, all of it, as before the key existed (ADR-ebe85b3aa79d). Read
+    /// as a value because it is two types, and each is judged below.
+    #[serde(default)]
+    inherit_env: Option<serde_yaml::Value>,
+    /// The directory a run starts in, relative to the repository root.
+    #[serde(default)]
+    cwd: Option<String>,
     // No `env`: ADR-7224dea611c1 withdrew it until an executor exists to
     // honour it, and `deny_unknown_fields` refuses it by name like any key
-    // the parser does not know.
+    // the parser does not know. ADR-ebe85b3aa79d keeps it refused.
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -519,6 +542,59 @@ pub struct Verifier {
     pub timeout: Duration,
     /// As declared; `None` is the whole tree, never an empty list.
     pub inputs: Option<Vec<String>>,
+    /// `vars` (ADR-ebe85b3aa79d), empty when the verifier declares none.
+    pub vars: BTreeMap<String, String>,
+    /// `inherit_env`: `None` passes the caller's whole environment, an empty
+    /// list is `false` and passes nothing, PATH included. The parser refuses
+    /// a written `[]`, so the two never share a spelling.
+    pub inherit_env: Option<Vec<String>>,
+    /// `cwd`, relative to the repository root, as written.
+    pub cwd: Option<String>,
+}
+
+/// Why `cwd` names no directory a run may start in, judged on its text alone:
+/// empty, absolute, or climbing out of the root (ADR-ebe85b3aa79d).
+pub fn cwd_shape_problem(cwd: &str) -> Option<&'static str> {
+    let t = cwd.trim();
+    if t.is_empty() {
+        return Some("names no directory");
+    }
+    let b = t.as_bytes();
+    let drive = b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic();
+    if t.starts_with('/') || t.starts_with('\\') || drive {
+        return Some("is absolute, and a run starts inside the repository root");
+    }
+    let mut depth: i64 = 0;
+    for part in t.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                depth -= 1;
+                if depth < 0 {
+                    return Some("leaves the repository root");
+                }
+            }
+            _ => depth += 1,
+        }
+    }
+    None
+}
+
+/// Why `cwd` names no directory a run may start in under `root`: its shape,
+/// or a directory that is absent or, once links are resolved, outside it.
+pub fn cwd_problem(root: &Path, cwd: &str) -> Option<String> {
+    if let Some(why) = cwd_shape_problem(cwd) {
+        return Some(why.to_string());
+    }
+    let dir = root.join(cwd.trim());
+    if !dir.is_dir() {
+        return Some(format!("names {}, which is no directory", dir.display()));
+    }
+    match (dir.canonicalize(), root.canonicalize()) {
+        (Ok(d), Ok(r)) if d.starts_with(&r) => None,
+        (Ok(_), Ok(_)) => Some("leaves the repository root through a link".to_string()),
+        _ => Some(format!("names {}, which cannot be resolved", dir.display())),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -578,6 +654,10 @@ pub struct Config {
     /// `check.severity`, kind word to value as written (ADR-55460a57353a);
     /// `check` applies the ones it can and faults the rest.
     pub severity: BTreeMap<String, String>,
+    /// `ratify.require_signature` (ADR-2e777475c4de), `false` when absent:
+    /// `accept` refuses to ratify without a declared key at hand, and `check`
+    /// judges every ratification even where `signers:` declares nothing.
+    pub require_signature: bool,
 }
 
 /// Why an act is forbidden to an identity (ADR-ddbe024ca7f2): the role it
@@ -638,12 +718,17 @@ impl Config {
     /// is done; the line is so that it does not go unnoticed.
     pub fn warn_forbidden(&self, identity: &str, act: &str) {
         if let Some(f) = self.forbidding(identity, act) {
-            eprintln!(
-                "warning: role '{}' of {identity} forbids {act} ({}); performed, \
-                 since permissions.enforce {} warns and never refuses at the verb",
-                f.role,
-                f.entry,
-                self.enforce.as_str()
+            crate::cli::warn(
+                crate::style::PLAIN,
+                &format!(
+                    "role '{}' of {identity} forbids {act} ({}); performed, \
+                     since permissions.enforce {} warns and never refuses at the verb",
+                    f.role,
+                    f.entry,
+                    self.enforce.as_str()
+                ),
+                &[],
+                None,
             );
         }
     }
@@ -847,6 +932,9 @@ pub fn read(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
         .ok_or_else(|| in_file(not_an_enforce_level(&raw.permissions.enforce)))?;
     let mut verifiers = BTreeMap::new();
     let mut default_verifiers = Vec::new();
+    // What a verifier declares that no run may be given, gathered beside the
+    // bounds and reported with them: `check` faults it, every verb refuses it.
+    let mut refused: Vec<String> = Vec::new();
     for (name, value) in raw.verifiers {
         // A name is what `--verify` types and what a task's `verify:` list
         // holds, so a key YAML resolved to something else -- `on:`, `1:` --
@@ -899,15 +987,81 @@ pub fn read(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
                 }
             }
         }
+        let vars = v.vars.unwrap_or_default();
+        for var in vars.keys() {
+            if var.is_empty() || var.contains(['=', '\0']) {
+                return Err(CliError::new(
+                    ExitCode::Generic,
+                    format!("{}: '{var}' is no variable name", field("vars")),
+                ));
+            }
+            // ank sets these itself, and a verifier declaring one would be
+            // told something other than what it proves. Case-blind, because
+            // Windows reads the environment that way.
+            if var.to_ascii_uppercase().starts_with("ANK_") {
+                refused.push(format!(
+                    "{}: verifiers.{name}.vars.{var}: ank sets the ANK_ variables of a run \
+                     itself, and a verifier may declare none of them",
+                    path.display()
+                ));
+            }
+        }
+        let inherit_env = match v.inherit_env {
+            None => None,
+            Some(serde_yaml::Value::Bool(false)) => Some(Vec::new()),
+            Some(serde_yaml::Value::Sequence(items)) if !items.is_empty() => {
+                let mut names = Vec::new();
+                for item in items {
+                    match item {
+                        serde_yaml::Value::String(n)
+                            if !n.trim().is_empty() && !n.contains(['=', '\0']) =>
+                        {
+                            names.push(n)
+                        }
+                        _ => {
+                            return Err(CliError::new(
+                                ExitCode::Generic,
+                                format!("{}: every entry is a variable name", field("inherit_env")),
+                            ))
+                        }
+                    }
+                }
+                Some(names)
+            }
+            Some(_) => {
+                return Err(CliError::new(
+                    ExitCode::Generic,
+                    format!(
+                        "{}: false, or a non-empty list of names; \
+                         leave the key out and the whole environment passes",
+                        field("inherit_env")
+                    ),
+                )
+                .with_hint(format!("ank config verifiers.{name}.inherit_env '[PATH]'")))
+            }
+        };
+        if let Some(cwd) = &v.cwd {
+            if let Some(why) = cwd_shape_problem(cwd) {
+                refused.push(format!(
+                    "{}: verifiers.{name}.cwd: '{cwd}' {why}",
+                    path.display()
+                ));
+            }
+        }
         verifiers.insert(
             name,
             Verifier {
                 run: v.run,
                 timeout,
                 inputs: v.inputs,
+                vars,
+                inherit_env,
+                cwd: v.cwd.map(|c| c.trim().to_string()),
             },
         );
     }
+
+    bounds.extend(refused);
 
     // A key present but blank names no branch: it is an absence written out,
     // not a branch called "".
@@ -942,6 +1096,7 @@ pub fn read(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
         enforce,
         reuse_max_age,
         signers,
+        require_signature: raw.ratify.require_signature.unwrap_or(false),
         severity: raw
             .check
             .severity
@@ -1350,6 +1505,13 @@ enum Key {
     /// the role vocabulary, typed and read back as one flow sequence the way
     /// [`Key::Inputs`] is. Writing one declares the role when it is absent.
     RoleList { role: String, field: &'static str },
+    /// `verifiers.<name>.vars.<NAME>` (ADR-ebe85b3aa79d): one string under the
+    /// verifier's `vars` mapping, written quoted wherever YAML would read it as
+    /// anything else.
+    Var { verifier: String, var: String },
+    /// `verifiers.<name>.inherit_env` (ADR-ebe85b3aa79d): `false`, or a list
+    /// of names typed and read back as one flow sequence, as `inputs` is.
+    InheritEnv { verifier: String },
 }
 
 /// The mappings a [`Key::Severity`] sits under, outermost first.
@@ -1564,6 +1726,17 @@ fn resolve_key(path: &str) -> Result<Key> {
             format!("'{path}': who may ratify is written by ank signers, not by ank config"),
         )
         .with_hint("ank help signers")),
+        ["ratify", "require_signature"] => Ok(Key::Under {
+            map: "ratify",
+            name: "require_signature".to_string(),
+            verbatim: true,
+            default: Some("false".to_string()),
+        }),
+        ["ratify", ..] => Err(CliError::new(
+            ExitCode::Generic,
+            format!("'{path}': ratify holds one key, require_signature"),
+        )
+        .with_hint("ank config ratify.require_signature true")),
         ["check", "severity", kind] => Ok(Key::Severity {
             kind: (*kind).to_string(),
         }),
@@ -1620,6 +1793,24 @@ fn resolve_key(path: &str) -> Result<Key> {
         ["verifiers", name, "inputs"] => Ok(Key::Inputs {
             verifier: (*name).to_string(),
         }),
+        ["verifiers", name, "inherit_env"] => Ok(Key::InheritEnv {
+            verifier: (*name).to_string(),
+        }),
+        ["verifiers", name, "cwd"] => Ok(Key::Field {
+            verifier: (*name).to_string(),
+            field: "cwd",
+            verbatim: false,
+            default: None,
+        }),
+        ["verifiers", name, "vars", var] => Ok(Key::Var {
+            verifier: (*name).to_string(),
+            var: (*var).to_string(),
+        }),
+        ["verifiers", _, "vars"] => Err(CliError::new(
+            ExitCode::Generic,
+            format!("'{path}' is a mapping: address one variable by name"),
+        )
+        .with_hint("ank config verifiers.<name>.vars.<NAME> <value>")),
         // Withdrawn by ADR-7224dea611c1 and refused by name, ahead of the
         // dotted-name arm below, which would blame the verifier's name for a
         // key the parser simply does not know.
@@ -1629,7 +1820,7 @@ fn resolve_key(path: &str) -> Result<Key> {
             format!("unknown verifier field '{other}'"),
         )
         .with_hint(
-            "ank config verifiers.<name>.run   or   .timeout   or   .default   or   .inputs",
+            "ank config verifiers.<name>.run   or   .timeout   or   .default   or   .inputs   or   .vars.<NAME>   or   .inherit_env   or   .cwd",
         )),
         ["verifiers", _, _, _, ..] => Err(CliError::new(
             ExitCode::Generic,
@@ -2103,6 +2294,8 @@ fn json_type(key: &Key) -> &'static str {
         Key::Under { map, name, .. } => format!("{map}.{name}"),
         Key::Field { field, .. } => format!("verifiers.<name>.{field}"),
         Key::Inputs { .. } => "verifiers.<name>.inputs".to_string(),
+        Key::Var { .. } => "verifiers.<name>.vars.<NAME>".to_string(),
+        Key::InheritEnv { .. } => return "list",
         Key::Severity { .. } => "check.severity.<kind>".to_string(),
         Key::Block { .. } => return "string",
     };
@@ -2124,6 +2317,22 @@ fn declared_under(lines: &[Line], map: &str) -> Vec<String> {
     let Some((_, block)) = named_block(lines, map) else {
         return Vec::new();
     };
+    let Some(child) = block.indent else {
+        return Vec::new();
+    };
+    lines[block.range]
+        .iter()
+        .filter(|l| content_indent(&l.text) == Some(child))
+        .filter_map(|l| key_of(&l.text).map(|(k, _)| k))
+        .collect()
+}
+
+/// The names under `verifiers.<verifier>.vars`, in file order.
+fn declared_vars(lines: &[Line], verifier: &str) -> Vec<String> {
+    let Some((j, indent)) = locate_nested(lines, verifier, &["vars".to_string()]) else {
+        return Vec::new();
+    };
+    let block = block_under(lines, j, indent);
     let Some(child) = block.indent else {
         return Vec::new();
     };
@@ -2161,7 +2370,19 @@ fn listed_keys(lines: &[Line]) -> Vec<String> {
             // stay together rather than interleave with another's.
             if fields.first() == Some(&field) {
                 for v in declared_under(lines, "verifiers") {
-                    keys.extend(fields.iter().map(|f| format!("verifiers.{v}.{f}")));
+                    for f in &fields {
+                        // One key per variable the verifier declares, and
+                        // none for a verifier declaring none.
+                        if *f == "vars.<NAME>" {
+                            keys.extend(
+                                declared_vars(lines, &v)
+                                    .into_iter()
+                                    .map(|n| format!("verifiers.{v}.vars.{n}")),
+                            );
+                        } else {
+                            keys.push(format!("verifiers.{v}.{f}"));
+                        }
+                    }
                 }
             }
         } else {
@@ -2231,6 +2452,13 @@ fn read_key(lines: &[Line], key: &Key) -> Result<Value> {
     match key {
         Key::Block { verifier } => Err(whole_block(verifier)),
         Key::Inputs { verifier } => read_inputs(lines, verifier),
+        Key::InheritEnv { verifier } => read_inherit_env(lines, verifier),
+        Key::Var { verifier, var } => {
+            match locate_nested(lines, verifier, &["vars".to_string(), var.clone()]) {
+                Some((j, _)) => scalar_at(&lines[j], &format!("verifiers.{verifier}.vars.{var}")),
+                None => Ok(Value::Unset),
+            }
+        }
         Key::RoleList { role, field } => read_role_list(lines, role, field),
         Key::Top { name, default, .. } => match find_key(lines, 0..lines.len(), 0, name) {
             Some(i) => scalar_at(&lines[i], name),
@@ -2290,6 +2518,14 @@ fn write_key(lines: &mut Vec<Line>, key: &Key, value: &str) -> Result<()> {
     match key {
         Key::Block { verifier } => Err(whole_block(verifier)),
         Key::Inputs { verifier } => write_inputs(lines, verifier, value),
+        Key::InheritEnv { verifier } => write_inherit_env(lines, verifier, value),
+        Key::Var { verifier, var } => write_nested(
+            lines,
+            verifier,
+            &["vars".to_string(), var.clone()],
+            false,
+            value,
+        ),
         Key::RoleList { role, field } => write_role_list(lines, role, field, value),
         Key::Top { name, verbatim, .. } => match find_key(lines, 0..lines.len(), 0, name) {
             Some(i) => {
@@ -2846,6 +3082,62 @@ fn write_inputs(lines: &mut Vec<Line>, verifier: &str, value: &str) -> Result<()
     write_nested(lines, verifier, &path, true, &render_inputs(&globs))
 }
 
+fn not_inherit_env(name: &str) -> CliError {
+    CliError::new(
+        ExitCode::Generic,
+        format!("'{name}' takes false, or a list of names written as one YAML flow sequence"),
+    )
+    .with_hint(format!(
+        "ank config {name} '[PATH, HOME]'   or   ank config {name} false"
+    ))
+}
+
+/// `inherit_env` as the file holds it: `false`, or its names in the form
+/// [`render_inputs`] writes.
+fn read_inherit_env(lines: &[Line], verifier: &str) -> Result<Value> {
+    let path = ["inherit_env".to_string()];
+    let name = dotted(verifier, &path);
+    let Some((j, indent)) = locate_nested(lines, verifier, &path) else {
+        return Ok(Value::Unset);
+    };
+    let (_, after) = key_of(&lines[j].text).expect("found by its key");
+    let span = value_span(&lines[j].text, after);
+    let block = block_under(lines, j, indent);
+    let mut text = format!("v: {}\n", &lines[j].text[span.start..]);
+    for line in &lines[block.range] {
+        text.push_str(&line.text);
+        text.push('\n');
+    }
+    let parsed: BTreeMap<String, serde_yaml::Value> =
+        serde_yaml::from_str(&text).map_err(|_| not_inherit_env(&name))?;
+    match &parsed["v"] {
+        serde_yaml::Value::Bool(false) => Ok(Value::Set("false".to_string())),
+        other => {
+            let names: Vec<String> =
+                serde_yaml::from_value(other.clone()).map_err(|_| not_inherit_env(&name))?;
+            Ok(Value::Set(render_inputs(&names)))
+        }
+    }
+}
+
+fn write_inherit_env(lines: &mut Vec<Line>, verifier: &str, value: &str) -> Result<()> {
+    let path = ["inherit_env".to_string()];
+    let rendered = if value.trim() == "false" {
+        "false".to_string()
+    } else {
+        let names: Vec<String> =
+            serde_yaml::from_str(value).map_err(|_| not_inherit_env(&dotted(verifier, &path)))?;
+        render_inputs(&names)
+    };
+    if let Some((j, indent)) = locate_nested(lines, verifier, &path) {
+        let block = block_under(lines, j, indent);
+        if block.indent.is_some() {
+            remove_lines(lines, block.range);
+        }
+    }
+    write_nested(lines, verifier, &path, true, &rendered)
+}
+
 /// A key as a line declares it: plain where [`key_of`] reads it back as
 /// itself, double-quoted otherwise. An identity is any string `ANK_AGENT`
 /// held, and one carrying a colon written plain would be read as a shorter key.
@@ -3064,6 +3356,14 @@ fn unset_key(lines: &mut Vec<Line>, key: &Key) -> Result<()> {
     match key {
         Key::Inputs { verifier } => {
             unset_nested(lines, verifier, &["inputs".to_string()]);
+            Ok(())
+        }
+        Key::InheritEnv { verifier } => {
+            unset_nested(lines, verifier, &["inherit_env".to_string()]);
+            Ok(())
+        }
+        Key::Var { verifier, var } => {
+            unset_nested(lines, verifier, &["vars".to_string(), var.clone()]);
             Ok(())
         }
         Key::Severity { kind } => {
@@ -3654,6 +3954,29 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
         }
     }
 
+    // A directory a run would start in is judged against the work tree it
+    // would start under, which the parser alone does not know
+    // (ADR-ebe85b3aa79d): absent, or outside the root once links resolve.
+    if let (
+        Key::Field {
+            verifier,
+            field: "cwd",
+            ..
+        },
+        Some(v),
+    ) = (&key, value)
+    {
+        if let Some(why) = cwd_problem(&repo.worktree, v) {
+            return Err(CliError::new(
+                ExitCode::Generic,
+                format!("verifiers.{verifier}.cwd: '{v}' {why}"),
+            )
+            .with_hint(format!(
+                "ank config verifiers.{verifier}.cwd <a directory under the repository root>"
+            )));
+        }
+    }
+
     let text = std::fs::read_to_string(&path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             CliError::new(ExitCode::Generic, format!("{} not found", path.display()))
@@ -3663,6 +3986,24 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
         }
     })?;
     let lines = split_lines(&text);
+
+    // A regime nobody can satisfy is not written (ADR-2e777475c4de): requiring
+    // a signature by a declared key while no key is declared would refuse
+    // every `accept` that follows. Read off the file as it stands, through the
+    // reader every verb uses, so a block `ank signers` wrote is what counts.
+    if let (Key::Under { map: "ratify", .. }, Some(v)) = (&key, value) {
+        if v.trim() == "true" && read(&text, &path).is_ok_and(|(c, _)| c.signers.is_empty()) {
+            return Err(CliError::new(
+                ExitCode::Prerequisite,
+                format!(
+                    "{raw_key} true requires a signature by a key signers: declares, and \
+                     signers: in {} declares no key",
+                    path.display()
+                ),
+            )
+            .with_hint("ank signers add, then ank config ratify.require_signature true"));
+        }
+    }
 
     // An identity names a role the file declares, or it names nothing and
     // the mapping would read as a rule (ADR-ddbe024ca7f2).
@@ -4031,7 +4372,7 @@ fn key_from_flag(value: &str) -> Result<String> {
 }
 
 /// The key git signs with, in the form `signers:` declares it.
-fn key_from_git(repo: &crate::repo::Repo) -> Result<String> {
+pub(crate) fn key_from_git(repo: &crate::repo::Repo) -> Result<String> {
     let missing = |why: String| {
         CliError::new(ExitCode::Prerequisite, why)
             .with_hint("ank signers add --key <file> (or: git config user.signingkey <key>)")
@@ -4972,6 +5313,67 @@ identities: {}
 
     /// The surgery moves nothing it was not asked to (ADR-e64dfaafd578):
     /// `inputs` written and removed again gives the file back byte for byte.
+    /// `vars`, `inherit_env` and `cwd` written and removed again give the file
+    /// back byte for byte (ADR-ebe85b3aa79d), and parse into the verifier.
+    #[test]
+    fn vars_inherit_env_and_cwd_are_written_and_removed_surgically() {
+        let mut text = FIXTURE.to_string();
+        for (key, value) in [
+            ("verifiers.cargo-test.vars.FOO", "bar"),
+            ("verifiers.cargo-test.vars.N", "1"),
+            ("verifiers.cargo-test.inherit_env", "[ONE, TWO]"),
+            ("verifiers.cargo-test.cwd", "sub"),
+        ] {
+            text = edit(&text, key, Some(value)).unwrap();
+        }
+        let cfg = parse(&text, p()).unwrap();
+        let v = &cfg.verifiers["cargo-test"];
+        assert_eq!(v.vars["FOO"], "bar");
+        assert_eq!(
+            v.vars["N"], "1",
+            "a number is written as the string it was typed"
+        );
+        assert_eq!(
+            v.inherit_env.as_deref(),
+            Some(&["ONE".to_string(), "TWO".to_string()][..])
+        );
+        assert_eq!(v.cwd.as_deref(), Some("sub"));
+        assert_eq!(
+            read(&text, "verifiers.cargo-test.inherit_env").unwrap(),
+            Value::Set("[\"ONE\", \"TWO\"]".to_string())
+        );
+        let off = edit(&text, "verifiers.cargo-test.inherit_env", Some("false")).unwrap();
+        assert_eq!(
+            parse(&off, p()).unwrap().verifiers["cargo-test"].inherit_env,
+            Some(Vec::new())
+        );
+        assert_eq!(
+            read(&off, "verifiers.cargo-test.inherit_env").unwrap(),
+            Value::Set("false".to_string())
+        );
+        for key in [
+            "verifiers.cargo-test.cwd",
+            "verifiers.cargo-test.inherit_env",
+            "verifiers.cargo-test.vars.N",
+            "verifiers.cargo-test.vars.FOO",
+        ] {
+            text = edit(&text, key, None).unwrap();
+        }
+        assert_eq!(text, FIXTURE);
+
+        for (bad, why) in [
+            ("    inherit_env: []\n", "an empty list"),
+            ("    inherit_env: true\n", "true"),
+            ("    cwd: /abs\n", "an absolute cwd"),
+            ("    cwd: a/../..\n", "a cwd leaving the root"),
+            ("    vars:\n      ank_task: x\n", "an ANK_ var"),
+        ] {
+            let t = FIXTURE.replace("    timeout: 30m\n", &format!("    timeout: 30m\n{bad}"));
+            assert_ne!(t, FIXTURE);
+            assert!(parse(&t, p()).is_err(), "{why} was accepted");
+        }
+    }
+
     #[test]
     fn inputs_are_written_and_removed_surgically() {
         let text = edit(
@@ -5603,6 +6005,8 @@ mod reference_table {
                 }
                 "verifiers" => {
                     for f in fields_of::<VerifierFile>() {
+                        // `vars` is a mapping, addressed one name at a time.
+                        let f = if f == "vars" { "vars.<NAME>" } else { f };
                         accepted.insert(format!("verifiers.<name>.{f}"));
                     }
                 }
@@ -5631,6 +6035,11 @@ mod reference_table {
                         .into_iter()
                         .map(|f| format!("guard.{f}")),
                 ),
+                "ratify" => accepted.extend(
+                    fields_of::<RatifyFile>()
+                        .into_iter()
+                        .map(|f| format!("ratify.{f}")),
+                ),
                 "check" => {
                     assert_eq!(fields_of::<CheckFile>(), vec!["severity"]);
                     accepted.insert("check.severity.<kind>".to_string());
@@ -5649,7 +6058,7 @@ mod reference_table {
             }
         }
         let table: BTreeSet<String> = KEYS.iter().map(|k| k.path.to_string()).collect();
-        assert_eq!(accepted.len(), 26, "{accepted:?}");
+        assert_eq!(accepted.len(), 30, "{accepted:?}");
         assert_eq!(table, accepted);
         // What `ank config` addresses is a subset of the table, never a key
         // of its own.

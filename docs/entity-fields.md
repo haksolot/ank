@@ -43,7 +43,7 @@ This build writes schema **4**, and reads schema **1** through **4**. A file dec
 | 4 | `title` | scalar | always emitted |  |  |
 | 5 | `created` | scalar | always emitted |  | ISO 8601, always UTC with the `Z` suffix |
 | 6 | `author` | scalar | omitted when absent |  | a typed actor; absent means the entity predates the field |
-| 7 | `status` | bare | always emitted | `proposed` \| `accepted` \| `superseded` |  |
+| 7 | `status` | bare | always emitted | `proposed` \| `accepted` \| `superseded` \| `rejected` |  |
 | 8 | `scope` | block sequence | always emitted |  | globs, never empty |
 | 9 | `constraint` | literal block | always emitted |  | binding on every scope it covers once accepted |
 | 10 | `see` | scalar | omitted when absent |  | reference code the constraint points at |
@@ -68,7 +68,7 @@ This build writes schema **4**, and reads schema **1** through **4**. A file dec
 | 4 | `title` | scalar | always emitted |  |  |
 | 5 | `created` | scalar | always emitted |  | ISO 8601, always UTC with the `Z` suffix |
 | 6 | `author` | scalar | omitted when absent |  | a typed actor; absent means the entity predates the field |
-| 7 | `status` | bare | always emitted | `proposed` \| `accepted` \| `superseded` |  |
+| 7 | `status` | bare | always emitted | `proposed` \| `accepted` \| `superseded` \| `rejected` |  |
 | 8 | `scope` | block sequence | always emitted |  | globs, never empty; what the document governs |
 | 9 | `references` | flow list | omitted when absent |  | entity ids |
 | 10 | `supersedes` | bare | omitted when absent |  | an entity id |

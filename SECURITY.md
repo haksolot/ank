@@ -11,13 +11,37 @@ This is a position, not an omission, and the rest of this file follows from it.
 Three consequences are worth naming out loud, because each one looks like a
 hole to anyone who assumed otherwise.
 
-**The roles in `.ank/config.yml` are advisory.** They declare intent where a
-reader can see it, and an unknown identity, including `$ANK_AGENT` being
-absent, falls back to the least-privileged role. What they never do is make
-the CLI refuse. A refusal derived from `$ANK_AGENT` would be a refusal the
-caller lifts by exporting a different string, and shipping that as a guarantee
-is worse than shipping no guarantee at all. Declaring yourself `human` in the
-config confers no authority; the signature is what carries it.
+**The roles in `.ank/config.yml` are read, and the CLI never refuses on
+one.** `permissions.enforce` sets how they apply, and an identity absent from
+`identities:`, including `$ANK_AGENT` being absent, gets the role `agent`:
+
+- **`off`**, or the key absent, applies roles to nothing: no verb warns and
+  `check` reports no act against them.
+- **`warn`**, which `ank init` writes, lets a verb performing an act the
+  identity's role forbids perform it, name on stderr the role and the entry
+  that forbid it, and exit as it would have. `check` reports each recorded act
+  of that kind (an accept, a close, a constraint edit, a new entity, a write to
+  the policy keys of `config.yml`) as a signal of kind `role`.
+- **`deny`** does all of that, and the harness hook refuses the call: `ank
+  hooks run <agent> pre-tool-use`, matched to the shell tool, refuses a shell
+  command that runs an ank verb the session's role forbids, naming the entry
+  and telling the agent the command is a human's to run. The refusal is the
+  hook's, outside the process it guards; the verb itself, run anywhere else,
+  still only warns.
+
+`ANK_PERMISSIONS_ENFORCE`, set by whoever launches the agent, may tighten the
+declared level and never loosen it. A refusal the CLI derived from `$ANK_AGENT`
+would be one the caller lifts by exporting a different string, which is why
+the only refusal sits in a hook the agent did not start. Declaring yourself
+`human` in the config confers no authority; the signature is what carries it.
+
+**`check.severity` can only raise.** `check.severity.<kind>: fault` makes
+`check` report every finding of a kind it reports as a signal by default as a
+fault, naming the repository as what raised it. No value lowers a kind: `ank
+config` refuses, and `check` faults on `config.yml`, a kind that is unknown,
+already a fault, or given any value but `fault`. A repository can make `check`
+stricter about itself and never quieter. `docs/check.md` lists the kinds that
+may be raised.
 
 **The CLI is a reference implementation, not a gatekeeper.** The format is the
 specification, so any tool can read and write `.ank/`. Immutability is
@@ -34,7 +58,8 @@ holds, and ank ships one for Claude Code.
 
 `ank hooks install claude` adds two entries to the user-level `settings.json`
 of the harness, both running the binary that installed them: one at session
-start, which serves `ank status`, and one before a file tool, which applies two
+start, which serves `ank status`, and one before a file or shell tool, which
+applies the permissions guard above to a shell call under `deny` and two file
 guards declared in `.ank/config.yml` and set with `ank config`:
 
 - **`guard.corpus`**, `deny` by default, refuses a `Read`, `Write`, `Edit`,
@@ -51,12 +76,16 @@ hook says so.
 
 What the guards do not refuse is as much a part of the model as what they do:
 
-- **A shell command.** The hook is matched to the file tools above and never
-  sees a `Bash` call, so `cat .ank/config.yml` or a redirect into a file no
-  claim covers goes through at every level.
+- **A shell command, except an ank verb under `deny`.** The file guards never
+  read a `Bash` call, so `cat .ank/config.yml` or a redirect into a file no
+  claim covers goes through at every level. The permissions guard reads only
+  the ank invocations a command line names directly: ank run through `sh -c`,
+  `xargs`, `$(...)`, an alias or a script is let through, and the verb still
+  warns when it runs.
 - **An identity.** "The identity" is `$ANK_AGENT`, which the launcher sets, so
   `guard.edit` measures an edit against the claims of whatever identity the
-  session was started with.
+  session was started with, and the permissions guard judges a shell call as
+  that identity, never as an `ANK_AGENT=...` prefix the command itself sets.
 - **Its own failure.** The hook fails open: outside a corpus it is silent, and a
   payload it cannot read or an error of its own lets the tool call through
   rather than blocking the harness.
@@ -87,6 +116,16 @@ tags existed is a signed commit with the subject `ratify <id>`; `check` still
 finds it by walking history, and `ank accept --reanchor` moves its anchor into
 a tag.
 
+**A repository may require the signature.** `ratify.require_signature: true` in
+`.ank/config.yml` makes `ank accept` refuse at 7, before it writes a ref or a
+file, when git names no signing key, when `signers:` does not declare the key
+git would sign with, or when that key's `valid_before` has passed; with a
+declared key it signs whatever `commit.gpgsign` says. `check` then faults an
+unsigned ratification, or one signed by a key `signers:` does not declare. `ank
+config` refuses to set it `true` while `signers:` declares no key. Absent or
+`false`, `accept` signs where the repository signs and writes an unsigned tag
+otherwise, the regime the rest of this section describes.
+
 **What the signature proves is access to an authorised key, not human intent.**
 An agent running on a developer machine whose git signing is configured and
 unlocked can produce a valid signed tag. The defence against that case is
@@ -95,12 +134,12 @@ passphrase or hardware touch-to-sign, distinct from the everyday commit key if
 needed. That limitation is consistent with section 1: drift, not an adversary.
 
 **With no signing configured at all, the hard line is gone and nothing replaces
-it.** Roles were already advisory, and the ratification anchor becomes a hash
-in an unsigned tag message anyone can write. `ank check` displays that rather than
-hiding it, and it distinguishes a fault from a signal: a signature present with
-no local public key is reported as *not verified, and not refused*, because a
-clone without the key is a correct repository on an incomplete machine. The
-rule underneath is the one to remember when reading any ank output: **a
+it.** Roles never made the CLI refuse, and the ratification anchor becomes a
+hash in an unsigned tag message anyone can write. `ank check` displays that
+rather than hiding it, and it distinguishes a fault from a signal: a signature
+present with no local public key is reported as *not verified, and not
+refused*, because a clone without the key is a correct repository on an
+incomplete machine. The rule underneath is the one to remember when reading any ank output: **a
 verification that degrades to success is not a verification**.
 
 ## 3. Verifiers run only what the repository accepted
@@ -210,7 +249,9 @@ actually reach for:
 
 **Out of scope**, because section 1 already answers it: an agent editing
 `.ank/` directly instead of going through the CLI; a falsified `$ANK_AGENT`; a
-role in `config.yml` not being enforced; a ratification signature produced on a
-machine whose signing key is unlocked; a shell command the `PreToolUse` hook
-never sees, or a machine where the hook is not installed. These are documented properties. If you think one of them should change,
-that is an ADR, not an advisory.
+verb that warns on a role and runs, a role nothing refuses under `off` or
+`warn`, or an ank call the `deny` hook does not read; a ratification signature
+produced on a machine whose signing key is unlocked; a shell command the
+`PreToolUse` hook never sees, or a machine where the hook is not installed.
+These are documented properties. If you think one of them should change, that
+is an ADR, not an advisory.

@@ -14850,7 +14850,7 @@ const NOT_A_PATH: [&str; 48] = [
     // and nothing about it comes off the command line (ADR-894d4bfbf9bd).
     "--since",
     // A switch: the peers it reads are the ones `config.yml` declares, and
-    // nothing about them comes off the command line (ADR-376bed7fa39a).
+    // nothing about them comes off the command line (ADR-89c1e7146fe5).
     "--peers",
     // A switch: every signal a fault for the run (ADR-55460a57353a).
     "--strict",
@@ -15674,8 +15674,17 @@ fn the_boundary_warning_never_reaches_standard_output() {
             stdout.trim().is_empty() || stdout.trim_start().starts_with('{'),
             "{args:?} left stdout unparseable: {stdout}"
         );
-        // It was still said, on the stream that carries it.
-        assert!(erred(&out).contains("warning:"), "{args:?} said nothing");
+        // It was still said, on the stream that carries it, and under
+        // `--json` as a warning document (ADR-4d9fb7375dc1).
+        let lead = format!(
+            "{{\"contract\":{},\"warning\":{{\"message\":\".ank/ resolved to ",
+            ank_contract::CONTRACT_VERSION
+        );
+        assert!(
+            erred(&out).lines().any(|l| l.starts_with(&lead)),
+            "{args:?} said nothing: {}",
+            erred(&out)
+        );
     }
 }
 
@@ -15858,7 +15867,15 @@ fn the_schema_warning_never_reaches_standard_output() {
             stdout.trim_start().starts_with('{'),
             "{args:?} left stdout unparseable: {stdout}"
         );
-        assert!(erred(&out).contains("warning:"), "{args:?} said nothing");
+        let lead = format!(
+            "{{\"contract\":{},\"warning\":{{\"message\":\"corpus at schema ",
+            ank_contract::CONTRACT_VERSION
+        );
+        assert!(
+            erred(&out).lines().any(|l| l.starts_with(&lead)),
+            "{args:?} said nothing: {}",
+            erred(&out)
+        );
     }
 }
 
@@ -21591,8 +21608,11 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
     // `tests/hooks_install.rs`: an install, the second install that changes
     // nothing, and the remove; and thirty-eight since TASK-69006ffa955e, which
     // gave a failing `done` one, pinned in `tests/done_output.rs`, and
-    // thirty-nine since TASK-fa89fb00791f, which gave `config --list` one.
-    assert_eq!(checked, 39, "one fixture per document the surface returns");
+    // thirty-nine since TASK-fa89fb00791f, which gave `config --list` one, and
+    // forty since TASK-351d5cf24884, which gave `reject` one, pinned in
+    // `tests/reject.rs`, and forty-one since TASK-e74920bd2d0f, which gave
+    // `hooks status` one, pinned in `tests/hooks_status.rs`.
+    assert_eq!(checked, 41, "one fixture per document the surface returns");
     // **A declaration is unexercised when no instance of it anywhere carries a
     // row**, which is the reading this list is about (TASK-fbdf25e30058). It
     // used to be one instance at a time: a path went on the list every time the
@@ -28008,7 +28028,7 @@ fn help_adds_no_verb_and_no_flag() {
     let listing = stdout(&ank_command().arg("help").output().unwrap());
     assert_eq!(
         listed_verbs(&listing).join(" "),
-        "context claim show log verify done release new review accept read close amend \
+        "context claim show log verify done release new review accept read reject close amend \
          attest find status graph scope tui mcp watch edit check migrate archive config \
          signers init skills hooks update help",
     );

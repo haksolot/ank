@@ -174,7 +174,8 @@ fn the_enums_and_the_schema_range_are_printed() {
         "{page}"
     );
     assert!(row(&page, "## Task", "7").contains("`open` \\| `in_progress` \\| `done` \\| `closed`"));
-    assert!(row(&page, "## ADR", "7").contains("`proposed` \\| `accepted` \\| `superseded`"));
+    assert!(row(&page, "## ADR", "7")
+        .contains("`proposed` \\| `accepted` \\| `superseded` \\| `rejected`"));
     assert!(row(&page, "## Task", "11").contains("`creator` \\| `claimer`"));
     assert!(row(&page, "## Task", "1").contains("`TASK-<12 hex>`"));
     assert!(row(&page, "## Log entry", "2").contains("always `log`"));
@@ -215,9 +216,13 @@ fn every_variant_is_on_the_page() {
         AdrStatus::Proposed,
         AdrStatus::Accepted,
         AdrStatus::Superseded,
+        AdrStatus::Rejected,
     ] {
         match s {
-            AdrStatus::Proposed | AdrStatus::Accepted | AdrStatus::Superseded => {
+            AdrStatus::Proposed
+            | AdrStatus::Accepted
+            | AdrStatus::Superseded
+            | AdrStatus::Rejected => {
                 assert!(on_page(s.as_str()))
             }
         }
@@ -279,6 +284,13 @@ fn every_config_key_is_printed_with_its_type_and_default() {
             ("`verifiers.<name>.timeout`", "duration", "`10m`"),
             ("`verifiers.<name>.default`", "boolean", "`false`"),
             ("`verifiers.<name>.inputs`", "list of globs", "none"),
+            ("`verifiers.<name>.vars.<NAME>`", "string", "none"),
+            (
+                "`verifiers.<name>.inherit_env`",
+                "`false` or list of names",
+                "none"
+            ),
+            ("`verifiers.<name>.cwd`", "path", "none"),
             ("`proof.reuse_max_age`", "duration", "`24h`"),
             ("`verifier_jobs`", "integer", "none"),
             ("`verifier_lock`", "boolean", "`true`"),
@@ -291,6 +303,7 @@ fn every_config_key_is_printed_with_its_type_and_default() {
             ("`guard.corpus`", "`deny` or `off`", "`deny`"),
             ("`guard.edit`", "`off`, `warn` or `claim`", "`warn`"),
             ("`check.severity.<kind>`", "`fault`", "none"),
+            ("`ratify.require_signature`", "boolean", "`false`"),
             ("`signers.<principal>.keys[].key`", "string", "required"),
             ("`signers.<principal>.keys[].note`", "string", "none"),
             ("`signers.<principal>.keys[].valid_before`", "date", "none"),
