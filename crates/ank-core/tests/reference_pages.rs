@@ -174,7 +174,8 @@ fn the_enums_and_the_schema_range_are_printed() {
         "{page}"
     );
     assert!(row(&page, "## Task", "7").contains("`open` \\| `in_progress` \\| `done` \\| `closed`"));
-    assert!(row(&page, "## ADR", "7").contains("`proposed` \\| `accepted` \\| `superseded`"));
+    assert!(row(&page, "## ADR", "7")
+        .contains("`proposed` \\| `accepted` \\| `superseded` \\| `rejected`"));
     assert!(row(&page, "## Task", "11").contains("`creator` \\| `claimer`"));
     assert!(row(&page, "## Task", "1").contains("`TASK-<12 hex>`"));
     assert!(row(&page, "## Log entry", "2").contains("always `log`"));
@@ -215,9 +216,13 @@ fn every_variant_is_on_the_page() {
         AdrStatus::Proposed,
         AdrStatus::Accepted,
         AdrStatus::Superseded,
+        AdrStatus::Rejected,
     ] {
         match s {
-            AdrStatus::Proposed | AdrStatus::Accepted | AdrStatus::Superseded => {
+            AdrStatus::Proposed
+            | AdrStatus::Accepted
+            | AdrStatus::Superseded
+            | AdrStatus::Rejected => {
                 assert!(on_page(s.as_str()))
             }
         }

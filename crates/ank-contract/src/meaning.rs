@@ -79,7 +79,8 @@ pub enum Role {
     /// decision that was ratified binds every change after it, and a listing
     /// that drew the two alike would draw a rule as finished business.
     Ratified,
-    /// A task closed without landing: `closed`.
+    /// A task closed without landing, `closed`, and a proposal turned down,
+    /// `rejected`.
     ///
     /// Apart from [`Role::Retired`], which `superseded` keeps
     /// (ADR-f0665c68d03d). A superseded document was replaced and its
@@ -142,7 +143,7 @@ pub const EXPIRED: &str = "expired";
 pub const MEANINGS: &[Meaning] = &[
     // Statuses, and every one the model can hold is here: a task is `open`,
     // `in_progress`, `done` or `closed`; an ADR or a spec is `proposed`,
-    // `accepted` or `superseded`.
+    // `accepted`, `superseded` or `rejected`.
     row(Subject::Status, "open", Role::Available),
     row(Subject::Status, "in_progress", Role::Underway),
     row(Subject::Status, "claimed", Role::Underway),
@@ -152,6 +153,9 @@ pub const MEANINGS: &[Meaning] = &[
     row(Subject::Status, "proposed", Role::Awaiting),
     row(Subject::Status, "accepted", Role::Ratified),
     row(Subject::Status, "superseded", Role::Retired),
+    // A proposal turned down is a decision that will not be made, as a closed
+    // task is work that will not be done (ADR-0f4248812651).
+    row(Subject::Status, "rejected", Role::Dropped),
     row(Subject::Status, EXPIRED, Role::Attention),
     // Kinds, by the `type` name the registry gives each of them. Written out
     // rather than read from the registry because this crate has no dependencies
@@ -342,6 +346,7 @@ mod tests {
             ("proposed", Role::Awaiting),
             ("accepted", Role::Ratified),
             ("superseded", Role::Retired),
+            ("rejected", Role::Dropped),
         ] {
             assert_eq!(role_of_status(state), Some(role), "{state} moved");
             assert_eq!(
