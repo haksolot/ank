@@ -21606,8 +21606,10 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
     // `tests/hooks_install.rs`: an install, the second install that changes
     // nothing, and the remove; and thirty-eight since TASK-69006ffa955e, which
     // gave a failing `done` one, pinned in `tests/done_output.rs`, and
-    // thirty-nine since TASK-fa89fb00791f, which gave `config --list` one.
-    assert_eq!(checked, 39, "one fixture per document the surface returns");
+    // thirty-nine since TASK-fa89fb00791f, which gave `config --list` one, and
+    // forty since TASK-351d5cf24884, which gave `reject` one, pinned in
+    // `tests/reject.rs`.
+    assert_eq!(checked, 40, "one fixture per document the surface returns");
     // **A declaration is unexercised when no instance of it anywhere carries a
     // row**, which is the reading this list is about (TASK-fbdf25e30058). It
     // used to be one instance at a time: a path went on the list every time the
@@ -28023,7 +28025,7 @@ fn help_adds_no_verb_and_no_flag() {
     let listing = stdout(&ank_command().arg("help").output().unwrap());
     assert_eq!(
         listed_verbs(&listing).join(" "),
-        "context claim show log verify done release new review accept read close amend \
+        "context claim show log verify done release new review accept read reject close amend \
          attest find status graph scope tui mcp watch edit check migrate archive config \
          signers init skills hooks update help",
     );

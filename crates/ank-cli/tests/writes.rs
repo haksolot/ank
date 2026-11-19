@@ -400,6 +400,10 @@ const QUIET_OUTSIDE: &[(&str, &[&str])] = &[
         ],
     ),
     ("accept", &["accept", "ADR-000000000000"]),
+    (
+        "reject",
+        &["reject", "ADR-000000000000", "--reason", "measured"],
+    ),
     ("close", &["close", OPEN, "--reason", "measured"]),
     (
         "signers",

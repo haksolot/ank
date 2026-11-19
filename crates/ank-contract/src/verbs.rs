@@ -1959,6 +1959,59 @@ pub const COMMANDS: &[CommandSpec] = &[
         output: &[one(&[f("entity", Type::Str), f("kind", Type::Str), f("by", Type::Str), f("at", Type::Str), f("readings", Type::Num)])],
         owner_task: None,
     },
+    // Beside `accept`, whose terms it is a human act on (ADR-0f4248812651):
+    // the other way a proposal ends, anchored like the one that binds.
+    CommandSpec {
+        name: "reject",
+        group: "shape the work",
+        renews: Renews::Never,
+        writes: Writes::Both,
+        outside: crate::writes::Outside::Nothing,
+        destructive: true,
+        open_world: false,
+        coordinates: true,
+        summary: "turns a proposed ADR or spec down for good, with a mandatory --reason; one tag at refs/ank/reject/<id>, signed where the repository signs; commits nothing, on any branch",
+        subcommands: &[],
+        kinds: &[],
+        min_positionals: 1,
+        max_positionals: 1,
+        positional_help: "<id>",
+        flags: &[flag("--reason")],
+        refuses: &[
+            refuses(
+                ExitCode::Generic,
+                "no --reason: a proposal turned down with nothing said is one nobody can learn from",
+            ),
+            refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
+            UNPARSEABLE_CALL,
+            ENTITY_MOVED,
+            refuses(
+                ExitCode::Generic,
+                "the id names a task or a log entry: only an ADR or a spec is proposed",
+            ),
+            refuses(
+                ExitCode::Prerequisite,
+                "the document is not proposed: an accepted, superseded or rejected one is past the point a proposal is turned down",
+            ),
+            refuses(
+                ExitCode::Prerequisite,
+                "ratify.require_signature is true and git names no key to sign with, or one signers: does not declare or has retired: the key named, and nothing is written",
+            ),
+            refuses(
+                ExitCode::Environment,
+                "the tag or the ref could not be written, or the push of refs/ank/reject/<id> did not reach the remote; nothing is kept",
+            ),
+        ],
+        notes: &[
+            "it is a human act on the terms of accept: a role that may not accept may not reject",
+            "the reason is a log entry of the document, rejected: <reason>; the document stays readable, binds nobody and leaves the review queue",
+            "a successor whose supersedes names a rejected document is ratified by accept and marks nothing superseded",
+            PUSH_FAILS,
+        ],
+        refuses_globals: &[],
+        output: &[one(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("tag", Type::Str)])],
+        owner_task: None,
+    },
     CommandSpec {
         name: "close",
         group: "shape the work",

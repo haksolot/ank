@@ -1735,6 +1735,7 @@ fn dispatch(
         "archive" => crate::archive::run(&inv, &s.repo, &s.config, out),
         "review" => crate::human::review(&inv, &s.repo, &s.config, out),
         "accept" => crate::human::accept(&inv, &s.repo, &s.identity, out),
+        "reject" => crate::human::reject(&inv, &s.repo, &s.identity, out),
         "read" => crate::human::read(&inv, &s.repo, &s.identity, out),
         "close" => crate::human::close(&inv, &s.repo, &s.identity, out),
         "attest" => crate::human::attest(&inv, &s.repo, &s.identity, out),
@@ -1804,7 +1805,10 @@ pub(crate) fn acts_of(inv: &Invocation) -> Vec<String> {
             _ => Vec::new(),
         },
         "edit" if inv.has("--constraint") => vec!["adr:edit-constraint".to_string()],
-        "accept" => {
+        // A rejection is a human act on the terms of accept
+        // (ADR-0f4248812651): a role that may not accept may not reject, so
+        // the act is the one accept performs, named the same way.
+        "accept" | "reject" => {
             let mut acts: Vec<String> = inv
                 .positionals
                 .iter()
@@ -1938,9 +1942,10 @@ mod tests {
         // counting.
         assert_eq!(
             COMMANDS.len(),
-            32,
-            "every verb of §4, plus init and help from §9. The surface is \
-             complete, so this number moves only when §4 does"
+            33,
+            "every verb of §4, plus init and help from §9, and reject \
+             (ADR-89c1e7146fe5). The surface is complete, so this number moves \
+             only when the decision bounding it does"
         );
     }
 

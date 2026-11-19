@@ -1222,6 +1222,10 @@ const LEGAL_CALLS: &[(&str, &str)] = &[
     ),
     ("read", r#"{"arguments":["TASK-000000000000"]}"#),
     (
+        "reject",
+        r#"{"arguments":["ADR-000000000000"],"reason":"never to bind"}"#,
+    ),
+    (
         "close",
         r#"{"arguments":["TASK-000000000000"],"reason":"superseded"}"#,
     ),
@@ -1478,7 +1482,7 @@ fn every_tool_carries_annotations_derived_from_the_table() {
     };
     assert_eq!(
         named(&|d| d.3),
-        ["accept", "close", "migrate", "archive"],
+        ["accept", "reject", "close", "migrate", "archive"],
         "the verbs declaring destructive"
     );
     assert_eq!(

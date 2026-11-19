@@ -184,6 +184,43 @@ It refuses at exit 6, writing nothing:
       ank amend <id> --drop-scope "<old>" --scope "<new>"
       ank accept <id> --rescope
 
+## Rejecting a proposal
+
+A proposal that will stay unratified for good ends with the other human act:
+
+    ank reject <id> --reason "<why>"
+
+`reject` takes one proposed ADR or spec and gives it its terminal status,
+`status: rejected`. It writes an annotated tag object at
+`refs/ank/reject/<id>`, on the blob of the file as it rewrote it, signed where
+the repository signs, and pushes the ref to `origin` with compare-and-swap,
+exactly as `accept` pushes a ratification. The reason becomes a log entry of
+the document, `rejected: <why>`, which `ank log <id>` prints. Like `accept`, it
+commits nothing and runs on any branch, and when the push does not land it
+exits 9 and keeps nothing.
+
+A rejected document stays readable: `show`, `find` and `log` print it with its
+status and its reason. It binds no perimeter, `review` drops it from the queue,
+and `archive` may move it. The authority is the ref, so `check` faults a file
+reading `rejected` that no `refs/ank/reject/<id>` anchors: a status typed into
+the file decides nothing.
+
+It refuses, writing nothing:
+
+- at exit 1, a call with no `--reason`, or an empty one;
+- at exit 7, a document in any status but `proposed`;
+- at exit 7, under `ratify.require_signature`, whatever `accept` refuses there:
+  a key git cannot name, or one `signers:` does not declare or has retired.
+
+The role table judges `reject` as an `accept`: a role forbidden to accept is
+forbidden to reject as well.
+
+**A successor waits on nothing.** `accept` of a document whose `supersedes:`
+names a proposal refuses at exit 7 and names `ank reject <target>` as the way
+forward. Once the target is rejected, `accept` ratifies the successor as one
+that retires nothing: the target keeps its `rejected` status, the tag carries
+no `supersedes:` line, and `check` says nothing about the pair.
+
 ## Archiving what is cold
 
 `ank archive` moves what is cold into `.ank/archive/entities/`: superseded

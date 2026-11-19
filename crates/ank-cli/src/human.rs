@@ -184,6 +184,7 @@ kinds! {
     RatificationUnverifiable => "ratification-unverifiable",
     RatificationBehind => "ratification-behind",
     RatificationRefMissing => "ratification-ref-missing",
+    RejectionUnanchored => "rejection-unanchored",
     SupersessionUnratified => "supersession-unratified",
     Signature => "signature",
     SelfRatified => "self-ratified",
@@ -326,6 +327,7 @@ const OWES: &[(Kind, Owes)] = &[
     (Kind::RatificationBehind, Owes::Remedy),
     // `git update-ref`.
     (Kind::RatificationRefMissing, Owes::Remedy),
+    (Kind::RejectionUnanchored, Owes::Fault),
     (Kind::SupersessionUnratified, Owes::Subject),
     (Kind::Signature, Owes::Fault),
     (Kind::SelfRatified, Owes::Subject),
@@ -1915,7 +1917,8 @@ fn coordination(cwd: &Path, report: &mut Report) -> Result<Plane> {
 /// Served are the three a verb reads: `claims/`, `proof/`, and the mirror's
 /// `watch/<remote>/claims/` (ADR-4b45f344344f; the mirror's prefix is
 /// `context::WATCH_PREFIX`), and `ratify/`, which `accept` writes
-/// (ADR-5e47007a75be). It is counted as served before a reader reads it,
+/// (ADR-5e47007a75be), and `reject/`, which `reject` writes
+/// (ADR-0f4248812651). It is counted as served before a reader reads it,
 /// because the alternative is a finding whose note names the deletion of a
 /// ratification. Anything else is grouped by its first segment, or
 /// by `watch/<remote>/<segment>/` under the mirror, so a former feature's
@@ -1925,6 +1928,7 @@ fn foreign_namespace(name: &str) -> Option<String> {
     if name.starts_with(claim::CLAIMS_PREFIX)
         || name.starts_with(claim::PROOF_PREFIX)
         || name.starts_with(claim::RATIFY_PREFIX)
+        || name.starts_with(git::REJECT_PREFIX)
     {
         return None;
     }
@@ -4643,6 +4647,23 @@ fn judge_reference(
             ));
         }
         AdrStatus::Superseded => {}
+        // Turned down: the citation leads to a document that will never bind.
+        AdrStatus::Rejected => report.findings.push(Finding::signal(
+            Kind::Reference,
+            citer,
+            if named == target {
+                format!(
+                    "{} {target}, which was rejected (ank log {target})",
+                    rel.field
+                )
+            } else {
+                format!(
+                    "{} {target}, whose succession ends on {named}, which was rejected \
+                     (ank log {named})",
+                    rel.field
+                )
+            },
+        )),
     }
 }
 
@@ -4824,7 +4845,9 @@ fn check_succession(
                     .filter(|v| v.id == target)
                     .map(|v| v.status)
             });
-            if replaced != Some(AdrStatus::Superseded) {
+            // A rejected target never bound: its successor replaces nothing,
+            // and the pair owes nothing (ADR-0f4248812651).
+            if replaced != Some(AdrStatus::Superseded) && replaced != Some(AdrStatus::Rejected) {
                 let message = format!("supersedes {target}, which is not marked superseded");
                 report.findings.push(if view.status == AdrStatus::Proposed {
                     Finding::signal(
@@ -4919,6 +4942,24 @@ fn check_ratify_orphans(
 /// `consequence` is what the alteration costs, and it is the one sentence the
 /// two kinds do not share: see [`check_spec`].
 fn check_anchor(view: &Anchored, repo: &Repo, consequence: &str, report: &mut Report) {
+    // **A rejection is anchored, or it is a line anybody typed**
+    // (ADR-0f4248812651): the ref comes off the one enumeration of
+    // `refs/ank/*` the coordination half already made, and where git cannot
+    // enumerate at all there is nothing to judge against.
+    if view.status == AdrStatus::Rejected && git::ank_refs(&repo.corpus).is_ok() {
+        if !git::rejected_ids(&repo.corpus).contains(&view.id.to_string()) {
+            let name = git::reject_ref(view.id);
+            report.findings.push(Finding::fault(
+                Kind::RejectionUnanchored,
+                view.id,
+                format!(
+                    "reads rejected and no {name} anchors it: a rejection is ank reject's act, \
+                     never a status typed into the file"
+                ),
+            ));
+        }
+        return;
+    }
     if view.status == AdrStatus::Accepted && view.ratified.is_none() {
         // A signal and not a fault: the ADRs predating `accept` are ratified by
         // the repository's history, which allowed_signers records as the
@@ -8124,6 +8165,10 @@ enum Succession {
     /// claims it, so the succession is on record and there is nothing left to
     /// write.
     Recorded(Entity),
+    /// The target was rejected (ADR-0f4248812651): it never bound, so nothing
+    /// is retired, nothing is marked superseded, and the tag names no
+    /// succession.
+    OverRejected,
 }
 
 impl Succession {
@@ -8132,7 +8177,7 @@ impl Succession {
     /// is what the ratification is about.
     fn target(&self) -> Option<&Entity> {
         match self {
-            Succession::None => None,
+            Succession::None | Succession::OverRejected => None,
             Succession::Pending(e) | Succession::Recorded(e) => Some(e),
         }
     }
@@ -8198,14 +8243,22 @@ fn succession(store: &Store, entity: &Entity) -> Result<Succession> {
         // the same state, and the same thing to do about it, which is nothing.
         AdrStatus::Superseded => Ok(Succession::Recorded(target)),
 
-        // Superseding a proposal is meaningless — nothing was ever binding — and
-        // a caller who wrote one almost certainly meant a different identifier.
-        // A prerequisite unmet, so 7 and not the 6 of an illegal transition.
+        // A successor of a proposal is a replacement for something that never
+        // bound, and the way out is to turn the proposal down, never to ratify
+        // the very decision being replaced (ADR-0f4248812651). A prerequisite
+        // unmet, so 7 and not the 6 of an illegal transition.
         AdrStatus::Proposed => Err(CliError::new(
             ExitCode::Prerequisite,
-            format!("{target_id} is proposed, and only an accepted one can be superseded"),
+            format!(
+                "{target_id} is proposed, and only an accepted one can be superseded: a \
+                 proposal this one replaces is rejected first"
+            ),
         )
-        .with_hint(format!("ank accept {target_id}"))),
+        .with_hint(format!("ank reject {target_id} --reason \"<why>\""))),
+
+        // Rejected: it never bound, so the successor is ratified as one that
+        // replaces nothing.
+        AdrStatus::Rejected => Ok(Succession::OverRejected),
     }
 }
 
@@ -8470,7 +8523,7 @@ pub fn anchored_by<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<git::
     match view.status {
         AdrStatus::Accepted => ratification_of(repo, &view),
         AdrStatus::Proposed => ref_ratification(repo, &view),
-        AdrStatus::Superseded => None,
+        AdrStatus::Superseded | AdrStatus::Rejected => None,
     }
 }
 
@@ -8786,7 +8839,7 @@ fn write_ratification(
     }
     let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
 
-    let tag = tag_blob(cwd, &r.id, &blob, &r.message, required)?;
+    let tag = tag_blob(cwd, "ratify", &r.id, &blob, &r.message, required)?;
 
     // An empty old value: the ref must not exist, and a ratification already
     // recorded there is the one thing this verb never overwrites -- except
@@ -8925,7 +8978,8 @@ fn require_signature(repo: &Repo) -> Result<bool> {
 }
 
 /// The tag object on `blob`, signed where this repository signs and annotated
-/// where it does not (ADR-964be4d940b2), named `ratify/<id>`.
+/// where it does not (ADR-964be4d940b2), named `<act>/<id>`: `ratify` for
+/// `accept`, `reject` for `reject` (ADR-0f4248812651).
 ///
 /// `git tag` writes under `refs/tags/` and nowhere else, so the name is
 /// temporary: it exists between this call's first command and its last,
@@ -8935,12 +8989,13 @@ fn require_signature(repo: &Repo) -> Result<bool> {
 /// from `rev-parse`.
 fn tag_blob(
     cwd: &Path,
+    act: &str,
     id: &EntityId,
     blob: &str,
     message: &str,
     required: bool,
 ) -> Result<String> {
-    let temporary = format!("ratify/{id}");
+    let temporary = format!("{act}/{id}");
     let full = format!("refs/tags/{temporary}");
     // Signing when it is possible rather than only when `tag.gpgSign` asks for
     // it: a maintainer who signs selectively still means a ratification to be
@@ -8971,6 +9026,166 @@ fn tag_blob(
     let tag = git::run(cwd, &["rev-parse", &full])?;
     git::run(cwd, &["update-ref", "-d", &full, &tag])?;
     Ok(tag)
+}
+
+// ---------------------------------------------------------------------------
+// reject
+// ---------------------------------------------------------------------------
+
+/// Turns a `proposed` ADR or spec down for good (ADR-0f4248812651): the status
+/// reads `rejected`, a tag object at `refs/ank/reject/<id>` anchors the act,
+/// and the reason is a log entry of the document.
+///
+/// **A human act on the terms of `accept`.** The tag is signed where the
+/// repository signs and must be under `ratify.require_signature`; it is pushed
+/// to origin with compare-and-swap, and a push that does not land keeps
+/// nothing, because a status line an agent could type is the one thing
+/// `check` could not tell from a decision. The role an act is judged by is
+/// `accept`'s (`crate::cli::acts_of`).
+///
+/// **It commits nothing, and it runs on any branch**, as `accept` does: the
+/// ref is a fact about the repository, and the file lands with whoever's next
+/// change.
+pub fn reject(
+    inv: &Invocation,
+    repo: &Repo,
+    identity: &str,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
+    let prefix = inv.positionals.first().ok_or_else(|| {
+        CliError::new(ExitCode::Generic, "reject expects an id")
+            .with_hint("ank reject <id> --reason \"<why>\"")
+    })?;
+    let reason =
+        match inv.value("--reason") {
+            Some(r) if !r.trim().is_empty() => r.trim().to_string(),
+            _ => return Err(CliError::new(
+                ExitCode::Generic,
+                "--reason is required to reject a proposal: the reason is what the record keeps",
+            )
+            .with_hint(format!(
+                "ank reject {prefix} --reason \"<why it will never bind>\""
+            ))),
+        };
+
+    let store = Store::new(&repo.ank);
+    let loaded = store.load_prefix(prefix)?;
+    let base_version = version_of(&loaded.entity);
+    let mut entity = loaded.entity;
+    let Some(view) = Anchored::of(&entity) else {
+        let kind = ank_core::Fields::kind_spec(&entity).name;
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!("{prefix} is a {kind}, and only an ADR or a spec is proposed and rejected"),
+        )
+        .with_hint(format!("ank show {prefix}")));
+    };
+    let id = view.id.clone();
+    if view.status != AdrStatus::Proposed {
+        // A prerequisite unmet rather than a frozen field: what a document
+        // past its proposal needs is a succession, or nothing at all.
+        let hint = match view.status {
+            AdrStatus::Accepted => succession_command(&id),
+            _ => format!("ank show {id}"),
+        };
+        return Err(CliError::new(
+            ExitCode::Prerequisite,
+            format!(
+                "{id} is {}, and only a proposed document is rejected",
+                view.status.as_str()
+            ),
+        )
+        .with_hint(hint));
+    }
+    let name = git::reject_ref(&id);
+    let cwd = &repo.corpus;
+    if git::rejected_ids(cwd).contains(&id.to_string()) {
+        return Err(CliError::new(
+            ExitCode::Prerequisite,
+            format!("{name} already exists, and a rejection is written once"),
+        )
+        .with_hint(format!("git cat-file tag {name}")));
+    }
+
+    // The last refusal, on the configuration and on the key at hand, before
+    // anything is written (ADR-2e777475c4de), as `accept` refuses it.
+    let required = require_signature(repo)?;
+
+    match &mut entity {
+        Entity::Adr(a) => a.status = AdrStatus::Rejected,
+        Entity::Spec(s) => s.status = AdrStatus::Rejected,
+        Entity::Task(_) | Entity::Log(_) => {
+            unreachable!("reject resolves an ADR or a spec, and reached {id}")
+        }
+    }
+
+    // The bytes `store.write` is about to put on disk: the blob the tag points
+    // at is the file as this act wrote it, as a ratification's is.
+    let mut written = entity.clone();
+    written.set_version(base_version + 1);
+    let hash = ["hash-object", "-w", "--stdin"];
+    let blob = git::output_with_stdin(cwd, &hash, serialize_entity(&written).as_bytes())?;
+    if !blob.status.success() {
+        return Err(git::failed(&hash, &blob));
+    }
+    let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
+    let message = format!("reject {id}\n\nby: {identity}\nreason: {reason}\n");
+    let tag = tag_blob(cwd, "reject", &id, &blob, &message, required)?;
+    git::run(cwd, &["update-ref", &name, &tag, ""])?;
+
+    // On origin and never on a coordination remote named `ank`, as a
+    // ratification travels (ADR-b6fe84504ff2); a repository with no origin
+    // has the whole of its record in this clone.
+    if git::remote(cwd)?.is_some() {
+        let refused = match git::push_ref(cwd, git::ORIGIN, &name, Some(&tag), None)? {
+            git::Pushed::Ok => None,
+            git::Pushed::Refused { holds: Some(other) } => {
+                Some(format!("the remote already holds {other} there"))
+            }
+            git::Pushed::Refused { holds: None } => Some("the remote refused it".to_string()),
+            git::Pushed::Unreachable { reason } => Some(reason),
+            git::Pushed::Rejected { reason } => Some(format!("the remote refused it ({reason})")),
+        };
+        if let Some(why) = refused {
+            let _ = git::run(cwd, &["update-ref", "-d", &name, &tag]);
+            return Err(CliError::new(
+                ExitCode::Environment,
+                format!(
+                    "{name} did not reach origin, and nothing was kept: {id} is as it was ({why})"
+                ),
+            )
+            .with_hint(format!("git ls-remote origin {name}")));
+        }
+    }
+
+    store.write(&entity, base_version)?;
+    record_entry(
+        &store,
+        repo,
+        &entity,
+        identity,
+        format!("rejected: {reason}"),
+    )?;
+
+    if inv.json() {
+        let doc = Obj::document()
+            .str("id", &id.to_string())
+            .str("kind", id.kind().as_str())
+            .str("status", "rejected")
+            .str("tag", &tag)
+            .finish();
+        let _ = writeln!(out, "{doc}");
+    } else if !inv.quiet() {
+        let style = inv.style();
+        let _ = writeln!(
+            out,
+            "{} {} -> {}",
+            style.retracted("rejected"),
+            style.id(&id.to_string()),
+            &tag[..tag.len().min(7)]
+        );
+    }
+    Ok(ExitCode::Ok)
 }
 
 // ---------------------------------------------------------------------------
@@ -12516,8 +12731,9 @@ mod tests {
         );
     }
 
-    /// Superseding a proposal is meaningless: nothing was ever binding, and the
-    /// caller almost certainly meant a different identifier.
+    /// Superseding a proposal is meaningless: nothing was ever binding. The
+    /// way forward is to turn the proposal down, never to ratify the decision
+    /// being replaced (ADR-0f4248812651).
     #[test]
     fn accept_refuses_a_target_that_is_not_accepted_and_writes_nothing() {
         let t = Temp::new();
@@ -12537,8 +12753,8 @@ mod tests {
         assert!(err.message.contains("proposed"), "{}", err.message);
         assert_eq!(
             err.hint.as_deref(),
-            Some("ank accept ADR-00000000bbbb"),
-            "the refusal names the command that would make it acceptable"
+            Some("ank reject ADR-00000000bbbb --reason \"<why>\""),
+            "the refusal names the command that settles the target"
         );
 
         // A refusal is not a half transition, in either file.

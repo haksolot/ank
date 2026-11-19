@@ -74,6 +74,7 @@ mod push_refused_before_update;
 mod ratify_ref;
 mod ref_record_compat;
 mod refusal_json;
+mod reject;
 mod release_rows;
 mod remote_without_claim;
 mod renewal_noop;
