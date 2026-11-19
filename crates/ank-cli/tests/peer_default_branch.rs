@@ -429,7 +429,10 @@ fn a_peer_task_only_on_an_unmerged_branch_is_accepted_held_and_a_signal() {
     let warned: Vec<&str> = created
         .stderr
         .lines()
-        .filter(|l| l.starts_with("warning:") && l.contains(&blocker))
+        // Under `--json`, one warning document per line (ADR-4d9fb7375dc1).
+        .filter(|l| {
+            l.starts_with("{\"contract\":") && l.contains("\"warning\":{") && l.contains(&blocker)
+        })
         .collect();
     assert!(
         warned.len() == 1 && warned[0].contains("'work'"),

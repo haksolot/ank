@@ -550,11 +550,13 @@ fn help_refuses_a_kind_that_does_not_exist_naming_the_form_that_works() {
             "help {args:?} answered: {}",
             stdout(&out)
         );
-        assert!(
-            stderr(&out).contains("-> ank help claim\n"),
-            "help {args:?}: {}",
-            stderr(&out)
-        );
+        // The same next command, as prose or as the refusal document
+        // `--json` writes on stderr (ADR-4d9fb7375dc1).
+        let named = match args.contains(&"--json") {
+            true => stderr(&out).contains("\"next\":[\"ank help claim\"]"),
+            false => stderr(&out).contains("-> ank help claim\n"),
+        };
+        assert!(named, "help {args:?}: {}", stderr(&out));
     }
     // And a verb with no kinds says it has none, in both forms.
     let claim = yaml(&help_ok(&["claim", "--json"]));

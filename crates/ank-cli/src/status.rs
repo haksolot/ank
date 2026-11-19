@@ -323,7 +323,7 @@ pub fn run(
     if let Some((peers, warnings)) = &peered {
         if !inv.quiet() {
             for w in warnings {
-                eprintln!("warning: {w}");
+                crate::cli::warn(crate::style::PLAIN, &w.to_string(), &[], None);
             }
         }
         for peer in peers {

@@ -184,7 +184,7 @@ pub fn new(
                 }
             }
             for w in &unmerged {
-                eprintln!("{} {w}", inv.style().yellow("warning:"));
+                crate::cli::warn(inv.style(), &w.to_string(), &[], None);
             }
             Entity::Task(Task {
                 id: id.clone(),
@@ -833,7 +833,7 @@ fn create_filled(
                 )?;
             }
             for w in &unmerged {
-                eprintln!("{} {w}", inv.style().yellow("warning:"));
+                crate::cli::warn(inv.style(), &w.to_string(), &[], None);
             }
             check_verifiers(&t.verify, cfg)?;
             // A name typed into the template is checked where the flag is, and
@@ -1552,7 +1552,7 @@ pub fn find(
         )?;
         if !inv.quiet() {
             for w in &warnings {
-                eprintln!("warning: {w}");
+                crate::cli::warn(crate::style::PLAIN, &w.to_string(), &[], None);
             }
         }
         Some(listings)
@@ -2137,7 +2137,7 @@ pub fn scope(
     let mut peer_adrs = context::peer_adrs(repo, cfg, perimeter.as_deref(), &mut warnings);
     peer_adrs.sort_by(|a, b| a.short.cmp(&b.short));
     for w in &warnings {
-        eprintln!("warning: {w}");
+        crate::cli::warn(crate::style::PLAIN, &w.to_string(), &[], None);
     }
     let total = hits.len() + peer_adrs.len();
 
@@ -2444,7 +2444,7 @@ fn warn_before_acting(inv: &Invocation, warnings: &[String]) {
     }
     let style = inv.style().on_stderr();
     for w in warnings {
-        eprintln!("{} {w}", style.yellow("warning:"));
+        crate::cli::warn(style, &w.to_string(), &[], None);
     }
 }
 
@@ -3044,7 +3044,7 @@ pub fn release(
     // class of warning: it is not the answer, and `release --json` is a
     // parser's input (ADR-6fd69efb629c).
     if let Some(w) = deleted.sync.revocation_warning() {
-        eprintln!("{} {w}", inv.style().on_stderr().yellow("warning:"));
+        crate::cli::warn(inv.style().on_stderr(), &w.to_string(), &[], None);
     }
 
     if inv.json() {

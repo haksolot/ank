@@ -279,17 +279,21 @@ pub fn run(
     // drift warning and for the same reason: it is not the answer, and `done
     // --json` is a parser's input.
     if let Some(w) = sync.warning() {
-        eprintln!("{} {w}", inv.style().on_stderr().yellow("warning:"));
+        crate::cli::warn(inv.style().on_stderr(), &w.to_string(), &[], None);
     }
 
     // Named and never refused: a scope widened in the work is a fact for the
     // reader of the close, not a reason to withhold it (TASK-64f941335624).
     let changed_outside = outside.changed(repo, cfg, snap.as_ref());
     if !changed_outside.is_empty() {
-        eprintln!(
-            "{} changed outside the scope of {id}: {}",
-            inv.style().on_stderr().yellow("warning:"),
-            changed_outside.join(", ")
+        crate::cli::warn(
+            inv.style().on_stderr(),
+            &format!(
+                "changed outside the scope of {id}: {}",
+                changed_outside.join(", ")
+            ),
+            &[],
+            Some(&id.to_string()),
         );
     }
 
@@ -550,12 +554,15 @@ fn warn_on_constraint_drift(
         return;
     }
     let style = style.on_stderr();
-    eprintln!(
-        "{} constraints over this scope changed while the claim was held ({} bind it now)",
-        style.yellow("warning:"),
-        applicable.len()
+    crate::cli::warn(
+        style,
+        &format!(
+            "constraints over this scope changed while the claim was held ({} bind it now)",
+            applicable.len()
+        ),
+        &["ank context"],
+        None,
     );
-    eprintln!("  -> ank context");
 }
 
 /// The peer constraints added, changed or retired since the claim
@@ -587,10 +594,7 @@ fn warn_on_peer_drift(
         return;
     }
     let style = style.on_stderr();
-    for line in lines {
-        eprintln!("{} {line}", style.yellow("warning:"));
-    }
-    eprintln!("  -> ank context");
+    crate::cli::warn_all(style, &lines, &["ank context"]);
 }
 
 /// What moved between two readings of the peers, one line per peer that moved.

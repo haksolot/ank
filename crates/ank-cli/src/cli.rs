@@ -52,6 +52,10 @@ pub struct CliError {
     pub code: ExitCode,
     pub message: String,
     pub hint: Option<String>,
+    /// The entity or path refused, when the refusal is about one: the
+    /// `subject` of the document `--json` writes on stderr (ADR-4d9fb7375dc1).
+    /// The prose never prints it; it already names it in the message.
+    pub subject: Option<String>,
 }
 
 impl CliError {
@@ -60,7 +64,33 @@ impl CliError {
             code,
             message: message.into(),
             hint: None,
+            subject: None,
         }
+    }
+
+    pub fn with_subject(mut self, subject: impl Into<String>) -> CliError {
+        self.subject = Some(subject.into());
+        self
+    }
+
+    /// What the prose prints after each `  -> `, in order: the `next` of the
+    /// refusal document. A hint spanning several lines is joined by that same
+    /// separator, so splitting on it is reading the prose back, not guessing.
+    pub fn next(&self) -> Vec<String> {
+        match &self.hint {
+            Some(h) => h.split("\n  -> ").map(str::to_string).collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// The refusal as the one line `--json` writes on standard error.
+    pub fn render_json(&self) -> String {
+        crate::json::refusal(
+            self.code,
+            &self.message,
+            &self.next(),
+            self.subject.as_deref(),
+        )
     }
 
     pub fn with_hint(mut self, hint: impl Into<String>) -> CliError {
@@ -100,13 +130,95 @@ impl From<crate::store::StoreError> for CliError {
     fn from(e: crate::store::StoreError) -> CliError {
         let code = e.code();
         let hint = e.hint();
+        let subject = match &e {
+            crate::store::StoreError::NotFound(id)
+            | crate::store::StoreError::PrefixTooShort(id) => Some(id.clone()),
+            crate::store::StoreError::AmbiguousPrefix { prefix, .. } => Some(prefix.clone()),
+            crate::store::StoreError::VersionConflict { id, .. } => Some(id.clone()),
+            crate::store::StoreError::FilenameMismatch { path, .. }
+            | crate::store::StoreError::Parse { path, .. }
+            | crate::store::StoreError::Io { path, .. } => Some(path.display().to_string()),
+            crate::store::StoreError::LockTimeout { lock, .. } => Some(lock.display().to_string()),
+            crate::store::StoreError::LockDenied { dir, .. } => Some(dir.display().to_string()),
+        };
         let mut err = CliError::new(code, e.to_string());
         err.hint = hint;
+        err.subject = subject;
         err
     }
 }
 
 pub type Result<T> = std::result::Result<T, CliError>;
+
+// ---------------------------------------------------------------------------
+// Standard error under --json (ADR-4d9fb7375dc1)
+// ---------------------------------------------------------------------------
+
+/// Whether this process writes its refusal and its warnings as documents.
+///
+/// A process-wide fact rather than a field of [`Invocation`], because the
+/// warnings are written from modules several calls below any invocation, some
+/// from threads a verifier runs on, and threading a flag to each would be one
+/// chance per site to forget it. Set once by [`run`], read by [`warn`].
+static JSON_STDERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn set_json_stderr(on: bool) {
+    JSON_STDERR.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn json_stderr() -> bool {
+    JSON_STDERR.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `--json` among the arguments, read before the parser has run: a call the
+/// parser refuses is still a call that asked for documents. Up to a `--`,
+/// past which an argument is a value and never a flag.
+fn asks_json(argv: &[String]) -> bool {
+    argv.iter()
+        .take_while(|a| a.as_str() != "--")
+        .any(|a| a == "--json" || a == "-j")
+}
+
+/// One warning on standard error, and the only way one is written.
+///
+/// Without `--json`, the prose it always was: `warning: <message>` with the
+/// tag painted as `style` allows, then one `  -> <next>` line per command.
+/// Under `--json`, one document per warning, keyed `warning`
+/// (ADR-4d9fb7375dc1), so a caller reading stderr line by line parses every
+/// line it is given.
+pub(crate) fn warn(
+    style: crate::style::Style,
+    message: &str,
+    next: &[&str],
+    subject: Option<&str>,
+) {
+    if json_stderr() {
+        let next: Vec<String> = next.iter().map(|n| n.to_string()).collect();
+        eprintln!("{}", crate::json::warning(message, &next, subject));
+        return;
+    }
+    eprintln!("{} {message}", style.yellow("warning:"));
+    for n in next {
+        eprintln!("  -> {n}");
+    }
+}
+
+/// Several warnings sharing one `  -> ` line, which the prose prints once
+/// after the last. Each document carries it, since a document is read alone.
+pub(crate) fn warn_all(style: crate::style::Style, messages: &[String], next: &[&str]) {
+    if json_stderr() {
+        for m in messages {
+            warn(style, m, next, None);
+        }
+        return;
+    }
+    for m in messages {
+        eprintln!("{} {m}", style.yellow("warning:"));
+    }
+    for n in next {
+        eprintln!("  -> {n}");
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The surface itself, which lives in ank-contract (ADR-6fd69efb629c)
@@ -1225,10 +1337,15 @@ pub fn run(
     out: &mut dyn std::io::Write,
     style: crate::style::Style,
 ) -> ExitCode {
+    set_json_stderr(asks_json(argv));
     match dispatch(argv, cwd, out, style) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("{}", err.render_styled(style.on_stderr()));
+            if json_stderr() {
+                eprintln!("{}", err.render_json());
+            } else {
+                eprintln!("{}", err.render_styled(style.on_stderr()));
+            }
             err.code
         }
     }
@@ -1300,21 +1417,21 @@ fn warn_if_outside_repository(inv: &Invocation, repo: &crate::repo::Repo, cwd: &
         return;
     }
     let style = inv.style().on_stderr();
-    let tag = style.yellow("warning:");
     let root_display = repo.corpus.display();
-    match here {
-        Some(_) => eprintln!(
-            "{tag} .ank/ resolved to {root_display}, outside the git repository holding {}",
+    let what = match here {
+        Some(_) => format!(
+            ".ank/ resolved to {root_display}, outside the git repository holding {}",
             cwd.display()
         ),
-        None => eprintln!(
-            "{tag} .ank/ resolved to {root_display}; {} is in no git repository",
+        None => format!(
+            ".ank/ resolved to {root_display}; {} is in no git repository",
             cwd.display()
         ),
-    }
-    eprintln!(
-        "  -> claims are refs and land in {root_display}: ank init here, or --repo to confirm"
-    );
+    };
+    let next =
+        format!("claims are refs and land in {root_display}: ank init here, or --repo to confirm");
+    let subject = repo.corpus.display().to_string();
+    warn(style, &what, &[next.as_str()], Some(&subject));
 }
 
 /// Names a corpus written by a binary newer than this one (TASK-ca7b61b00896).
@@ -1346,8 +1463,7 @@ fn warn_if_schema_ahead(inv: &Invocation, repo: &crate::repo::Repo) {
     };
     let style = inv.style().on_stderr();
     let (what, next) = ahead.lines(crate::repo::released_schema());
-    eprintln!("{} {what}", style.yellow("warning:"));
-    eprintln!("  -> {next}");
+    warn(style, &what, &[next.as_str()], None);
 }
 
 /// The requirement the corpus declares and the version running, when the
@@ -1379,11 +1495,12 @@ fn warn_if_requires_ank(inv: &Invocation, config: &crate::config::Config) {
         return;
     };
     let style = inv.style().on_stderr();
-    eprintln!(
-        "{} this corpus requires ank {declared} or newer, and this binary is {running}",
-        style.yellow("warning:")
+    warn(
+        style,
+        &format!("this corpus requires ank {declared} or newer, and this binary is {running}"),
+        &["ank update"],
+        None,
     );
-    eprintln!("  -> ank update");
 }
 
 /// The corpus, and whatever resolving it had to say.
@@ -1399,7 +1516,7 @@ fn resolved(inv: &Invocation, cwd: &std::path::Path) -> Result<crate::repo::Repo
     if !inv.quiet() {
         let style = inv.style().on_stderr();
         for note in notes {
-            eprintln!("{} {note}", style.yellow("warning:"));
+            warn(style, &note, &[], None);
         }
     }
     Ok(repo)
@@ -1466,6 +1583,9 @@ fn dispatch(
         return Ok(ExitCode::Ok);
     }
     let mut inv = parse(argv)?;
+    // The parser's answer replaces the scan [`run`] made before it, which
+    // cannot tell a flag from a value that happens to read `--json`.
+    set_json_stderr(inv.json());
     let spec = spec_of(inv.command).expect("spec resolved during parsing");
 
     // The one gate, and the reason it is one. `--json` is never colored (§4),

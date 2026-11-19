@@ -481,7 +481,7 @@ impl Ank {
             return Err(Failed::Refused {
                 shown,
                 code: out.status.code().unwrap_or(ExitCode::Generic.code()),
-                stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+                stderr: prose(&String::from_utf8_lossy(&out.stderr)),
             });
         }
         let text = String::from_utf8_lossy(&out.stdout).to_string();
@@ -491,6 +491,57 @@ impl Ank {
         })?;
         Ok(Ran { shown, answered })
     }
+}
+
+/// The CLI's stderr as a person reads it.
+///
+/// Under `--json` the binary writes a refusal, and each warning, as one JSON
+/// document per line (ADR-4d9fb7375dc1), and this reader always runs it with
+/// `--json`. A screen is read by a person, so each document is shown as the
+/// prose the CLI prints without the flag -- `error[N]: <message>` or
+/// `warning: <message>`, then a `  -> ` line per command -- and every other
+/// line passes as it came. The prose is rebuilt from the document's own
+/// fields and nothing else, so what the screen says is still the binary's.
+pub fn prose(stderr: &str) -> String {
+    let mut out = String::with_capacity(stderr.len());
+    for line in stderr.split_inclusive('\n') {
+        let doc = serde_json::from_str::<serde_json::Value>(line.trim()).ok();
+        let (head, body) = match doc.as_ref().and_then(|d| {
+            d.get("error")
+                .filter(|e| e.is_object())
+                .map(|e| (Some(e), e))
+                .or_else(|| {
+                    d.get("warning")
+                        .filter(|w| w.is_object())
+                        .map(|w| (None, w))
+                })
+        }) {
+            Some((Some(e), body)) => (
+                format!(
+                    "error[{}]:",
+                    e.get("code").and_then(|c| c.as_i64()).unwrap_or(1)
+                ),
+                body,
+            ),
+            Some((None, body)) => ("warning:".to_string(), body),
+            None => {
+                out.push_str(line);
+                continue;
+            }
+        };
+        let message = body.get("message").and_then(|m| m.as_str()).unwrap_or("");
+        out.push_str(&format!("{head} {message}\n"));
+        for next in body
+            .get("next")
+            .and_then(|n| n.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|n| n.as_str())
+        {
+            out.push_str(&format!("  -> {next}\n"));
+        }
+    }
+    out
 }
 
 /// One word of a command line, quoted where a shell would need it quoted.
@@ -587,6 +638,27 @@ pub fn count(value: &Value, key: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    /// The documents `--json` writes on stderr come back as the prose the CLI
+    /// prints without it, byte for byte, and any other line passes untouched.
+    #[test]
+    fn a_refusal_document_is_shown_as_the_cli_prose() {
+        let stderr = concat!(
+            r#"{"contract":1,"warning":{"message":"w","next":["ank update"],"subject":null}}"#,
+            "\n",
+            "running: unit ... ok (0.1s)\n",
+            r#"{"contract":1,"error":{"code":7,"name":"Prerequisite","message":"no verifier 'x'","next":["declared: unit","or ank config verifiers.x.run \"<command>\""],"subject":null}}"#,
+            "\n",
+        );
+        assert_eq!(
+            super::prose(stderr),
+            "warning: w\n  -> ank update\nrunning: unit ... ok (0.1s)\nerror[7]: no verifier 'x'\n  -> declared: unit\n  -> or ank config verifiers.x.run \"<command>\"\n"
+        );
+        assert_eq!(
+            super::prose("error[2]: gone\n  -> ank find x\n"),
+            "error[2]: gone\n  -> ank find x\n"
+        );
+    }
+
     use super::*;
 
     fn doc(s: &str) -> Value {

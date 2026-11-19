@@ -15672,8 +15672,17 @@ fn the_boundary_warning_never_reaches_standard_output() {
             stdout.trim().is_empty() || stdout.trim_start().starts_with('{'),
             "{args:?} left stdout unparseable: {stdout}"
         );
-        // It was still said, on the stream that carries it.
-        assert!(erred(&out).contains("warning:"), "{args:?} said nothing");
+        // It was still said, on the stream that carries it, and under
+        // `--json` as a warning document (ADR-4d9fb7375dc1).
+        let lead = format!(
+            "{{\"contract\":{},\"warning\":{{\"message\":\".ank/ resolved to ",
+            ank_contract::CONTRACT_VERSION
+        );
+        assert!(
+            erred(&out).lines().any(|l| l.starts_with(&lead)),
+            "{args:?} said nothing: {}",
+            erred(&out)
+        );
     }
 }
 
@@ -15856,7 +15865,15 @@ fn the_schema_warning_never_reaches_standard_output() {
             stdout.trim_start().starts_with('{'),
             "{args:?} left stdout unparseable: {stdout}"
         );
-        assert!(erred(&out).contains("warning:"), "{args:?} said nothing");
+        let lead = format!(
+            "{{\"contract\":{},\"warning\":{{\"message\":\"corpus at schema ",
+            ank_contract::CONTRACT_VERSION
+        );
+        assert!(
+            erred(&out).lines().any(|l| l.starts_with(&lead)),
+            "{args:?} said nothing: {}",
+            erred(&out)
+        );
     }
 }
 
