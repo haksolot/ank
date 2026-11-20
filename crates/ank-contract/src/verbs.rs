@@ -1915,6 +1915,12 @@ pub const COMMANDS: &[CommandSpec] = &[
                 ExitCode::Transition,
                 "the document is already ratified: the promotion has happened, and the anchor names where",
             ),
+            // #810: a ref a first `accept` left behind. One that ratifies the
+            // file as it now reads is finished with that same tag instead.
+            refuses(
+                ExitCode::Transition,
+                "refs/ank/ratify/<id> already exists and does not ratify the document as it now reads: the ref named, why, and the commands that clear it; nothing is written",
+            ),
             refuses(
                 ExitCode::Transition,
                 "--reanchor over a document a ref already carries, one no commit ratified, or one whose file has moved from the anchor its commit records",
@@ -1938,6 +1944,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "it is a human act, signed where the repository signs; it commits nothing, and the file lands with whoever's next change",
             "--reanchor moves an anchor made by a ratify <id> commit into a ref: the same anchor, a message naming that commit, a reading by whoever runs it; nothing in history is rewritten",
             "--rescope ratifies the scope an accepted ADR or spec now declares, after amend --scope/--drop-scope: a new tag replaces refs/ank/ratify/<id> with compare-and-swap, carrying the new anchor, the previous anchor and the previous scope; the identifier, the status and every citation stay",
+            "a refs/ank/ratify/<id> this clone already holds that ratifies the document as it now reads, left by an accept that did not finish, is finished: that same tag pushed where origin lacks it and the file written, no new tag",
             "the citations of the retired document are re-pointed first: the refusal names every site with its line, is not suppressed by --quiet, and there is no flag around it",
             // The ref is the ratification, so a push that does not land is a
             // failure and the file is not written (ADR-af533e7a3e03).

@@ -694,3 +694,171 @@ fn config_refuses_to_require_a_signature_while_signers_declares_no_key() {
     let out = c.ank(&["config", "ratify.other", "true"]);
     assert_ne!(out.status.code(), Some(0), "{}", text(&out.stdout));
 }
+
+// ---------------------------------------------------------------------------
+// A ratify ref already in the clone (#810, TASK-4937d03297e9)
+// ---------------------------------------------------------------------------
+
+/// Every tag object the clone holds, whatever names it: what a call that
+/// "writes no new tag" must leave counted as it found it.
+fn tag_objects(c: &Corpus) -> usize {
+    git(
+        &c.repo,
+        &["cat-file", "--batch-all-objects", "--batch-check"],
+    )
+    .lines()
+    .filter(|l| l.split(' ').nth(1) == Some("tag"))
+    .count()
+}
+
+/// Ratifies `A` for real, then takes back the file and the push: the ref is
+/// left in this clone alone, as a first `accept` that never finished leaves
+/// it. Returns the tag the ref names.
+fn leave_a_ratification_behind(c: &Corpus, before: &str) -> String {
+    let out = c.ank(&["accept", A]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let tag = c.local_ref(&ratify_ref(A)).expect("the ratify ref exists");
+    git(
+        &c.repo,
+        &["push", "-q", "origin", &format!(":{}", ratify_ref(A))],
+    );
+    fs::write(c.repo.join(".ank/entities").join(format!("{A}.md")), before).unwrap();
+    assert_eq!(c.origin_ref(&ratify_ref(A)), None);
+    tag
+}
+
+/// What a refused accept over a leftover ref must print and keep.
+fn assert_refused_over(c: &Corpus, out: &Output, left: &str, before: &str, why: &str) {
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(6), "{}{stderr}", text(&out.stdout));
+    assert!(stderr.contains(&ratify_ref(A)), "names the ref: {stderr}");
+    assert!(stderr.contains(why), "says why it does not match: {stderr}");
+    assert!(
+        stderr.contains(&format!("git update-ref -d {}", ratify_ref(A))),
+        "prints the command that resolves it: {stderr}"
+    );
+    for git_text in ["fatal:", "cannot lock ref", "update_ref failed", "error: "] {
+        assert!(!stderr.contains(git_text), "no git error text: {stderr}");
+    }
+    assert_eq!(
+        c.local_ref(&ratify_ref(A)).as_deref(),
+        Some(left),
+        "ref kept"
+    );
+    assert_eq!(c.origin_ref(&ratify_ref(A)), None, "the remote untouched");
+    assert_eq!(c.file(A), before, "the file byte-identical");
+}
+
+#[test]
+fn a_leftover_ref_that_is_no_ratification_is_refused_naming_the_fix() {
+    let c = Corpus::new("accept-leftover-foreign", true);
+    let before = c.file(A);
+    let blob = git(
+        &c.repo,
+        &["rev-parse", &format!("HEAD:.ank/entities/{A}.md")],
+    );
+    git(&c.repo, &["tag", "-a", "-m", "leftover", "tmp", &blob]);
+    let left = git(&c.repo, &["rev-parse", "tmp"]);
+    git(&c.repo, &["update-ref", &ratify_ref(A), &left]);
+    git(&c.repo, &["tag", "-d", "tmp"]);
+    let tags = tag_objects(&c);
+
+    let out = c.ank(&["accept", A]);
+    assert_refused_over(&c, &out, &left, &before, "not a ratification");
+    assert_eq!(tag_objects(&c), tags, "no tag written");
+}
+
+#[test]
+fn a_leftover_ratification_of_another_constraint_is_refused_naming_the_fix() {
+    let c = Corpus::new("accept-leftover-stale", true);
+    let original = c.file(A);
+    let left = leave_a_ratification_behind(&c, &original);
+    // The constraint moves after the ratification was written.
+    let edited = original.replace("A binding rule.", "Another binding rule.");
+    fs::write(
+        c.repo.join(".ank/entities").join(format!("{A}.md")),
+        &edited,
+    )
+    .unwrap();
+    let tags = tag_objects(&c);
+
+    let out = c.ank(&["accept", A]);
+    assert_refused_over(&c, &out, &left, &edited, "constraint+scope");
+    assert_eq!(tag_objects(&c), tags, "no tag written");
+}
+
+#[test]
+fn a_leftover_ratification_that_matches_is_finished_with_the_same_tag() {
+    let c = Corpus::new("accept-leftover-matches", true);
+    let before = c.file(A);
+    let left = leave_a_ratification_behind(&c, &before);
+    let tags = tag_objects(&c);
+
+    let out = c.ank(&["accept", A]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+
+    assert_eq!(
+        c.local_ref(&ratify_ref(A)).as_deref(),
+        Some(left.as_str()),
+        "the ref's oid is unchanged"
+    );
+    assert_eq!(
+        c.origin_ref(&ratify_ref(A)).as_deref(),
+        Some(left.as_str()),
+        "that same tag object pushed"
+    );
+    assert_eq!(tag_objects(&c), tags, "no new tag object");
+    let file = c.file(A);
+    assert_eq!(field(&file, "status"), Some("accepted"), "{file}");
+    assert_eq!(field(&file, "anchor"), Some(left.as_str()), "{file}");
+
+    // The file is the blob the tag ratified, plus the anchor naming it.
+    let object = git(&c.repo, &["cat-file", "tag", &left]);
+    let blob = object
+        .lines()
+        .find_map(|l| l.strip_prefix("object "))
+        .expect(&object);
+    let without_anchor: String = file
+        .lines()
+        .filter(|l| !l.starts_with("anchor: "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(
+        format!("{}\n", git(&c.repo, &["cat-file", "blob", blob])),
+        without_anchor
+    );
+}
+
+/// The state #810 was reported in: the leftover tag pushed by hand, so origin
+/// holds it too, and the file still reads proposed.
+#[test]
+fn a_matching_ratification_origin_already_holds_is_finished_too() {
+    let c = Corpus::new("accept-leftover-pushed", true);
+    let before = c.file(A);
+    let left = leave_a_ratification_behind(&c, &before);
+    git(&c.repo, &["push", "-q", "origin", &ratify_ref(A)]);
+
+    let out = c.ank(&["accept", A]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(c.local_ref(&ratify_ref(A)).as_deref(), Some(left.as_str()));
+    assert_eq!(c.origin_ref(&ratify_ref(A)).as_deref(), Some(left.as_str()));
+    assert_eq!(field(&c.file(A), "status"), Some("accepted"));
+}
+
+#[test]
+fn help_accept_lists_the_leftover_ref_refusal_with_its_code() {
+    let c = Corpus::new("accept-leftover-help", false);
+    let out = c.ank(&["help", "accept"]);
+    let page = text(&out.stdout);
+    let line = page
+        .lines()
+        .find(|l| l.contains("refs/ank/ratify/<id> already exists"))
+        .unwrap_or_else(|| panic!("the refusal is listed: {page}"));
+    assert!(line.contains('6'), "with its code: {line}");
+}
