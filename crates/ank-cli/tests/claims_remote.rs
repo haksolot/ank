@@ -412,7 +412,10 @@ fn with_origin_only_the_verbs_run_what_they_ran_before() {
     // it names what the branch changed outside the scope: one `diff-tree
     // --merge-base` on a typed-proof close (TASK-64f941335624), and 16 since
     // that base is the newer of main and origin/main: one `merge-base` before
-    // the `diff-tree` (TASK-30538cb58857).
+    // the `diff-tree` (TASK-30538cb58857). `accept` ran 11 and runs 12 since
+    // it reads a ratify ref already in the clone before writing one: one
+    // `for-each-ref refs/ank/`, once per call whatever the number of ids
+    // (TASK-4937d03297e9).
     let expected: [(&str, usize, Vec<String>); 7] = [
         (
             "claim",
@@ -441,7 +444,7 @@ fn with_origin_only_the_verbs_run_what_they_ran_before() {
                 format!("push origin {proof}"),
             ],
         ),
-        ("accept", 11, vec![format!("push origin {ratify}")]),
+        ("accept", 12, vec![format!("push origin {ratify}")]),
     ];
     for ((name, count, got), (want_name, want_count, want)) in seen.iter().zip(expected.iter()) {
         assert_eq!(name, want_name);
