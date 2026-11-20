@@ -247,6 +247,74 @@ fn faults(report: &str) -> Vec<String> {
         .collect()
 }
 
+/// The file behind its ref is a signal that names the command bringing it
+/// level, as every finding does (issue #810): `ank accept <id>` as the note
+/// under it, the same line in `--json`, and that command clears it.
+#[test]
+fn a_file_behind_its_ref_names_ank_accept_and_running_it_clears_the_signal() {
+    let c = Corpus::new("ratify-ref-behind-names-accept");
+    c.accept(A);
+    let clone = c.second_clone();
+    c.sign_with(&clone, &c.base.join("signing-key"));
+    let command = format!("ank accept {A}");
+
+    let out = ank(&clone, &["check"]);
+    let report = both(&out);
+    let lines: Vec<&str> = report.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("signal:") && l.contains(A) && l.contains("has not caught up"))
+        .unwrap_or_else(|| panic!("the signal: {report}"));
+    assert_eq!(
+        lines
+            .get(at + 1)
+            .map(|l| l.trim_start_matches(|ch: char| !ch.is_ascii_alphanumeric())),
+        Some(command.as_str()),
+        "the command is the line under the signal: {report}"
+    );
+
+    let out = ank(&clone, &["check", "--json"]);
+    let doc: serde_yaml::Value =
+        serde_yaml::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", both(&out)));
+    let finding = doc["findings"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|f| {
+            f["subject"].as_str() == Some(A)
+                && f["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("has not caught up"))
+        })
+        .unwrap_or_else(|| panic!("{doc:?}"));
+    assert_eq!(finding["kind"].as_str(), Some("ratification-behind"));
+    assert_eq!(
+        finding["note"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|n| n.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![command.as_str()],
+        "{finding:?}"
+    );
+    assert_eq!(finding["owed"].as_bool(), Some(true), "{finding:?}");
+
+    let out = ank(&clone, &["accept", A]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the command it names: {}",
+        both(&out)
+    );
+    let out = ank(&clone, &["check"]);
+    let report = both(&out);
+    assert!(
+        !report.contains("has not caught up"),
+        "running the command clears the signal: {report}"
+    );
+}
+
 /// A verified ref whose file has not caught up binds where the file is read:
 /// `check` names the file, `context` serves the constraint as binding and
 /// `scope` lists it accepted.

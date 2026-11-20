@@ -17,7 +17,7 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 schema: 4
-version: 2
+version: 4
 ---
 
 Issue #810, third expectation: the signal stated the state and named no command, unlike every other ank finding.
