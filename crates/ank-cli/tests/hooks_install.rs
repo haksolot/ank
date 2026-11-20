@@ -123,10 +123,29 @@ fn commands(doc: &serde_yaml::Value, event: &str) -> Vec<String> {
         .collect()
 }
 
-/// What the entry for `event` runs: the installing binary, by absolute path.
+/// What the entry for `event` runs: the installing binary, by absolute path,
+/// in the form the harness's shell runs it.
 fn ours(event: &str) -> String {
-    let exe = fs::canonicalize(ANK).unwrap();
-    format!("\"{}\" hooks run claude {event}", exe.display())
+    format!("\"{}\" hooks run claude {event}", installed_binary())
+}
+
+/// The installing binary as an entry names it. On Windows that is not what
+/// `fs::canonicalize` returns: the verbatim `\\?\` prefix is taken off and
+/// the separators are forward slashes, because Claude Code runs the command
+/// with Git Bash, which collapses `\\` inside double quotes and reads a
+/// backslash as no separator at all. Spelled out here rather than borrowed
+/// from the binary, so the expectation cannot share the binary's mistake.
+pub(crate) fn installed_binary() -> String {
+    let exe = fs::canonicalize(ANK).unwrap().display().to_string();
+    if !cfg!(windows) {
+        return exe;
+    }
+    let exe = match exe.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => exe.strip_prefix(r"\\?\").unwrap_or(&exe).to_string(),
+    };
+    assert!(!exe.starts_with(r"\\?"), "{exe}");
+    exe.replace('\\', "/")
 }
 
 /// Whether `inner` is a subsequence of `outer`: every byte kept, in order.
@@ -443,5 +462,40 @@ fn an_entry_an_earlier_install_wrote_is_upgraded_in_place_and_removed_whole() {
         );
         ok(&fx.ank(&["hooks", "remove", "claude"]), "remove");
         assert_eq!(fx.read(), before, "{before:?}: remove after the upgrade");
+    }
+}
+
+/// The entry install writes is a command the harness can run. Claude Code
+/// hands it to a POSIX shell, Git Bash on Windows, so the test does the same:
+/// `sh -c` with the command exactly as written into the settings, from a
+/// directory outside any corpus, where `run` says nothing and exits 0. An exit
+/// 127 is the shell failing to find the binary the entry names, which is what
+/// every hook did on Windows while the path carried the `\\?\` prefix.
+#[test]
+fn the_installed_command_runs_through_the_shell_the_harness_uses() {
+    let fx = Fixture::new();
+    ok(&fx.ank(&["hooks", "install", "claude"]), "install");
+    let doc = parse(&fx.read());
+    for event in ["SessionStart", "PreToolUse"] {
+        let [command] = commands(&doc, event)
+            .try_into()
+            .unwrap_or_else(|c| panic!("{event}: one entry, and the settings hold {c:?}"));
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .current_dir(fx.base.join("cwd"))
+            .env("CLAUDE_CONFIG_DIR", fx.config())
+            .env("HOME", fx.base.join("home"))
+            .env("USERPROFILE", fx.base.join("home"))
+            .env("ANK_AGENT", "tool/1.0")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("sh must run");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{event}: sh -c {command}\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }

@@ -141,8 +141,9 @@ fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     all
 }
 
+/// The binary as the installed entries name it, which status reports as found.
 fn this_binary() -> String {
-    fs::canonicalize(ANK).unwrap().display().to_string()
+    crate::hooks_install::installed_binary()
 }
 
 fn claude(doc: &serde_yaml::Value) -> &serde_yaml::Value {
