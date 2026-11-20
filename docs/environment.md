@@ -137,6 +137,17 @@ variable unset and `HOME=/home/me`, `/home/me/.config/ank/watch.yml`.
 With none of the three set, a verb that needs the directory refuses at exit 9
 and names the variable to set.
 
+## Variables ank sets for a verifier
+
+The table above lists what ank reads. Four more names go the other way: `ank
+done` and `ank verify` set them for every verifier run they start, and ank
+itself reads none of them. `ANK_TASK` is the full id of the task the run
+proves, `ANK_VERIFIER` the verifier's name, `ANK_SCOPE` the task's scope globs
+one per line, and `ANK_BASE` the merge-base with the default branch. Under `ank
+verify`, `ANK_TASK` and `ANK_SCOPE` are empty. A verifier may declare variables
+of its own and choose what of your environment it receives, and [Proof and
+verifiers](proof.md#what-a-run-is-given) says how.
+
 ## Variables that are not an interface
 
 Three `ANK_` names appear in the source and in no table above. `ANK_COMMIT`,

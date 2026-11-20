@@ -33,7 +33,7 @@ const ENTITIES: &str = "[? keys]  [Enter open]  [f kind]  [/ find]  [c claim]  [
 fn last_row(frame: &str) -> String {
     frame
         .split('\n')
-        .last()
+        .next_back()
         .unwrap_or_default()
         .trim_end()
         .to_string()

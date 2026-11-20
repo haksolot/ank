@@ -263,7 +263,7 @@ fn help_order() -> Vec<String> {
 /// was edited, in the same commit.
 ///
 /// `skills` was declared here ahead of the ratification of the §4 document
-/// that lists it, now SPEC-79012ba18769, and left in the commit of
+/// that lists it, now SPEC-6d686a1a24b0, and left in the commit of
 /// TASK-544ec9655570 that ships it.
 ///
 /// `update` was declared here ahead of the ratification of the §4 document
@@ -275,11 +275,11 @@ fn help_order() -> Vec<String> {
 /// of TASK-97fd1992567a that ships it.
 ///
 /// `signers` was declared here because the §4 document that lists it, now
-/// SPEC-79012ba18769, declared it ahead of its dispatch (ADR-5c6db7a161b8),
+/// SPEC-6d686a1a24b0, declared it ahead of its dispatch (ADR-5c6db7a161b8),
 /// and it left in the commit of TASK-3a7a73ccf2b7 that ships it.
 ///
 /// `hooks` was declared here ahead of the ratification of the §4 document that
-/// lists it, SPEC-79012ba18769 (ADR-376bed7fa39a, ADR-43cbb20dcbf1), and left
+/// lists it, SPEC-6d686a1a24b0 (ADR-89c1e7146fe5, ADR-43cbb20dcbf1), and left
 /// in the commit of TASK-f248037e8bab that ships it.
 const NOT_YET_DISPATCHED: [&str; 0] = [];
 
@@ -350,7 +350,7 @@ fn help_prints_section_4s_order_inside_every_group() {
             .cloned()
             .collect();
         assert_eq!(
-            expected, *printed,
+            &expected, printed,
             "'{heading}' must print §4's order, minus what it does not hold"
         );
     }
@@ -549,7 +549,9 @@ fn the_skill_stays_within_one_page() {
 #[test]
 fn the_skill_teaches_nothing_beyond_what_is_frozen() {
     let text = skill();
-    for verb in ["accept", "close", "attest", "edit"] {
+    // `reject` is `accept`'s other half and a human act on its terms
+    // (ADR-0f4248812651), so it is shown no more than `accept` is.
+    for verb in ["accept", "reject", "close", "attest", "edit"] {
         assert!(
             !text.contains(&format!("ank {verb}")),
             "SKILL.md shows `ank {verb}`, which is outside the content it is \

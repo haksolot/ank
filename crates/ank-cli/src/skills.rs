@@ -161,7 +161,7 @@ fn corpus(inv: &Invocation, cwd: &Path) -> Result<Option<Repo>> {
             if !inv.quiet() {
                 let style = inv.style().on_stderr();
                 for note in notes {
-                    eprintln!("{} {note}", style.yellow("warning:"));
+                    crate::cli::warn(style, &note.to_string(), &[], None);
                 }
             }
             Ok(Some(repo))

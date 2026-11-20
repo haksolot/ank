@@ -6135,7 +6135,7 @@ pub(crate) mod tests {
             entities: vec![
                 row("ADR-8bd76e8d7c4e", "adr", "accepted", "A terminal reader"),
                 row("TASK-49746735127f", "task", "in_progress", "ank tui opens"),
-                row("SPEC-79012ba18769", "spec", "accepted", "The CLI surface"),
+                row("SPEC-6d686a1a24b0", "spec", "accepted", "The CLI surface"),
             ],
             total: 3,
         }
@@ -7994,7 +7994,7 @@ pub(crate) mod tests {
         for expected in [
             "ADR-8bd7",
             "TASK-4974",
-            "SPEC-7901",
+            "SPEC-6d68",
             "accepted",
             "in_progress",
             "wave4/tui-verb",
@@ -8986,7 +8986,7 @@ pub(crate) mod tests {
             [2, 1, 1, 1],
             "the list did not follow the needle keystroke by keystroke"
         );
-        assert_eq!(rendered_rows(&a), ["SPEC-79012ba18769"]);
+        assert_eq!(rendered_rows(&a), ["SPEC-6d686a1a24b0"]);
         assert_eq!(a.note, None, "narrowing said something");
 
         // A Backspace widens it again, on the keystroke, for the same reason.
@@ -9558,13 +9558,13 @@ pub(crate) mod tests {
             // makes a selection mean anything.
             assert_eq!(
                 a.selected_id(Focus::Entities).as_deref(),
-                Some("SPEC-79012ba18769")
+                Some("SPEC-6d686a1a24b0")
             );
             // The mark is drawn on it, and on no other row.
             let frame = a.frame();
             let marked = frame
                 .lines()
-                .filter(|l| l.contains("> ") && l.contains("SPEC-7901"))
+                .filter(|l| l.contains("> ") && l.contains("SPEC-6d68"))
                 .count();
             assert_eq!(marked, 1, "{frame}");
         }
@@ -9622,7 +9622,7 @@ pub(crate) mod tests {
 
             press_at(&mut a, &ank, at, start + SECOND_PRESS);
             assert!(
-                reached_for(&a).contains("SPEC-79012ba18769"),
+                reached_for(&a).contains("SPEC-6d686a1a24b0"),
                 "two presses on the row at {size:?} opened nothing: {}",
                 reached_for(&a)
             );
@@ -9692,7 +9692,7 @@ pub(crate) mod tests {
 
         press_at(&mut a, &ank, at, past + Duration::from_millis(1));
         assert!(
-            reached_for(&a).contains("SPEC-79012ba18769"),
+            reached_for(&a).contains("SPEC-6d686a1a24b0"),
             "the press past the interval was not counted as the one that \
              chooses: {}",
             reached_for(&a)
@@ -10730,8 +10730,7 @@ pub(crate) mod tests {
                 "{window:?}: the list is not longer than its window, so this \
                  asserts nothing about scrolling it"
             );
-            for row in 0..lines.len() {
-                let (text, binding) = lines[row].clone();
+            for (row, (text, binding)) in lines.iter().cloned().enumerate() {
                 let at = scrolled_to(&mut a, row);
                 assert_eq!(
                     a.list_at(at).map(|b| b.entry()),

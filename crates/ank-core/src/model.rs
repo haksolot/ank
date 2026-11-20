@@ -154,14 +154,18 @@ pub enum AdrStatus {
     Proposed,
     Accepted,
     Superseded,
+    /// A proposal a human turned down with a reason (ADR-0f4248812651):
+    /// terminal, binding nobody, anchored at `refs/ank/reject/<id>`.
+    Rejected,
 }
 
 impl AdrStatus {
     /// Every status, in the order the reference page lists them.
-    pub const ALL: [AdrStatus; 3] = [
+    pub const ALL: [AdrStatus; 4] = [
         AdrStatus::Proposed,
         AdrStatus::Accepted,
         AdrStatus::Superseded,
+        AdrStatus::Rejected,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -169,14 +173,19 @@ impl AdrStatus {
             AdrStatus::Proposed => "proposed",
             AdrStatus::Accepted => "accepted",
             AdrStatus::Superseded => "superseded",
+            AdrStatus::Rejected => "rejected",
         }
     }
 
     /// `Accepted -> Superseded` is the only legal write on an accepted ADR,
-    /// performed by the `accept` of the ADR that replaces it.
+    /// performed by the `accept` of the ADR that replaces it. `Proposed ->
+    /// Rejected` is `reject`'s, and nothing leaves `Rejected`.
     pub fn transition_allowed(self, to: AdrStatus) -> bool {
         use AdrStatus::*;
-        matches!((self, to), (Proposed, Accepted) | (Accepted, Superseded))
+        matches!(
+            (self, to),
+            (Proposed, Accepted) | (Accepted, Superseded) | (Proposed, Rejected)
+        )
     }
 
     pub fn check_transition(self, to: AdrStatus) -> Result<()> {
@@ -509,7 +518,7 @@ impl Task {
     ///
     /// The local list only: a peer's blocker is answered by that peer, and
     /// the caller that can open it asks there ([`Task::peer_blocked_by`]).
-    pub fn active_blockers<'a, F>(&'a self, status_of: F) -> Result<Vec<&'a EntityId>>
+    pub fn active_blockers<F>(&self, status_of: F) -> Result<Vec<&EntityId>>
     where
         F: Fn(&EntityId) -> Option<TaskStatus>,
     {
@@ -537,6 +546,25 @@ pub fn split_enforcement(entry: &str) -> Option<(&str, &str)> {
     let (path, symbol) = entry.rsplit_once('#')?;
     let blank = |s: &str| s.is_empty() || s.chars().any(char::is_whitespace);
     (!blank(path) && !blank(symbol)).then_some((path, symbol))
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::AdrStatus::*;
+
+    /// A proposal ends accepted or rejected, and nothing leaves `rejected`
+    /// (ADR-0f4248812651).
+    #[test]
+    fn rejected_is_reached_from_proposed_alone_and_is_terminal() {
+        assert!(Proposed.transition_allowed(Rejected));
+        for from in [Accepted, Superseded, Rejected] {
+            assert!(!from.transition_allowed(Rejected), "{}", from.as_str());
+        }
+        for to in [Proposed, Accepted, Superseded, Rejected] {
+            assert!(!Rejected.transition_allowed(to), "{}", to.as_str());
+        }
+        assert_eq!(Rejected.as_str(), "rejected");
+    }
 }
 
 #[cfg(test)]

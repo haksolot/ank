@@ -231,10 +231,7 @@ impl Corpus {
         let start = said
             .find(DIAGNOSE)
             .unwrap_or_else(|| panic!("no command that diagnoses the failure is named: {said}"));
-        let command = said[start..]
-            .split(|c| c == '`' || c == ')' || c == ';' || c == '\n')
-            .next()
-            .unwrap();
+        let command = said[start..].split(['`', ')', ';', '\n']).next().unwrap();
         let mut words = command.split_whitespace();
         assert_eq!(words.next(), Some("git"));
         let out = spawn("git")

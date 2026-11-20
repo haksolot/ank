@@ -1,6 +1,6 @@
 //! `hooks`: the entries an agent harness calls at its own events, installed
 //! into that harness's user-level configuration, taken out again, and answered
-//! (ADR-376bed7fa39a, ADR-43cbb20dcbf1).
+//! (ADR-89c1e7146fe5, ADR-43cbb20dcbf1).
 //!
 //! **The binary is the handler.** What `install` writes is an entry whose
 //! command runs this executable, by its absolute path, as `hooks run <agent>
@@ -22,6 +22,13 @@
 //! container its owner left empty (`"SessionStart": []`, `"hooks": {}`) would
 //! otherwise come out of `install` looking exactly like one ank created, and
 //! `remove` could not know whether to take the container out with the entry.
+//!
+//! **One protocol decides** (ADR-b108b24202ed). `run` translates each agent's
+//! payload into one call, `event`, `tool`, `paths` and `cwd`, answers it with
+//! one decision, `allow`, `deny` or `context`, and translates that back into
+//! the agent's own bytes. `generic` is the identity translation, which any
+//! harness with a hook can call; `claude` is a translation onto it whose bytes
+//! are the ones it wrote before the protocol existed.
 
 use crate::cli::{CliError, Invocation, Result};
 use crate::config::{Enforce, GuardCorpus, GuardEdit};
@@ -88,6 +95,9 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
             let _ = writeln!(out, "{served}");
         }
         return Ok(ExitCode::Ok);
+    }
+    if sub == "status" {
+        return status(inv, cwd, out);
     }
     let agent = agent(inv, sub)?;
     if let Some(extra) = inv.positionals.get(1) {
@@ -159,30 +169,498 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
     Ok(ExitCode::Ok)
 }
 
+// ---------------------------------------------------------------------------
+// status
+// ---------------------------------------------------------------------------
+
+/// What one agent's settings hold of ank's: the events carrying an entry, and
+/// the binary the first of them calls.
+struct Installed {
+    agent: &'static str,
+    settings: PathBuf,
+    events: Vec<&'static str>,
+    binary: Option<String>,
+    current: bool,
+}
+
+/// One guard, as the corpus declares it and as it runs.
+struct GuardState {
+    key: &'static str,
+    declared: &'static str,
+    in_force: &'static str,
+    variable: &'static str,
+    set: Option<String>,
+    ignored: Option<String>,
+}
+
+/// `hooks status` (ADR-89c1e7146fe5): which agents have ank's entries, calling
+/// which binary, and which guard levels are in force here. It reads the
+/// settings file and the configuration and **writes nothing**: no settings
+/// file is created where there is none, and no corpus is touched.
+///
+/// **A corpus is optional.** Outside one the agents are still listed, and the
+/// answer says no guard applies, since a guard is a corpus's declaration; an
+/// address the caller wrote, `--repo` or `--worktree`, naming nothing is
+/// refused as every verb refuses it.
+fn status(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
+    if let Some(extra) = inv.positionals.first() {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!(
+                "extra argument '{extra}': hooks status answers for every agent install knows, \
+                 and takes none"
+            ),
+        )
+        .with_hint("ank hooks status"));
+    }
+    let mut agents = Vec::new();
+    for agent in AGENTS {
+        agents.push(inspect(agent)?);
+    }
+    let corpus = corpus(inv, cwd)?;
+    let guards = match &corpus {
+        Some(repo) => guards(&crate::config::load(&repo.config_path())?),
+        None => Vec::new(),
+    };
+    let corpus = corpus.map(|r| r.corpus.display().to_string());
+
+    if inv.json() {
+        let agents = agents.iter().map(|a| {
+            Obj::new()
+                .str("agent", a.agent)
+                .str("settings", &a.settings.display().to_string())
+                .bool("installed", a.events.len() == EVENTS.len())
+                .strings("events", &a.events)
+                .opt_str("binary", a.binary.as_deref())
+                .bool("current", a.current)
+                .finish()
+        });
+        let guards = guards.iter().map(|g| {
+            Obj::new()
+                .str("key", g.key)
+                .str("declared", g.declared)
+                .str("in_force", g.in_force)
+                .str("variable", g.variable)
+                .opt_str("set", g.set.as_deref())
+                .opt_str("ignored", g.ignored.as_deref())
+                .finish()
+        });
+        let doc = Obj::document()
+            .array("agents", agents)
+            .opt_str("corpus", corpus.as_deref())
+            .array("guards", guards)
+            .finish();
+        let _ = writeln!(out, "{doc}");
+        return Ok(ExitCode::Ok);
+    }
+
+    for a in &agents {
+        let shown = a.settings.display();
+        let state = if a.events.is_empty() {
+            "not installed".to_string()
+        } else if a.events.len() == EVENTS.len() {
+            format!("installed ({})", a.events.join(", "))
+        } else {
+            format!("partly installed ({})", a.events.join(", "))
+        };
+        let _ = writeln!(out, "{} {state} in {shown}", a.agent);
+        if let Some(binary) = &a.binary {
+            let which = if a.current {
+                "this binary"
+            } else {
+                "not this binary"
+            };
+            let _ = writeln!(out, "  calls {binary}, {which}");
+        }
+    }
+    let _ = writeln!(
+        out,
+        "generic is wired by hand: point a harness's own hook at `ank hooks run generic <event>`"
+    );
+    match &corpus {
+        None => {
+            let _ = writeln!(
+                out,
+                "no corpus is in force here, so no guard applies: guard.corpus and guard.edit \
+                 are a corpus's declaration"
+            );
+        }
+        Some(path) => {
+            let _ = writeln!(out, "corpus {path}");
+            for g in &guards {
+                let set = match (&g.set, &g.ignored) {
+                    (Some(set), None) => format!(", {}={set}", g.variable),
+                    _ => String::new(),
+                };
+                let _ = writeln!(
+                    out,
+                    "{} {}, declared {}{set}",
+                    g.key, g.in_force, g.declared
+                );
+                if let Some(why) = &g.ignored {
+                    let _ = writeln!(out, "  {why}");
+                }
+            }
+        }
+    }
+    Ok(ExitCode::Ok)
+}
+
+/// The corpus `status` reads its guards from, or `None` where no walk finds
+/// one; an address the caller wrote that names nothing is refused.
+fn corpus(inv: &Invocation, cwd: &Path) -> Result<Option<crate::repo::Repo>> {
+    let addressed = inv.repo().is_some() || inv.worktree().is_some();
+    let mut notes = Vec::new();
+    match crate::repo::resolve(inv.repo(), inv.worktree(), cwd, &mut notes) {
+        Ok(repo) => {
+            if !inv.quiet() {
+                let style = inv.style().on_stderr();
+                for note in notes {
+                    crate::cli::warn(style, &note.to_string(), &[], None);
+                }
+            }
+            Ok(Some(repo))
+        }
+        Err(e) if addressed => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
+/// What `agent`'s settings hold of ank's entries, read and never written.
+fn inspect(agent: &'static str) -> Result<Installed> {
+    let settings = settings_path()?;
+    let mut found = Installed {
+        agent,
+        settings: settings.clone(),
+        events: Vec::new(),
+        binary: None,
+        current: false,
+    };
+    let Some(text) = read(&settings)? else {
+        return Ok(found);
+    };
+    let root = parse(&text).map_err(|e| malformed(&settings, e))?;
+    let Some(hooks) = root.member("hooks") else {
+        return Ok(found);
+    };
+    if !matches!(hooks.kind, Kind::Object(_)) {
+        return Err(malformed(&settings, "its hooks is not an object".into()));
+    }
+    for (name, event, _) in EVENTS {
+        let Some(array) = hooks.member(name) else {
+            continue;
+        };
+        let Kind::Array(items) = &array.kind else {
+            return Err(malformed(
+                &settings,
+                format!("its hooks.{name} is not an array"),
+            ));
+        };
+        let Some(command) = items.iter().find_map(|i| ours(i, event)) else {
+            continue;
+        };
+        found.events.push(*name);
+        if found.binary.is_none() {
+            found.binary = Some(binary_of(&command, event));
+        }
+    }
+    if let Some(binary) = &found.binary {
+        let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+        let that = std::fs::canonicalize(binary).ok();
+        found.current = this.is_some() && this == that;
+    }
+    Ok(found)
+}
+
+/// The binary an entry's command runs: what precedes `hooks run claude
+/// <event>`, its quotes taken off.
+fn binary_of(command: &str, event: &str) -> String {
+    let path = command
+        .strip_suffix(&format!(" hooks run claude {event}"))
+        .unwrap_or(command)
+        .trim();
+    path.strip_prefix('"')
+        .and_then(|p| p.strip_suffix('"'))
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// The two guards of `cfg`, each with what the launch environment made of it.
+fn guards(cfg: &crate::config::Config) -> Vec<GuardState> {
+    let set = |var: &str| {
+        std::env::var(var)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let var = ank_contract::env::ANK_GUARD_CORPUS;
+    let (level, ignored) = tightened(cfg.guard.corpus, var, "guard.corpus", GuardCorpus::parse);
+    let corpus = GuardState {
+        key: "guard.corpus",
+        declared: named(cfg.guard.corpus, GuardCorpus::parse),
+        in_force: named(level, GuardCorpus::parse),
+        variable: var,
+        set: set(var),
+        ignored,
+    };
+    let var = ank_contract::env::ANK_GUARD_EDIT;
+    let (level, ignored) = tightened(cfg.guard.edit, var, "guard.edit", GuardEdit::parse);
+    let edit = GuardState {
+        key: "guard.edit",
+        declared: named(cfg.guard.edit, GuardEdit::parse),
+        in_force: named(level, GuardEdit::parse),
+        variable: var,
+        set: set(var),
+        ignored,
+    };
+    vec![corpus, edit]
+}
+
+/// The name of a guard level, by asking the parse which name reads as it: the
+/// table of names stays the config's.
+fn named<L: Copy + PartialEq>(level: L, parse: fn(&str) -> Option<L>) -> &'static str {
+    ["deny", "off", "warn", "claim"]
+        .into_iter()
+        .find(|n| parse(n) == Some(level))
+        .unwrap_or_default()
+}
+
+/// The agents `run` answers for, each a translation onto the protocol
+/// (ADR-b108b24202ed): `generic` is the identity translation, and an agent
+/// `install` knows is one of them.
+const RUNNERS: &[&str] = &["claude", "generic"];
+
+/// The events of the protocol, under the names `run` is called with.
+#[derive(Clone, Copy, PartialEq)]
+enum Event {
+    SessionStart,
+    PreToolUse,
+}
+
+/// One call of the hook protocol (ADR-b108b24202ed): what every agent's payload
+/// is translated into, and what `generic` reads as it is written.
+///
+/// `tool` is `read`, `search`, `edit` or `shell`; any tool but `shell` is
+/// confronted with `guard.corpus` for every path it reaches, and `edit` with
+/// `guard.edit` as well. `paths` are relative to `cwd`, or absolute; `command`
+/// is the line a `shell` call runs.
+struct Call {
+    event: Event,
+    tool: String,
+    paths: Vec<String>,
+    command: Option<String>,
+    cwd: Option<PathBuf>,
+}
+
+/// What the protocol answers: the call goes on, with a message for the agent
+/// or none; it is refused, with the reason; or, at session start, the text the
+/// agent is served.
+enum Decision {
+    Allow(Option<String>),
+    Deny(String),
+    Context(String),
+}
+
 /// What `hooks run` prints for an event, or `None` for silence.
 ///
 /// **Every failure is silence.** An event this version does not serve, a
 /// payload that is not a JSON object, a directory no corpus answers for, a
 /// status that cannot be read: each is `None`, and `None` is a 0 with nothing
-/// on stdout, which Claude Code reads as "go on".
+/// on stdout, which Claude Code reads as "go on", and any harness wired to
+/// `generic` is told to read the same way.
+///
+/// **One place decides.** The agent's payload is translated into a [`Call`],
+/// [`decide`] answers it, and the [`Decision`] is translated back into the
+/// agent's own format: no agent's adapter makes a guard decision of its own.
 fn serve(inv: &Invocation, cwd: &Path) -> Option<String> {
     let [agent, event] = inv.positionals.as_slice() else {
         return None;
     };
-    if agent != "claude" || !matches!(event.as_str(), "session-start" | "pre-tool-use") {
+    let event = match event.as_str() {
+        "session-start" => Event::SessionStart,
+        "pre-tool-use" => Event::PreToolUse,
+        _ => return None,
+    };
+    if !RUNNERS.contains(&agent.as_str()) {
         return None;
     }
     let mut payload = Vec::new();
     std::io::stdin().read_to_end(&mut payload).ok()?;
     let payload = parse(&String::from_utf8(payload).ok()?).ok()?;
-    if event == "pre-tool-use" {
-        return pre_tool_use(&payload, cwd);
+    if agent == "claude" {
+        let call = claude_call(event, &payload, cwd)?;
+        claude_answer(event, decide(&call, cwd)?)
+    } else {
+        let call = generic_call(event, &payload)?;
+        Some(generic_answer(decide(&call, cwd)?))
     }
-    let context = session_start(cwd)?;
-    let output = Obj::new()
-        .str("hookEventName", "SessionStart")
-        .str("additionalContext", &context);
-    Some(Obj::new().obj("hookSpecificOutput", output).finish())
+}
+
+/// The protocol's answer to `call`, or `None` where it has nothing to say: no
+/// corpus answers for the directory, or an error of its own, either of which
+/// lets the call through.
+fn decide(call: &Call, cwd: &Path) -> Option<Decision> {
+    let base = call
+        .cwd
+        .clone()
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| cwd.to_path_buf());
+    match call.event {
+        Event::SessionStart => session_start(&base).map(Decision::Context),
+        // A shell call is the permissions guard's alone: the two file guards
+        // have no path to confront it with, and say nothing about it.
+        Event::PreToolUse if call.tool == "shell" => shell_call(call.command.as_deref()?, &base),
+        Event::PreToolUse => file_call(call, &base),
+    }
+}
+
+/// A `generic` document read as the protocol writes it: a JSON object whose
+/// `event`, when present, is the event `run` was called with, whose `tool`
+/// and, for a shell call, `command` are strings, whose `paths` is an array of
+/// strings, and whose `cwd` is a string. Anything else is `None`.
+fn generic_call(event: Event, doc: &Node) -> Option<Call> {
+    let text = |key: &str| -> Option<Option<String>> {
+        match doc.member(key) {
+            None => Some(None),
+            Some(n) => n.text().map(|t| Some(t.to_string())),
+        }
+    };
+    let named = match event {
+        Event::SessionStart => "session-start",
+        Event::PreToolUse => "pre-tool-use",
+    };
+    if text("event")?.is_some_and(|e| e != named) {
+        return None;
+    }
+    let cwd = text("cwd")?.map(PathBuf::from);
+    if event == Event::SessionStart {
+        return Some(Call {
+            event,
+            tool: String::new(),
+            paths: Vec::new(),
+            command: None,
+            cwd,
+        });
+    }
+    let tool = text("tool")??;
+    let paths = match doc.member("paths") {
+        None => Vec::new(),
+        Some(n) if matches!(n.kind, Kind::Array(_)) => n
+            .items()
+            .into_iter()
+            .map(|p| p.text().map(str::to_string))
+            .collect::<Option<Vec<_>>>()?,
+        Some(_) => return None,
+    };
+    let command = text("command")?;
+    if tool == "shell" && command.is_none() {
+        return None;
+    }
+    Some(Call {
+        event,
+        tool,
+        paths,
+        command,
+        cwd,
+    })
+}
+
+/// A decision as the protocol writes it, one JSON object on one line.
+fn generic_answer(decision: Decision) -> String {
+    let doc = Obj::new();
+    match decision {
+        Decision::Allow(None) => doc.str("decision", "allow"),
+        Decision::Allow(Some(message)) => doc.str("decision", "allow").str("message", &message),
+        Decision::Deny(reason) => doc.str("decision", "deny").str("reason", &reason),
+        Decision::Context(text) => doc.str("decision", "context").str("text", &text),
+    }
+    .finish()
+}
+
+/// Claude Code's payload translated into the protocol, or `None` where the
+/// handler before the protocol said nothing: a tool it does not match, a
+/// shell call with no command, a payload missing its tool.
+///
+/// **What Claude Code reads is unchanged** (ADR-b108b24202ed): the session's
+/// directory is the process's at session start, as it always was, and the
+/// paths a tool reaches are resolved here exactly as they were before, so
+/// [`decide`] confronts the same places with the corpus.
+fn claude_call(event: Event, payload: &Node, cwd: &Path) -> Option<Call> {
+    if event == Event::SessionStart {
+        return Some(Call {
+            event,
+            tool: String::new(),
+            paths: Vec::new(),
+            command: None,
+            cwd: None,
+        });
+    }
+    let tool = payload.member("tool_name")?.text()?;
+    let input = payload.member("tool_input")?;
+    let typed = payload
+        .member("cwd")
+        .and_then(Node::text)
+        .map(PathBuf::from);
+    let base = typed
+        .clone()
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let (kind, command) = match tool {
+        "Bash" => ("shell", Some(input.member("command")?.text()?.to_string())),
+        "Read" => ("read", None),
+        "Glob" | "Grep" => ("search", None),
+        t if EDITORS.contains(&t) => ("edit", None),
+        _ => return None,
+    };
+    let paths = targets(tool, input, &base)
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    Some(Call {
+        event,
+        tool: kind.to_string(),
+        paths,
+        command,
+        cwd: typed,
+    })
+}
+
+/// A decision in the bytes Claude Code reads: nothing for a call let through
+/// in silence, `systemMessage` and `additionalContext` for one let through
+/// with a message, `permissionDecision` for a refusal, and the session's
+/// `additionalContext` at its start.
+fn claude_answer(event: Event, decision: Decision) -> Option<String> {
+    let name = match event {
+        Event::SessionStart => "SessionStart",
+        Event::PreToolUse => "PreToolUse",
+    };
+    match decision {
+        Decision::Allow(None) => None,
+        Decision::Allow(Some(message)) => {
+            let output = Obj::new()
+                .str("hookEventName", name)
+                .str("additionalContext", &message);
+            Some(
+                Obj::new()
+                    .str("systemMessage", &message)
+                    .obj("hookSpecificOutput", output)
+                    .finish(),
+            )
+        }
+        Decision::Deny(reason) => {
+            let output = Obj::new()
+                .str("hookEventName", name)
+                .str("permissionDecision", "deny")
+                .str("permissionDecisionReason", &reason);
+            Some(Obj::new().obj("hookSpecificOutput", output).finish())
+        }
+        Decision::Context(text) => {
+            let output = Obj::new()
+                .str("hookEventName", name)
+                .str("additionalContext", &text);
+            Some(Obj::new().obj("hookSpecificOutput", output).finish())
+        }
+    }
 }
 
 /// What an agent is told as its session opens: `ank status` for its identity,
@@ -216,8 +694,9 @@ How to work with them is the ank skill; `ank skills --install` installs it if it
 /// the entry is matched to is one `guard.corpus` looks at.
 const EDITORS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
 
-/// What Claude Code is told before a file tool runs, or `None` to let it run
-/// in silence (ADR-43cbb20dcbf1).
+/// The protocol's answer before a tool that reaches files (ADR-43cbb20dcbf1),
+/// or `None` where no corpus answers for the directory or the guard cannot
+/// read what it needs, either of which lets the call through.
 ///
 /// **The path is the one the tool will reach, not the one it was typed as.**
 /// Relative to the session's directory, absolute, or through a symbolic link,
@@ -230,25 +709,12 @@ const EDITORS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
 /// configuration and nothing else; the edit guard adds the one reading of the
 /// claims namespace `claim::on_task` makes and the one entity file it names
 /// (ADR-cc65f1388a71).
-fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
-    let tool = payload.member("tool_name")?.text()?;
-    let input = payload.member("tool_input")?;
-    let base = payload
-        .member("cwd")
-        .and_then(Node::text)
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| cwd.to_path_buf());
-    // A shell call is the permissions guard's alone: the two file guards have
-    // no path to confront it with, and say nothing about it, as before.
-    if tool == "Bash" {
-        return shell_call(input, &base);
-    }
-    let repo = crate::repo::resolve(None, None, &base, &mut Vec::new()).ok()?;
+fn file_call(call: &Call, base: &Path) -> Option<Decision> {
+    let repo = crate::repo::resolve(None, None, base, &mut Vec::new()).ok()?;
     let cfg = crate::config::load(&repo.config_path()).ok()?;
-    let targets = targets(tool, input, &base);
+    let targets: Vec<PathBuf> = call.paths.iter().map(|p| real(&base.join(p))).collect();
     if targets.is_empty() {
-        return None;
+        return Some(Decision::Allow(None));
     }
     let corpus = real(&repo.ank);
     let worktree = real(&repo.worktree);
@@ -262,7 +728,7 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
     let under: Vec<&PathBuf> = targets.iter().filter(|t| t.starts_with(&corpus)).collect();
     if let Some(target) = under.first() {
         if level == GuardCorpus::Off {
-            return None;
+            return Some(Decision::Allow(None));
         }
         let shown = shown(target, &worktree);
         let reason = format!(
@@ -271,11 +737,11 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
              <query>` lists, `ank context <path>` serves what binds a perimeter.{}",
             note.map(|n| format!(" {n}")).unwrap_or_default()
         );
-        return Some(deny(&reason));
+        return Some(Decision::Deny(reason));
     }
 
-    if !EDITORS.contains(&tool) {
-        return None;
+    if call.tool != "edit" {
+        return Some(Decision::Allow(None));
     }
     let (level, note) = tightened(
         cfg.guard.edit,
@@ -284,7 +750,7 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
         GuardEdit::parse,
     );
     if level == GuardEdit::Off {
-        return None;
+        return Some(Decision::Allow(None));
     }
     let (identity, _) = crate::identity::resolved();
     // Outside the work tree a path is no perimeter, and nothing can cover it.
@@ -294,9 +760,11 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
         .filter_map(|rel| ank_core::normalize_path(&rel.to_string_lossy()))
         .filter(|rel| !rel.is_empty())
         .collect();
-    let path = paths.first()?;
+    let Some(path) = paths.first() else {
+        return Some(Decision::Allow(None));
+    };
     if covered(&repo, &identity, path)? {
-        return None;
+        return Some(Decision::Allow(None));
     }
     let note = note.map(|n| format!(" {n}")).unwrap_or_default();
     if level == GuardEdit::Claim {
@@ -304,27 +772,19 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
             "guard.edit is claim, and no live claim of {identity} covers {path}: `ank context \
              {path}` names the task that does, and `ank claim <id>` takes it.{note}"
         );
-        return Some(deny(&reason));
+        return Some(Decision::Deny(reason));
     }
-    let message = format!(
+    Some(Decision::Allow(Some(format!(
         "no live claim of {identity} covers {path}: `ank context {path}` names what binds it \
          and what is claimable, and `ank claim <id>` takes the task.{note}"
-    );
-    let output = Obj::new()
-        .str("hookEventName", "PreToolUse")
-        .str("additionalContext", &message);
-    Some(
-        Obj::new()
-            .str("systemMessage", &message)
-            .obj("hookSpecificOutput", output)
-            .finish(),
-    )
+    ))))
 }
 
 /// What a shell call meets under the permissions guard (ADR-ddbe024ca7f2):
 /// refused under `deny` when one of the ank verbs it runs performs an act the
 /// identity's role forbids, naming the entry and the command a human runs
-/// instead; `None` otherwise, which lets it run.
+/// instead; let through otherwise, with the note when a value the launcher
+/// set was ignored.
 ///
 /// **A command that runs no ank costs nothing.** It is split and read before
 /// any corpus is resolved, so `cargo test` or `git status` starts no git and
@@ -335,11 +795,10 @@ fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
 /// **The identity is the session's**, the `ANK_AGENT` the hook runs under,
 /// and never a prefix the command sets: `ANK_AGENT=human:me ank accept` is
 /// judged as the agent that typed it.
-fn shell_call(input: &Node, base: &Path) -> Option<String> {
-    let command = input.member("command")?.text()?;
+fn shell_call(command: &str, base: &Path) -> Option<Decision> {
     let calls = ank_calls(command);
     if calls.is_empty() {
-        return None;
+        return Some(Decision::Allow(None));
     }
     let repo = crate::repo::resolve(None, None, base, &mut Vec::new()).ok()?;
     let cfg = crate::config::load(&repo.config_path()).ok()?;
@@ -358,30 +817,20 @@ fn shell_call(input: &Node, base: &Path) -> Option<String> {
             };
             for act in crate::cli::acts_of(&inv) {
                 if let Some(f) = cfg.forbids(&identity, &act) {
-                    let reason = format!(
+                    return Some(Decision::Deny(format!(
                         "permissions.enforce is deny, and role '{}' of {identity} forbids \
                          {act} ({}): `{typed}` is a human's to run, from their own terminal \
                          under an identity whose role allows it.{suffix}",
                         f.role, f.entry
-                    );
-                    return Some(deny(&reason));
+                    )));
                 }
             }
         }
-        return None;
+        return Some(Decision::Allow(None));
     }
     // Nothing refused, and a value the launcher set was ignored: said, as the
     // file guards say it.
-    let note = note?;
-    let output = Obj::new()
-        .str("hookEventName", "PreToolUse")
-        .str("additionalContext", &note);
-    Some(
-        Obj::new()
-            .str("systemMessage", &note)
-            .obj("hookSpecificOutput", output)
-            .finish(),
-    )
+    Some(Decision::Allow(note))
 }
 
 /// The ank invocations a shell command runs, each as it was typed and as the
@@ -509,16 +958,6 @@ fn shell_words(part: &str) -> Vec<String> {
     words
 }
 
-/// The answer that refuses the tool call, with the reason Claude Code shows the
-/// agent.
-fn deny(reason: &str) -> String {
-    let output = Obj::new()
-        .str("hookEventName", "PreToolUse")
-        .str("permissionDecision", "deny")
-        .str("permissionDecisionReason", reason);
-    Obj::new().obj("hookSpecificOutput", output).finish()
-}
-
 /// Whether a live claim of `identity` covers `path`, matched the way `ank
 /// scope` matches it; `None` when the claims or the task cannot be read, which
 /// lets the call through.
@@ -629,12 +1068,7 @@ fn tightened<L: Copy + Ord>(
     match parse(set) {
         Some(level) if level >= declared => (level, None),
         Some(_) => {
-            // The name of the declared level, by asking the parse which name
-            // reads as it: the table of names stays the config's.
-            let named = ["deny", "off", "warn", "claim"]
-                .into_iter()
-                .find(|n| parse(n) == Some(declared))
-                .unwrap_or_default();
+            let named = named(declared, parse);
             (
                 declared,
                 Some(format!(
@@ -658,17 +1092,32 @@ fn agent<'a>(inv: &'a Invocation, sub: &str) -> Result<&'a str> {
         return Err(CliError::new(
             ExitCode::Generic,
             format!(
-                "hooks {sub} names its agent, and {} is the only one",
+                "hooks {sub} names its agent: {} is the one it installs for, and generic is \
+                 wired by hand",
                 AGENTS.join(", ")
             ),
         )
         .with_hint(hint));
     };
+    // The protocol itself has no settings file to write: its harness wires it
+    // in its own hook configuration (ADR-b108b24202ed).
+    if name == "generic" {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!(
+                "generic is wired by hand: it is the hook protocol itself, with no settings \
+                 file for hooks {sub} to write; point the harness's own hook at `ank hooks run \
+                 generic <event>`, as docs/integrating.md shows"
+            ),
+        )
+        .with_hint("ank hooks run generic pre-tool-use"));
+    }
     if !AGENTS.contains(&name.as_str()) {
         return Err(CliError::new(
             ExitCode::Generic,
             format!(
-                "no agent named '{name}': {} is the only one this version installs for",
+                "no agent named '{name}': {} is the one this version installs for, and generic \
+                 is wired by hand",
                 AGENTS.join(", ")
             ),
         )

@@ -11,11 +11,11 @@ checkout, `ank find --type spec` lists them and `ank show <id>` prints one whole
 On the web, each link below opens the file as the default branch has it.
 
 - [SPEC-3d417b8d8d91](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-3d417b8d8d91.md) Intent, principles, and what v1 leaves out
-- [SPEC-ed5f09df66ef](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-ed5f09df66ef.md) The data model
+- [SPEC-a13982bca401](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-a13982bca401.md) The data model
 - [SPEC-3252ad5a72e3](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-3252ad5a72e3.md) Storage and search
 - [SPEC-43a2bcb939e3](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-43a2bcb939e3.md) Synchronisation
-- [SPEC-ff885356f1f9](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-ff885356f1f9.md) Proof, anchoring and authority
-- [SPEC-79012ba18769](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-79012ba18769.md) The CLI surface
+- [SPEC-a1b14070012d](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-a1b14070012d.md) Proof, anchoring and authority
+- [SPEC-6d686a1a24b0](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-6d686a1a24b0.md) The CLI surface
 - [SPEC-558c07ebae8e](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-558c07ebae8e.md) Presentation: structure for every reader, colour for a terminal, and an identifier by its kind
 - [SPEC-a1234da5449a](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-a1234da5449a.md) The attention budget and the constraint lifecycle
 - [SPEC-f0eef72fe74d](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-f0eef72fe74d.md) Bootstrapping, teaching and distribution

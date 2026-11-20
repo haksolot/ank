@@ -29,8 +29,6 @@
 
 #![cfg(unix)]
 
-use crate::terminal;
-
 use crate::terminal::{ids_of, short_of, Live, Repo};
 
 /// The key that answers a confirmation, out of the reader's own table.
@@ -269,7 +267,7 @@ fn the_pane_lists_every_declared_key_with_its_value_and_its_source() {
             Some(source) => {
                 answered_any += 1;
                 assert!(
-                    said.contains(&format!("{key}")),
+                    said.contains(key.as_str()),
                     "'{key}' is not on the pane:\n{frame}"
                 );
                 assert!(
@@ -287,7 +285,7 @@ fn the_pane_lists_every_declared_key_with_its_value_and_its_source() {
             None => {
                 refused_any += 1;
                 assert!(
-                    said.contains(&format!("{key}")),
+                    said.contains(key.as_str()),
                     "'{key}' was refused and dropped from the pane:\n{frame}"
                 );
             }

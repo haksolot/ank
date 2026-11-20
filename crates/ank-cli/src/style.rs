@@ -505,7 +505,10 @@ mod tests {
         }
         fn adr(v: AdrStatus) -> &'static str {
             match v {
-                AdrStatus::Proposed | AdrStatus::Accepted | AdrStatus::Superseded => v.as_str(),
+                AdrStatus::Proposed
+                | AdrStatus::Accepted
+                | AdrStatus::Superseded
+                | AdrStatus::Rejected => v.as_str(),
             }
         }
 
@@ -518,6 +521,7 @@ mod tests {
             adr(AdrStatus::Proposed),
             adr(AdrStatus::Accepted),
             adr(AdrStatus::Superseded),
+            adr(AdrStatus::Rejected),
         ] {
             let marker = format!("[{state}]");
             assert_ne!(

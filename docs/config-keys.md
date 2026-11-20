@@ -20,6 +20,9 @@ This build reads `schema: 1` through `schema: 2`; a file carrying `requires_ank`
 | `verifiers.<name>.timeout` | duration | `10m` | how long `done` lets the command run; at least `1s` |
 | `verifiers.<name>.default` | boolean | `false` | `true` writes the verifier into every task `ank new task` creates |
 | `verifiers.<name>.inputs` | list of globs | none | the files whose content can change the result, relative to the root; absent, the whole tree; written as one flow sequence, never empty |
+| `verifiers.<name>.vars.<NAME>` | string | none | a variable every run of the verifier is given, with this fixed value; a name beginning `ANK_` is refused, since ank sets those itself (ADR-ebe85b3aa79d) |
+| `verifiers.<name>.inherit_env` | `false` or list of names | none | the variables of the caller's environment a run receives; `false` passes none, `PATH` included; absent, the whole environment; written as one flow sequence holding at least one name |
+| `verifiers.<name>.cwd` | path | none | the directory a run starts in, relative to the root and inside it, which must exist; absent, the root |
 | `proof.reuse_max_age` | duration | `24h` | how old a passing run recorded under `<git-common-dir>/ank/runs/` may be for `done` to reuse it rather than run the verifier again, at least `1s`; `done --fresh` reuses nothing |
 | `verifier_jobs` | integer | none | how many verifiers one `done` runs at once, at least 1; absent, the machine's available parallelism |
 | `verifier_lock` | boolean | `true` | whether `done` waits for the verifiers another `done` of the repository is running, in any of its worktrees, before it starts its own; `false` lets them run at the same time (ADR-eab130f731f3) |
@@ -31,6 +34,8 @@ This build reads `schema: 1` through `schema: 2`; a file carrying `requires_ank`
 | `weight.plane_bytes` | integer | `4000000` | `check` signals claim and proof records weighing more bytes |
 | `guard.corpus` | `deny` or `off` | `deny` | what `ank hooks run` does with a file tool aimed under the corpus directory: `deny` refuses it, `off` lets it through; a launch environment may set `ANK_GUARD_CORPUS` tighter, never looser (ADR-43cbb20dcbf1) |
 | `guard.edit` | `off`, `warn` or `claim` | `warn` | what `ank hooks run` does with an edit no live claim of the identity covers: `off` says nothing, `warn` lets it through naming the path, `claim` refuses it; a launch environment may set `ANK_GUARD_EDIT` tighter, never looser (ADR-43cbb20dcbf1) |
+| `check.severity.<kind>` | `fault` | none | raises a kind `check` reports as a signal to a fault, named as raised by the repository; only `fault` is written, a kind already a fault or unknown to `check` is refused, and nothing lowers a fault; the kinds are listed in [Reading ank check](check.md#raising-a-signal-to-a-fault) (ADR-55460a57353a) |
+| `ratify.require_signature` | boolean | `false` | `true` makes `accept` refuse, before it writes anything, when git cannot sign with a key `signers` declares, and makes `check` fault an unsigned ratification or one by an undeclared key; `ank config` refuses `true` while `signers` declares no key (ADR-2e777475c4de) |
 | `signers.<principal>.keys[].key` | string | required | a key allowed to ratify, `gpg <fingerprint>` or `<ssh key type> <base64>`; the block is written by `ank signers`, never by `ank config` (ADR-5c6db7a161b8) |
 | `signers.<principal>.keys[].note` | string | none | what the key is, for the reader; `ank signers migrate` puts the comments of a former `.ank/allowed_signers` here |
 | `signers.<principal>.keys[].valid_before` | date | none | `YYYY-MM-DD`: the key ratifies nothing committed from that day on, UTC, and what it signed before stays verified; absent, the key has no end |

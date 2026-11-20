@@ -2691,7 +2691,7 @@ fn all_ratifications(cwd: &Path) -> Result<HashMap<String, Ratification>> {
         // An empty field is a field, so counting is what a separator could not
         // do.
         let fields: Vec<&str> = text.split('\0').collect();
-        for record in fields.chunks_exact(5) {
+        for record in fields.as_chunks::<5>().0 {
             let sha = record[0];
             // `--format` implies `--pretty`, whose own `commit <sha>` line
             // precedes the format output. `%H` is the last line of this field
@@ -2986,6 +2986,26 @@ fn parse_ratify_tag(name: &str, kind: &str, body: &[u8]) -> Option<RatifyTag> {
 /// which object a ref names, and that is [`ank_refs`]' to know.
 type RatifyMemo = OnceLock<Mutex<HashMap<PathBuf, HashMap<String, Option<RatifyTag>>>>>;
 static RATIFY_TAGS: RatifyMemo = OnceLock::new();
+
+/// Where `reject` anchors a proposal turned down (ADR-0f4248812651), beside
+/// `refs/ank/ratify/` and pushed to origin the same way.
+pub const REJECT_PREFIX: &str = "refs/ank/reject/";
+
+/// `refs/ank/reject/<id>` for `id`.
+pub fn reject_ref(id: &ank_core::EntityId) -> String {
+    format!("{REJECT_PREFIX}{id}")
+}
+
+/// The ids a rejection ref names, read off the one enumeration of
+/// `refs/ank/*` every coordinating verb already makes: no process of its own,
+/// so `check` pays nothing per rejected document (ADR-cc65f1388a71).
+pub fn rejected_ids(cwd: &Path) -> HashSet<String> {
+    ank_refs(cwd)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|r| r.name.strip_prefix(REJECT_PREFIX).map(str::to_string))
+        .collect()
+}
 
 /// Every ratification ref, keyed by the id its name carries.
 ///

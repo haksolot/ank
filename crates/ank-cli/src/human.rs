@@ -172,6 +172,7 @@ kinds! {
     RequiresAnk => "requires-ank",
     ConfigBound => "config-bound",
     RoleWord => "role-word",
+    Severity => "severity",
     Role => "role",
     NoConstraint => "no-constraint",
     EnforcedBy => "enforced-by",
@@ -183,6 +184,7 @@ kinds! {
     RatificationUnverifiable => "ratification-unverifiable",
     RatificationBehind => "ratification-behind",
     RatificationRefMissing => "ratification-ref-missing",
+    RejectionUnanchored => "rejection-unanchored",
     SupersessionUnratified => "supersession-unratified",
     Signature => "signature",
     SelfRatified => "self-ratified",
@@ -325,6 +327,7 @@ const OWES: &[(Kind, Owes)] = &[
     (Kind::RatificationBehind, Owes::Remedy),
     // `git update-ref`.
     (Kind::RatificationRefMissing, Owes::Remedy),
+    (Kind::RejectionUnanchored, Owes::Fault),
     (Kind::SupersessionUnratified, Owes::Subject),
     (Kind::Signature, Owes::Fault),
     (Kind::SelfRatified, Owes::Subject),
@@ -353,6 +356,9 @@ const OWES: &[(Kind, Owes)] = &[
     // A word outside the role vocabulary: the role means something other than
     // what it reads as, and only its author knows which word was meant.
     (Kind::RoleWord, Owes::Fault),
+    // A severity the file declares and check cannot apply: only its author
+    // knows which kind, or which raise, was meant.
+    (Kind::Severity, Owes::Fault),
     // A recorded act the actor's role forbade: owed while what it acted on is
     // unsettled, since the record itself never changes.
     (Kind::Role, Owes::Subject),
@@ -365,6 +371,44 @@ impl Kind {
     /// failure.
     pub fn owes(self) -> Option<Owes> {
         OWES.iter().find(|(k, _)| *k == self).map(|(_, o)| *o)
+    }
+
+    /// Whether `check.severity.<kind>: fault` may name this kind
+    /// (ADR-55460a57353a): every kind `check` reports as a signal by default,
+    /// and none that is only ever a fault, since raising one would declare
+    /// nothing and read as a policy.
+    pub fn raisable(self) -> bool {
+        self.owes() != Some(Owes::Fault)
+    }
+}
+
+/// The kinds `check.severity` may raise, in the order of [`Kind::ALL`],
+/// comma-separated: what a refusal names and what docs/check.md shows.
+pub fn raisable_kinds() -> String {
+    Kind::ALL
+        .iter()
+        .filter(|k| k.raisable())
+        .map(|k| k.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Why `check.severity.<word>: <value>` cannot be applied, or `None` when it
+/// raises a kind (ADR-55460a57353a). One sentence for `ank config`, which
+/// refuses it, and for `check`, which faults `config.yml` on it.
+pub fn severity_refusal(word: &str, value: &str) -> Option<String> {
+    let key = format!("check.severity.{word}");
+    match Kind::parse(word) {
+        None => Some(format!(
+            "{key}: no rule of check answers to the kind '{word}'"
+        )),
+        Some(kind) if !kind.raisable() => Some(format!(
+            "{key}: {word} is already a fault, and a severity only raises"
+        )),
+        Some(_) if value != "fault" => Some(format!(
+            "{key}: '{value}' is not a severity: only fault may be written, and no value lowers a kind"
+        )),
+        Some(_) => None,
     }
 }
 
@@ -504,7 +548,7 @@ impl Report {
         });
     }
 
-    /// `check --peers` (ADR-376bed7fa39a): a declared peer that cannot be
+    /// `check --peers` (ADR-89c1e7146fe5): a declared peer that cannot be
     /// read is a fault rather than a signal. Raised here, on the report, and
     /// not in the inspection, because `status` and `review` read the same
     /// inspection and never ask for the peers.
@@ -514,6 +558,33 @@ impl Report {
                 f.level = Level::Fault;
                 f.owed = true;
             }
+        }
+        self.sort();
+    }
+
+    /// `check.severity` and `check --strict` (ADR-55460a57353a): a signal of a
+    /// kind the repository raised, or every signal under `--strict`, reported
+    /// as a fault, owed, and saying what raised it. On the report and not in
+    /// the inspection, for the reason [`Report::require_peers`] is: `status`
+    /// and `review` read the same inspection, and the policy is `check`'s.
+    fn raise(&mut self, raised: &BTreeSet<Kind>, strict: bool) {
+        for f in &mut self.findings {
+            if f.level != Level::Signal {
+                continue;
+            }
+            let why = if raised.contains(&f.kind) {
+                format!(
+                    "raised to a fault by this repository: check.severity.{} in .ank/config.yml",
+                    f.kind
+                )
+            } else if strict {
+                "raised to a fault by check --strict".to_string()
+            } else {
+                continue;
+            };
+            f.level = Level::Fault;
+            f.owed = true;
+            f.note.push(why);
         }
         self.sort();
     }
@@ -691,21 +762,28 @@ pub fn check(
 ) -> Result<ExitCode> {
     let kind = kind_flag(inv)?;
     let path = crate::context::perimeter(inv, repo)?;
+    // `--strict` writes nothing (ADR-55460a57353a): no remote repaired, no ref
+    // pruned. The run is a gate, and a gate that moves what it judges answers
+    // a different question the second time it is asked.
+    let strict = inv.has("--strict");
     // Repaired before the inspection reads a single ref, so the proofs the
     // fetch brings are the ones it counts (ADR-1b030fe70442). Only where git
     // runs here: a check outside a repository starts no process for it.
-    let origin = git::usable_here(&repo.corpus).then(|| {
+    let origin = (git::usable_here(&repo.corpus) && !strict).then(|| {
         let (remotes, repaired) = crate::init::repair_remotes(&repo.corpus);
         if let Some(line) = repaired.filter(|_| !inv.quiet()) {
             eprintln!("{line}");
         }
         remotes
     });
-    let mut report = inspect_with(repo, cfg, path.as_deref(), true, origin)?;
+    let mut report = inspect_with(repo, cfg, path.as_deref(), !strict, origin)?;
     check_config_bounds(repo, bounds, &mut report);
+    check_verifier_cwds(repo, cfg, &mut report);
     if inv.has("--peers") {
         report.require_peers();
     }
+    let raised = check_severity(repo, cfg, &mut report);
+    report.raise(&raised, strict);
     // The code is the whole corpus's whatever is shown: narrowing the listing
     // to one kind must not turn a corpus with a fault green.
     let code = report.exit_code();
@@ -1839,7 +1917,8 @@ fn coordination(cwd: &Path, report: &mut Report) -> Result<Plane> {
 /// Served are the three a verb reads: `claims/`, `proof/`, and the mirror's
 /// `watch/<remote>/claims/` (ADR-4b45f344344f; the mirror's prefix is
 /// `context::WATCH_PREFIX`), and `ratify/`, which `accept` writes
-/// (ADR-5e47007a75be). It is counted as served before a reader reads it,
+/// (ADR-5e47007a75be), and `reject/`, which `reject` writes
+/// (ADR-0f4248812651). It is counted as served before a reader reads it,
 /// because the alternative is a finding whose note names the deletion of a
 /// ratification. Anything else is grouped by its first segment, or
 /// by `watch/<remote>/<segment>/` under the mirror, so a former feature's
@@ -1849,6 +1928,7 @@ fn foreign_namespace(name: &str) -> Option<String> {
     if name.starts_with(claim::CLAIMS_PREFIX)
         || name.starts_with(claim::PROOF_PREFIX)
         || name.starts_with(claim::RATIFY_PREFIX)
+        || name.starts_with(git::REJECT_PREFIX)
     {
         return None;
     }
@@ -2243,8 +2323,34 @@ pub const NO_RATIFICATION_KEY: &str =
 
 /// §8: with no signing configured, permissions are advisory. Displayed rather
 /// than hidden, and once rather than once per entity.
+/// `ratify.require_signature` as the file says it, `false` for a file that
+/// does not read: every verb already reports that one.
+fn signature_required(repo: &Repo) -> bool {
+    crate::config::load(&repo.config_path()).is_ok_and(|c| c.require_signature)
+}
+
 fn check_signers(repo: &Repo, report: &mut Report) {
     let keys = declared_signers(repo).len();
+    // A regime nobody can satisfy, written past `ank config`
+    // (ADR-2e777475c4de): a fault on the file, beside the ones each
+    // ratification then carries.
+    if keys == 0 && signature_required(repo) {
+        let file = repo.config_path();
+        let subject = file
+            .strip_prefix(&repo.corpus)
+            .unwrap_or(&file)
+            .to_string_lossy()
+            .replace('\\', "/");
+        report.findings.push(
+            Finding::fault(
+                Kind::Signature,
+                &subject,
+                "ratify.require_signature is true, and signers: declares no key: no ratification \
+                 can satisfy it",
+            )
+            .with_note(vec!["ank signers add".to_string()]),
+        );
+    }
     if keys == 0 {
         report.findings.push(Finding::signal(
             Kind::NoSigners,
@@ -3644,6 +3750,74 @@ fn check_config_bounds(repo: &Repo, bounds: &[String], report: &mut Report) {
     }
 }
 
+/// A verifier `cwd` naming no directory of the work tree, or one outside it
+/// once links resolve (ADR-ebe85b3aa79d), one fault each on `config.yml`.
+///
+/// **Here and not at load**, because the parser reads text and knows no work
+/// tree, and because a directory a fresh checkout lacks must not stop every
+/// verb: `done` refuses the run itself at exit 9. A `cwd` whose text already
+/// leaves the root is a bound, and [`check_config_bounds`] has said so.
+fn check_verifier_cwds(repo: &Repo, cfg: &Config, report: &mut Report) {
+    let file = repo.config_path();
+    let subject = file
+        .strip_prefix(&repo.corpus)
+        .unwrap_or(&file)
+        .to_string_lossy()
+        .replace('\\', "/");
+    for (name, v) in &cfg.verifiers {
+        let Some(cwd) = &v.cwd else { continue };
+        if crate::config::cwd_shape_problem(cwd).is_some() {
+            continue;
+        }
+        if let Some(why) = crate::config::cwd_problem(&repo.worktree, cwd) {
+            report.findings.push(
+                Finding::fault(
+                    Kind::ConfigBound,
+                    &subject,
+                    format!("verifiers.{name}.cwd: '{cwd}' {why}"),
+                )
+                .with_note(vec![format!(
+                    "ank config verifiers.{name}.cwd <a directory under the repository root>"
+                )]),
+            );
+        }
+    }
+}
+
+/// Every `check.severity.<kind>` entry `check` cannot apply, one fault each on
+/// `config.yml`, and the kinds the others raise (ADR-55460a57353a).
+///
+/// **A fault in `check` and not a refusal at load**, for the reason
+/// [`check_role_words`] gives: no verb but this one reads the severities, and a
+/// typo in one must not stop an agent from running `context`. An entry that
+/// cannot be applied raises nothing.
+fn check_severity(repo: &Repo, cfg: &Config, report: &mut Report) -> BTreeSet<Kind> {
+    let file = repo.config_path();
+    let subject = file
+        .strip_prefix(&repo.corpus)
+        .unwrap_or(&file)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let mut raised = BTreeSet::new();
+    for (word, value) in &cfg.severity {
+        match severity_refusal(word, value) {
+            None => {
+                raised.extend(Kind::parse(word));
+            }
+            Some(message) => {
+                report
+                    .findings
+                    .push(
+                        Finding::fault(Kind::Severity, &subject, message).with_note(vec![format!(
+                            "ank config --unset check.severity.{word}, or a kind of docs/check.md"
+                        )]),
+                    )
+            }
+        }
+    }
+    raised
+}
+
 /// Every `roles.<name>.can` and `.cannot` entry outside the vocabulary
 /// `docs/config-keys.md` publishes, one fault each (ADR-ddbe024ca7f2).
 ///
@@ -4473,6 +4647,23 @@ fn judge_reference(
             ));
         }
         AdrStatus::Superseded => {}
+        // Turned down: the citation leads to a document that will never bind.
+        AdrStatus::Rejected => report.findings.push(Finding::signal(
+            Kind::Reference,
+            citer,
+            if named == target {
+                format!(
+                    "{} {target}, which was rejected (ank log {target})",
+                    rel.field
+                )
+            } else {
+                format!(
+                    "{} {target}, whose succession ends on {named}, which was rejected \
+                     (ank log {named})",
+                    rel.field
+                )
+            },
+        )),
     }
 }
 
@@ -4654,7 +4845,9 @@ fn check_succession(
                     .filter(|v| v.id == target)
                     .map(|v| v.status)
             });
-            if replaced != Some(AdrStatus::Superseded) {
+            // A rejected target never bound: its successor replaces nothing,
+            // and the pair owes nothing (ADR-0f4248812651).
+            if replaced != Some(AdrStatus::Superseded) && replaced != Some(AdrStatus::Rejected) {
                 let message = format!("supersedes {target}, which is not marked superseded");
                 report.findings.push(if view.status == AdrStatus::Proposed {
                     Finding::signal(
@@ -4749,6 +4942,24 @@ fn check_ratify_orphans(
 /// `consequence` is what the alteration costs, and it is the one sentence the
 /// two kinds do not share: see [`check_spec`].
 fn check_anchor(view: &Anchored, repo: &Repo, consequence: &str, report: &mut Report) {
+    // **A rejection is anchored, or it is a line anybody typed**
+    // (ADR-0f4248812651): the ref comes off the one enumeration of
+    // `refs/ank/*` the coordination half already made, and where git cannot
+    // enumerate at all there is nothing to judge against.
+    if view.status == AdrStatus::Rejected && git::ank_refs(&repo.corpus).is_ok() {
+        if !git::rejected_ids(&repo.corpus).contains(&view.id.to_string()) {
+            let name = git::reject_ref(view.id);
+            report.findings.push(Finding::fault(
+                Kind::RejectionUnanchored,
+                view.id,
+                format!(
+                    "reads rejected and no {name} anchors it: a rejection is ank reject's act, \
+                     never a status typed into the file"
+                ),
+            ));
+        }
+        return;
+    }
     if view.status == AdrStatus::Accepted && view.ratified.is_none() {
         // A signal and not a fault: the ADRs predating `accept` are ratified by
         // the repository's history, which allowed_signers records as the
@@ -7170,6 +7381,10 @@ pub fn accept(
         }
     }
 
+    // The last refusal, on the configuration and on the key at hand
+    // (ADR-2e777475c4de): after every id is judged, before any is written.
+    let required = require_signature(repo)?;
+
     // One tag per id, in the order named: each is its own ref, and two
     // ratifications never share one.
     let mut tags: Vec<String> = Vec::new();
@@ -7180,7 +7395,7 @@ pub fn accept(
             (None, None) => None,
         };
         let before = resigned.map(|_| store.load(&r.id)).transpose()?;
-        tags.push(write_ratification(&store, repo, r)?);
+        tags.push(write_ratification(&store, repo, r, required)?);
         // **A re-signature is a second write on a ratified file, and it leaves
         // an entry** (ADR-52bb0da2023a): the first ratification is evidenced by
         // `ratified` itself, and nothing in the file counts the ones after it.
@@ -7950,6 +8165,10 @@ enum Succession {
     /// claims it, so the succession is on record and there is nothing left to
     /// write.
     Recorded(Entity),
+    /// The target was rejected (ADR-0f4248812651): it never bound, so nothing
+    /// is retired, nothing is marked superseded, and the tag names no
+    /// succession.
+    OverRejected,
 }
 
 impl Succession {
@@ -7958,7 +8177,7 @@ impl Succession {
     /// is what the ratification is about.
     fn target(&self) -> Option<&Entity> {
         match self {
-            Succession::None => None,
+            Succession::None | Succession::OverRejected => None,
             Succession::Pending(e) | Succession::Recorded(e) => Some(e),
         }
     }
@@ -8024,14 +8243,22 @@ fn succession(store: &Store, entity: &Entity) -> Result<Succession> {
         // the same state, and the same thing to do about it, which is nothing.
         AdrStatus::Superseded => Ok(Succession::Recorded(target)),
 
-        // Superseding a proposal is meaningless — nothing was ever binding — and
-        // a caller who wrote one almost certainly meant a different identifier.
-        // A prerequisite unmet, so 7 and not the 6 of an illegal transition.
+        // A successor of a proposal is a replacement for something that never
+        // bound, and the way out is to turn the proposal down, never to ratify
+        // the very decision being replaced (ADR-0f4248812651). A prerequisite
+        // unmet, so 7 and not the 6 of an illegal transition.
         AdrStatus::Proposed => Err(CliError::new(
             ExitCode::Prerequisite,
-            format!("{target_id} is proposed, and only an accepted one can be superseded"),
+            format!(
+                "{target_id} is proposed, and only an accepted one can be superseded: a \
+                 proposal this one replaces is rejected first"
+            ),
         )
-        .with_hint(format!("ank accept {target_id}"))),
+        .with_hint(format!("ank reject {target_id} --reason \"<why>\""))),
+
+        // Rejected: it never bound, so the successor is ratified as one that
+        // replaces nothing.
+        AdrStatus::Rejected => Ok(Succession::OverRejected),
     }
 }
 
@@ -8296,7 +8523,7 @@ pub fn anchored_by<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<git::
     match view.status {
         AdrStatus::Accepted => ratification_of(repo, &view),
         AdrStatus::Proposed => ref_ratification(repo, &view),
-        AdrStatus::Superseded => None,
+        AdrStatus::Superseded | AdrStatus::Rejected => None,
     }
 }
 
@@ -8327,7 +8554,11 @@ fn judge_signature(repo: &Repo, ratification: &git::Ratification) -> Option<Sign
     // reports `N` for a perfectly signed commit when `gpg.format` is ssh and no
     // allowed-signers file is configured, so a corpus with no file would have
     // every ratification called unsigned.
-    if declared.is_empty() {
+    //
+    // Unless the repository requires a signature (ADR-2e777475c4de): then
+    // there is an allowlist, an empty one, and every ratification is judged
+    // against it, an unsigned one as absent and a signed one as undeclared.
+    if declared.is_empty() && !signature_required(repo) {
         return None;
     }
 
@@ -8588,7 +8819,12 @@ pub fn ratification_anchor(text: &str, scope: &[String]) -> String {
 /// **Nothing is staged and nothing is committed.** The file lands with
 /// whoever's next change, by any merge method, and the ref is what makes it
 /// binding wherever it is read.
-fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<String> {
+fn write_ratification(
+    store: &Store,
+    repo: &Repo,
+    r: &Ratification,
+    required: bool,
+) -> Result<String> {
     let cwd = &repo.corpus;
     let name = claim::ratify_ref(&r.id);
 
@@ -8603,7 +8839,7 @@ fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<St
     }
     let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
 
-    let tag = tag_blob(cwd, &r.id, &blob, &r.message)?;
+    let tag = tag_blob(cwd, "ratify", &r.id, &blob, &r.message, required)?;
 
     // An empty old value: the ref must not exist, and a ratification already
     // recorded there is the one thing this verb never overwrites -- except
@@ -8671,8 +8907,79 @@ fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<St
     Ok(tag)
 }
 
+/// Whether `ratify.require_signature` holds, refusing at the code a missing
+/// prerequisite carries when it does and git cannot sign with a key `signers:`
+/// declares live today (ADR-2e777475c4de).
+///
+/// **The key is resolved, not tried.** It is the one `ank signers add` would
+/// declare, read off `user.signingkey` and `gpg.format` by the same resolver,
+/// so the refusal names the key in the form `signers:` writes it and nothing
+/// is signed, written or pushed to learn it. A configuration that cannot be
+/// read requires nothing here: every verb already refuses it.
+fn require_signature(repo: &Repo) -> Result<bool> {
+    let Ok(config) = crate::config::load(&repo.config_path()) else {
+        return Ok(false);
+    };
+    if !config.require_signature {
+        return Ok(false);
+    }
+    let refused = |why: String| {
+        CliError::new(
+            ExitCode::Prerequisite,
+            format!("ratify.require_signature is true, and {why}: nothing is written"),
+        )
+        .with_hint(
+            "git config user.signingkey <a key signers: declares> (or: ank signers add, a human act)",
+        )
+    };
+    let key = crate::config::key_from_git(repo).map_err(|e| refused(e.message))?;
+    let (keytype, value) = key.split_once(' ').unwrap_or((key.as_str(), ""));
+    let matching: Vec<&Signer> = config
+        .signers
+        .iter()
+        .filter(|s| match keytype {
+            "gpg" => {
+                let (a, b) = (s.key.to_ascii_uppercase(), value.to_ascii_uppercase());
+                s.keytype == "gpg" && !a.is_empty() && (a.ends_with(&b) || b.ends_with(&a))
+            }
+            _ => s.keytype == keytype && s.key == value,
+        })
+        .collect();
+    if matching.is_empty() {
+        let declared: Vec<String> = config
+            .signers
+            .iter()
+            .map(|s| format!("{} {}", s.keytype, s.key))
+            .collect();
+        return Err(refused(format!(
+            "git would sign with {key}, which signers: does not declare (declared: {})",
+            if declared.is_empty() {
+                "none".to_string()
+            } else {
+                declared.join(", ")
+            }
+        )));
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .ok();
+    if matching.iter().all(|s| retired(s, now)) {
+        let until = matching
+            .iter()
+            .filter_map(|s| s.valid_before.clone())
+            .max()
+            .unwrap_or_default();
+        return Err(refused(format!(
+            "git would sign with {key}, which signers: retired on its valid_before {until}"
+        )));
+    }
+    Ok(true)
+}
+
 /// The tag object on `blob`, signed where this repository signs and annotated
-/// where it does not (ADR-964be4d940b2), named `ratify/<id>`.
+/// where it does not (ADR-964be4d940b2), named `<act>/<id>`: `ratify` for
+/// `accept`, `reject` for `reject` (ADR-0f4248812651).
 ///
 /// `git tag` writes under `refs/tags/` and nowhere else, so the name is
 /// temporary: it exists between this call's first command and its last,
@@ -8680,13 +8987,28 @@ fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<St
 /// forge. `tag` is porcelain, and this is the exception `accept` always made
 /// for the one act that signs: nothing is parsed from it, the object name comes
 /// from `rev-parse`.
-fn tag_blob(cwd: &Path, id: &EntityId, blob: &str, message: &str) -> Result<String> {
-    let temporary = format!("ratify/{id}");
+fn tag_blob(
+    cwd: &Path,
+    act: &str,
+    id: &EntityId,
+    blob: &str,
+    message: &str,
+    required: bool,
+) -> Result<String> {
+    let temporary = format!("{act}/{id}");
     let full = format!("refs/tags/{temporary}");
     // Signing when it is possible rather than only when `tag.gpgSign` asks for
     // it: a maintainer who signs selectively still means a ratification to be
     // signed.
-    let mode = if can_sign(cwd) { "-s" } else { "-a" };
+    // Under `ratify.require_signature` it signs whatever `can_sign` guesses:
+    // the key was resolved and judged before anything was written, and an
+    // annotated tag there would be the unsigned ratification the regime
+    // exists to stop (ADR-2e777475c4de).
+    let mode = if required || can_sign(cwd) {
+        "-s"
+    } else {
+        "-a"
+    };
     let args = ["tag", mode, "-m", message, &temporary, blob];
     let out = std::process::Command::new("git")
         .current_dir(cwd)
@@ -8704,6 +9026,166 @@ fn tag_blob(cwd: &Path, id: &EntityId, blob: &str, message: &str) -> Result<Stri
     let tag = git::run(cwd, &["rev-parse", &full])?;
     git::run(cwd, &["update-ref", "-d", &full, &tag])?;
     Ok(tag)
+}
+
+// ---------------------------------------------------------------------------
+// reject
+// ---------------------------------------------------------------------------
+
+/// Turns a `proposed` ADR or spec down for good (ADR-0f4248812651): the status
+/// reads `rejected`, a tag object at `refs/ank/reject/<id>` anchors the act,
+/// and the reason is a log entry of the document.
+///
+/// **A human act on the terms of `accept`.** The tag is signed where the
+/// repository signs and must be under `ratify.require_signature`; it is pushed
+/// to origin with compare-and-swap, and a push that does not land keeps
+/// nothing, because a status line an agent could type is the one thing
+/// `check` could not tell from a decision. The role an act is judged by is
+/// `accept`'s (`crate::cli::acts_of`).
+///
+/// **It commits nothing, and it runs on any branch**, as `accept` does: the
+/// ref is a fact about the repository, and the file lands with whoever's next
+/// change.
+pub fn reject(
+    inv: &Invocation,
+    repo: &Repo,
+    identity: &str,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
+    let prefix = inv.positionals.first().ok_or_else(|| {
+        CliError::new(ExitCode::Generic, "reject expects an id")
+            .with_hint("ank reject <id> --reason \"<why>\"")
+    })?;
+    let reason =
+        match inv.value("--reason") {
+            Some(r) if !r.trim().is_empty() => r.trim().to_string(),
+            _ => return Err(CliError::new(
+                ExitCode::Generic,
+                "--reason is required to reject a proposal: the reason is what the record keeps",
+            )
+            .with_hint(format!(
+                "ank reject {prefix} --reason \"<why it will never bind>\""
+            ))),
+        };
+
+    let store = Store::new(&repo.ank);
+    let loaded = store.load_prefix(prefix)?;
+    let base_version = version_of(&loaded.entity);
+    let mut entity = loaded.entity;
+    let Some(view) = Anchored::of(&entity) else {
+        let kind = ank_core::Fields::kind_spec(&entity).name;
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!("{prefix} is a {kind}, and only an ADR or a spec is proposed and rejected"),
+        )
+        .with_hint(format!("ank show {prefix}")));
+    };
+    let id = view.id.clone();
+    if view.status != AdrStatus::Proposed {
+        // A prerequisite unmet rather than a frozen field: what a document
+        // past its proposal needs is a succession, or nothing at all.
+        let hint = match view.status {
+            AdrStatus::Accepted => succession_command(&id),
+            _ => format!("ank show {id}"),
+        };
+        return Err(CliError::new(
+            ExitCode::Prerequisite,
+            format!(
+                "{id} is {}, and only a proposed document is rejected",
+                view.status.as_str()
+            ),
+        )
+        .with_hint(hint));
+    }
+    let name = git::reject_ref(&id);
+    let cwd = &repo.corpus;
+    if git::rejected_ids(cwd).contains(&id.to_string()) {
+        return Err(CliError::new(
+            ExitCode::Prerequisite,
+            format!("{name} already exists, and a rejection is written once"),
+        )
+        .with_hint(format!("git cat-file tag {name}")));
+    }
+
+    // The last refusal, on the configuration and on the key at hand, before
+    // anything is written (ADR-2e777475c4de), as `accept` refuses it.
+    let required = require_signature(repo)?;
+
+    match &mut entity {
+        Entity::Adr(a) => a.status = AdrStatus::Rejected,
+        Entity::Spec(s) => s.status = AdrStatus::Rejected,
+        Entity::Task(_) | Entity::Log(_) => {
+            unreachable!("reject resolves an ADR or a spec, and reached {id}")
+        }
+    }
+
+    // The bytes `store.write` is about to put on disk: the blob the tag points
+    // at is the file as this act wrote it, as a ratification's is.
+    let mut written = entity.clone();
+    written.set_version(base_version + 1);
+    let hash = ["hash-object", "-w", "--stdin"];
+    let blob = git::output_with_stdin(cwd, &hash, serialize_entity(&written).as_bytes())?;
+    if !blob.status.success() {
+        return Err(git::failed(&hash, &blob));
+    }
+    let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
+    let message = format!("reject {id}\n\nby: {identity}\nreason: {reason}\n");
+    let tag = tag_blob(cwd, "reject", &id, &blob, &message, required)?;
+    git::run(cwd, &["update-ref", &name, &tag, ""])?;
+
+    // On origin and never on a coordination remote named `ank`, as a
+    // ratification travels (ADR-b6fe84504ff2); a repository with no origin
+    // has the whole of its record in this clone.
+    if git::remote(cwd)?.is_some() {
+        let refused = match git::push_ref(cwd, git::ORIGIN, &name, Some(&tag), None)? {
+            git::Pushed::Ok => None,
+            git::Pushed::Refused { holds: Some(other) } => {
+                Some(format!("the remote already holds {other} there"))
+            }
+            git::Pushed::Refused { holds: None } => Some("the remote refused it".to_string()),
+            git::Pushed::Unreachable { reason } => Some(reason),
+            git::Pushed::Rejected { reason } => Some(format!("the remote refused it ({reason})")),
+        };
+        if let Some(why) = refused {
+            let _ = git::run(cwd, &["update-ref", "-d", &name, &tag]);
+            return Err(CliError::new(
+                ExitCode::Environment,
+                format!(
+                    "{name} did not reach origin, and nothing was kept: {id} is as it was ({why})"
+                ),
+            )
+            .with_hint(format!("git ls-remote origin {name}")));
+        }
+    }
+
+    store.write(&entity, base_version)?;
+    record_entry(
+        &store,
+        repo,
+        &entity,
+        identity,
+        format!("rejected: {reason}"),
+    )?;
+
+    if inv.json() {
+        let doc = Obj::document()
+            .str("id", &id.to_string())
+            .str("kind", id.kind().as_str())
+            .str("status", "rejected")
+            .str("tag", &tag)
+            .finish();
+        let _ = writeln!(out, "{doc}");
+    } else if !inv.quiet() {
+        let style = inv.style();
+        let _ = writeln!(
+            out,
+            "{} {} -> {}",
+            style.retracted("rejected"),
+            style.id(&id.to_string()),
+            &tag[..tag.len().min(7)]
+        );
+    }
+    Ok(ExitCode::Ok)
 }
 
 // ---------------------------------------------------------------------------
@@ -8784,7 +9266,7 @@ pub fn close(
     // and exiting zero; the exit code was already right and this is the middle
     // term. Standard error in both modes, beside `done`'s.
     if let Some(w) = deleted.sync.revocation_warning() {
-        eprintln!("{} {w}", inv.style().on_stderr().yellow("warning:"));
+        crate::cli::warn(inv.style().on_stderr(), &w.to_string(), &[], None);
     }
     if inv.json() {
         let doc = Obj::document()
@@ -9013,7 +9495,7 @@ fn detached(
             .str("task", &id.to_string())
             .obj(
                 "attached",
-                Obj::new().str("type", &kind).str("ref", &reference),
+                Obj::new().str("type", kind).str("ref", &reference),
             )
             .num("detached_proofs", entries)
             .bool("pushed", written.sync == claim::Sync::Pushed)
@@ -9247,7 +9729,7 @@ pub fn amend(
             }
         }
         for w in &unmerged {
-            eprintln!("{} {w}", inv.style().yellow("warning:"));
+            crate::cli::warn(inv.style(), &w.to_string(), &[], None);
         }
     }
     // A dropped reference is **not** resolved against the corpus, and that is
@@ -9536,10 +10018,14 @@ pub fn amend(
                 if let Some(holder) = holder {
                     // Standard error: not the answer, and stdout under `--json`
                     // is a parser's input (§4, TASK-2eefcdd80124).
-                    eprintln!(
-                        "{} {id} is held by {holder}, and the scope change moves \
-                         the constraints its claim anchors",
-                        inv.style().on_stderr().yellow("warning:")
+                    crate::cli::warn(
+                        inv.style().on_stderr(),
+                        &format!(
+                            "{id} is held by {holder}, and the scope change moves \
+                             the constraints its claim anchors"
+                        ),
+                        &[],
+                        Some(&id.to_string()),
                     );
                 }
             }
@@ -12245,8 +12731,9 @@ mod tests {
         );
     }
 
-    /// Superseding a proposal is meaningless: nothing was ever binding, and the
-    /// caller almost certainly meant a different identifier.
+    /// Superseding a proposal is meaningless: nothing was ever binding. The
+    /// way forward is to turn the proposal down, never to ratify the decision
+    /// being replaced (ADR-0f4248812651).
     #[test]
     fn accept_refuses_a_target_that_is_not_accepted_and_writes_nothing() {
         let t = Temp::new();
@@ -12266,8 +12753,8 @@ mod tests {
         assert!(err.message.contains("proposed"), "{}", err.message);
         assert_eq!(
             err.hint.as_deref(),
-            Some("ank accept ADR-00000000bbbb"),
-            "the refusal names the command that would make it acceptable"
+            Some("ank reject ADR-00000000bbbb --reason \"<why>\""),
+            "the refusal names the command that settles the target"
         );
 
         // A refusal is not a half transition, in either file.

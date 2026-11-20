@@ -5,7 +5,7 @@
 
 Every ank verb exits with one of these codes, and the code carries the meaning so a script can route without parsing output. They are stable. `ank help --json` publishes which verb returns which, under each verb's `refuses`.
 
-A refusal writes `error[<code>]: <message>` on stderr, followed by the exact command to run next; under `--json` it leaves stdout empty.
+A refusal writes `error[<code>]: <message>` on stderr, followed by the exact command to run next; under `--json` it leaves stdout empty and writes the same refusal on stderr as one JSON document, `{"contract":N,"error":{"code","name","message","next","subject"}}`.
 
 | Code | Name | Meaning |
 |---|---|---|

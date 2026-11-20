@@ -104,3 +104,6 @@ mio = { version = "1", features = ["os-poll", "os-ext"] }
 [[test]]
 name = "integration"
 path = "tests/main.rs"
+
+[lints]
+workspace = true

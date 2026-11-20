@@ -304,7 +304,7 @@ fn a_repository_that_signs_writes_a_signed_tag() {
         "signed where the repository signs: {object}"
     );
     assert!(
-        object.starts_with(&format!("object ")) && object.contains(&format!("ratify {A}\n")),
+        object.starts_with("object ") && object.contains(&format!("ratify {A}\n")),
         "{object}"
     );
 }
@@ -386,4 +386,311 @@ fn pr_is_gone_and_refused_as_a_flag_accept_does_not_take() {
     assert!(text(&out.stderr).contains("--pr"), "{}", text(&out.stderr));
     assert_eq!(c.file(A), before);
     assert_eq!(c.local_ref(&ratify_ref(A)), None);
+}
+
+// ---------------------------------------------------------------------------
+// ratify.require_signature (ADR-2e777475c4de, TASK-4b86ac17ca91)
+// ---------------------------------------------------------------------------
+
+/// A fresh ed25519 key beside the repository, and its public half as
+/// `signers:` declares it, `<keytype> <base64>`.
+fn new_key(c: &Corpus, name: &str) -> (PathBuf, String) {
+    let key = c.repo.join("..").join(name);
+    let out = spawn("ssh-keygen")
+        .args(["-t", "ed25519", "-N", "", "-C", "ank test", "-q", "-f"])
+        .arg(&key)
+        .output()
+        .expect("ssh-keygen ships with git on all three platforms");
+    assert!(out.status.success(), "ssh-keygen: {}", text(&out.stderr));
+    let public = fs::read_to_string(key.with_extension("pub")).unwrap();
+    let mut fields = public.split_whitespace();
+    let declared = format!("{} {}", fields.next().unwrap(), fields.next().unwrap());
+    (key, declared)
+}
+
+/// git signs every tag with `key` from here on.
+fn sign_with(c: &Corpus, key: &Path) {
+    git(&c.repo, &["config", "gpg.format", "ssh"]);
+    git(
+        &c.repo,
+        &[
+            "config",
+            "user.signingkey",
+            key.with_extension("pub").to_str().unwrap(),
+        ],
+    );
+}
+
+/// The configuration `Corpus::new` writes, with `extra` after it.
+fn configure(c: &Corpus, extra: &str) {
+    fs::write(
+        c.repo.join(".ank/config.yml"),
+        format!("schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n{extra}"),
+    )
+    .unwrap();
+}
+
+fn signers_block(key: &str) -> String {
+    format!("signers:\n  marie@example.com:\n    keys:\n      - key: {key}\n")
+}
+
+const REQUIRED: &str = "ratify:\n  require_signature: true\n";
+
+/// The `signature` findings `check --json` reports, as `(level, subject,
+/// message)`.
+fn signature_findings(c: &Corpus) -> (Option<i32>, Vec<(String, String, String)>) {
+    let out = c.ank(&["check", "--json", "--all"]);
+    let doc = text(&out.stdout);
+    // One finding per `{"level":` and every value read here is a plain string
+    // with no escaped quote in the cases these tests build.
+    let value = |chunk: &str, key: &str| -> String {
+        let at = format!("\"{key}\":\"");
+        chunk
+            .split_once(&at)
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(v, _)| v.to_string())
+            .unwrap_or_default()
+    };
+    let found = doc
+        .split("{\"level\":")
+        .skip(1)
+        .map(|chunk| format!("\"level\":{chunk}"))
+        .filter(|chunk| value(chunk, "kind") == "signature")
+        .map(|chunk| {
+            (
+                value(&chunk, "level"),
+                value(&chunk, "subject"),
+                value(&chunk, "message"),
+            )
+        })
+        .collect();
+    (out.status.code(), found)
+}
+
+/// Everything a refused accept must leave as it found it.
+fn assert_untouched(c: &Corpus, refs: &str, before: &str) {
+    assert_eq!(c.refs(), refs, "no tag, no ref, no branch moved");
+    assert_eq!(c.local_ref(&ratify_ref(A)), None);
+    assert_eq!(c.file(A), before, "the file is as it was");
+    assert_eq!(
+        git(&c.repo, &["status", "--porcelain"]),
+        " M .ank/config.yml".trim(),
+        "nothing but the configuration the test wrote"
+    );
+}
+
+#[test]
+fn a_required_signature_refuses_accept_with_no_key_to_sign_and_writes_nothing() {
+    let c = Corpus::new("require-sig-no-key", false);
+    let (_, declared) = new_key(&c, "declared-key");
+    configure(&c, &format!("{}{REQUIRED}", signers_block(&declared)));
+    let before = c.file(A);
+    let refs = c.refs();
+
+    let out = c.ank(&["accept", A]);
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(7), "{}{stderr}", text(&out.stdout));
+    assert!(stderr.contains("require_signature"), "{stderr}");
+    assert!(
+        stderr.contains("user.signingkey"),
+        "names the key it lacks: {stderr}"
+    );
+    assert_untouched(&c, &refs, &before);
+}
+
+#[test]
+fn a_required_signature_refuses_a_key_signers_does_not_declare_and_names_it() {
+    let c = Corpus::new("require-sig-undeclared", false);
+    let (_, declared) = new_key(&c, "declared-key");
+    let (other, undeclared) = new_key(&c, "other-key");
+    sign_with(&c, &other);
+    configure(&c, &format!("{}{REQUIRED}", signers_block(&declared)));
+    let before = c.file(A);
+    let refs = c.refs();
+
+    let out = c.ank(&["accept", A]);
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(7), "{}{stderr}", text(&out.stdout));
+    assert!(
+        stderr.contains(&undeclared),
+        "names the key it would sign with: {stderr}"
+    );
+    assert!(stderr.contains("signers"), "{stderr}");
+    assert_untouched(&c, &refs, &before);
+}
+
+#[test]
+fn a_required_signature_refuses_a_retired_key() {
+    let c = Corpus::new("require-sig-retired", false);
+    let (key, declared) = new_key(&c, "declared-key");
+    sign_with(&c, &key);
+    configure(
+        &c,
+        &format!(
+            "{}        valid_before: 2000-01-01\n{REQUIRED}",
+            signers_block(&declared)
+        ),
+    );
+    let before = c.file(A);
+    let refs = c.refs();
+
+    let out = c.ank(&["accept", A]);
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(7), "{}{stderr}", text(&out.stdout));
+    assert!(stderr.contains(&declared), "{stderr}");
+    assert!(stderr.contains("2000-01-01"), "{stderr}");
+    assert_untouched(&c, &refs, &before);
+}
+
+#[test]
+fn a_required_signature_ratifies_with_a_declared_key_and_check_passes_it() {
+    let c = Corpus::new("require-sig-declared", false);
+    let (key, declared) = new_key(&c, "declared-key");
+    sign_with(&c, &key);
+    configure(&c, &format!("{}{REQUIRED}", signers_block(&declared)));
+
+    let out = c.ank(&["accept", A]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let tag = c.local_ref(&ratify_ref(A)).expect("the ratify ref exists");
+    let object = git(&c.repo, &["cat-file", "tag", &tag]);
+    assert!(object.contains("-----BEGIN SSH SIGNATURE-----"), "{object}");
+
+    let (_, found) = signature_findings(&c);
+    assert_eq!(found, [], "a declared key passes");
+}
+
+#[test]
+fn absent_or_false_accept_writes_an_unsigned_tag_as_before() {
+    for (what, extra) in [
+        ("require-sig-false", "ratify:\n  require_signature: false\n"),
+        ("require-sig-absent", ""),
+    ] {
+        let c = Corpus::new(what, false);
+        let (_, declared) = new_key(&c, "declared-key");
+        configure(&c, &format!("{}{extra}", signers_block(&declared)));
+
+        let out = c.ank(&["accept", A]);
+        assert_eq!(out.status.code(), Some(0), "{what}: {}", text(&out.stderr));
+        let tag = c.local_ref(&ratify_ref(A)).expect("the ratify ref exists");
+        let object = git(&c.repo, &["cat-file", "tag", &tag]);
+        assert!(!object.contains("-----BEGIN"), "{what}: {object}");
+    }
+}
+
+/// A ratification made before the key was turned on, and the regime turned
+/// on afterwards by hand: every unsigned one is a fault, even where `signers:`
+/// declares nothing, which is the advisory regime without the key.
+#[test]
+fn check_faults_an_unsigned_ratification_once_a_signature_is_required() {
+    let c = Corpus::new("require-sig-check-unsigned", false);
+    let out = c.ank(&["accept", A]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+
+    // No key declared: advisory, and the unsigned tag is not judged.
+    let (code, found) = signature_findings(&c);
+    assert_eq!((code, found), (Some(0), vec![]));
+
+    // Required with no key declared, written by hand past `ank config`.
+    configure(&c, REQUIRED);
+    let (code, found) = signature_findings(&c);
+    assert_eq!(code, Some(8), "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|(level, subject, _)| level == "fault" && subject == A),
+        "the unsigned ratification is a fault: {found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|(level, subject, _)| level == "fault" && subject == ".ank/config.yml"),
+        "the configuration names a regime nobody can satisfy: {found:?}"
+    );
+
+    // Required with a key declared.
+    let (_, declared) = new_key(&c, "declared-key");
+    configure(&c, &format!("{}{REQUIRED}", signers_block(&declared)));
+    let (code, found) = signature_findings(&c);
+    assert_eq!(code, Some(8), "{found:?}");
+    assert!(
+        found.iter().any(|(level, subject, m)| level == "fault"
+            && subject == A
+            && m.contains("not signed")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn check_faults_a_ratification_signed_by_an_undeclared_key_once_required() {
+    let c = Corpus::new("require-sig-check-undeclared", false);
+    let (other, _) = new_key(&c, "other-key");
+    sign_with(&c, &other);
+    let out = c.ank(&["accept", A]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+
+    let (_, declared) = new_key(&c, "declared-key");
+    configure(&c, &format!("{}{REQUIRED}", signers_block(&declared)));
+    let (code, found) = signature_findings(&c);
+    assert_eq!(code, Some(8), "{found:?}");
+    assert!(
+        found.iter().any(|(level, subject, m)| level == "fault"
+            && subject == A
+            && m.contains("does not declare")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn config_refuses_to_require_a_signature_while_signers_declares_no_key() {
+    let c = Corpus::new("require-sig-config", false);
+    let config = c.repo.join(".ank/config.yml");
+
+    let out = c.ank(&["config", "ratify.require_signature"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout).trim(),
+        "false (default)",
+        "absent reads false"
+    );
+
+    let before = fs::read_to_string(&config).unwrap();
+    let out = c.ank(&["config", "ratify.require_signature", "true"]);
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(7), "{stderr}");
+    assert!(stderr.contains("signers"), "{stderr}");
+    assert!(
+        stderr.contains("ank signers add"),
+        "names the repair: {stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(&config).unwrap(),
+        before,
+        "nothing written"
+    );
+
+    // false is always a regime somebody can satisfy.
+    let out = c.ank(&["config", "ratify.require_signature", "false"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let out = c.ank(&["config", "--unset", "ratify.require_signature"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    // The emptied mapping stays as `{}`, as every `<map>.<key>` unset leaves it.
+    assert_eq!(
+        fs::read_to_string(&config).unwrap(),
+        format!("{before}ratify: {{}}\n")
+    );
+
+    let (_, declared) = new_key(&c, "declared-key");
+    configure(&c, &signers_block(&declared));
+    let out = c.ank(&["config", "ratify.require_signature", "true"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let written = fs::read_to_string(&config).unwrap();
+    assert!(written.ends_with(REQUIRED), "{written}");
+    let out = c.ank(&["config", "ratify.require_signature"]);
+    assert_eq!(text(&out.stdout).trim(), "true");
+
+    // A value that is not a boolean is refused like any other.
+    let out = c.ank(&["config", "ratify.require_signature", "yes please"]);
+    assert_ne!(out.status.code(), Some(0), "{}", text(&out.stdout));
+    let out = c.ank(&["config", "ratify.other", "true"]);
+    assert_ne!(out.status.code(), Some(0), "{}", text(&out.stdout));
 }

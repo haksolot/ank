@@ -174,6 +174,59 @@ or one whose history is too shallow to say, is reported as ADR-3094538d831e
 says, whatever task covers it. Once the file is committed the scope matches,
 and there is no finding at all.
 
+## Raising a signal to a fault
+
+Which findings are signals is the binary's choice, and it suits a solo corpus.
+A team under a compliance requirement may need some of them to fail the
+build: a corpus with no ratification key, a decision ratified by its own
+author. The repository raises them in `.ank/config.yml`, one kind at a time,
+and the policy is then a committed line that changes by review
+(ADR-55460a57353a).
+
+Raising is the only direction. A kind that is already a fault cannot be
+named, a kind `check` does not know cannot be named, and `fault` is the only
+value. The refusal lists every kind that may be raised:
+
+<!-- replay severity ANK_AGENT=human:marie
+$ ank init && ank config default_branch main && git add -A && git commit -q -m "the corpus"
+-->
+
+    $ ank config check.severity.cycle fault
+    error[1]: check.severity.cycle: cycle is already a fault, and a severity only raises; the kinds that may be raised: crlf, previous-layout, previous-log-dir, resolution-incomplete, coordination-skipped, cold, signature-unchecked, signature-unreadable, default-branch-unknown, default-branch-empty, origin-refspec, claims-refspec, proof-ref-growth, unserved-ref, orphan-ref, unmerged, no-signers, scope-not-yet, scope-closed, dead-scope, blocker-closed, blocker-peer, self-blocking, criteria-by-claimer, claimless, claim-expired, constraints-changed, discrepancy, log-unreadable, weak-proof, unattested-proof, proof-commit-unreachable, verifier-absent, verifier-changed, future, over-constrained, weight, role, enforced-by, reference, supersession, unratified, ratification-unverifiable, ratification-behind, ratification-ref-missing, supersession-unratified, self-ratified, edited-outside, log-rewritten, log-unknown-word, log-changed, prose-identifiers, authorless, untyped-author, read-by-no-human, burst, drift, drift-uncompared, peer-half-declared, peer-unreadable
+      -> ank config check.severity.<kind> fault
+
+Raise one, and its finding prints as `error:` with the line that says who
+raised it:
+
+<!-- replay severity -->
+
+    $ ank config check.severity.no-signers fault
+    check.severity.no-signers (unset) -> fault
+    $ ank check; echo "exit $?"
+    error: signers: no ratification key declared: permissions are advisory, not enforced (§8)
+    └── raised to a fault by this repository: check.severity.no-signers in .ank/config.yml
+    check: 1 fault(s) — 0 tasks, 0 adr, 0 signal(s)
+    exit 8
+
+A severity written by hand that `check` cannot apply, an unknown kind, a kind
+already a fault or any value besides `fault`, is itself a fault on
+`config.yml`, of kind `severity`, and raises nothing. No other verb reads the
+severities, so none of them is stopped by one.
+
+`ank check --strict` raises every signal for one run, with nothing to
+configure. It writes nothing: no claim ref is pruned and no remote repaired,
+so the run can gate a merge and leave the plane as it found it.
+
+<!-- replay severity -->
+
+    $ ank config --unset check.severity.no-signers
+    check.severity.no-signers fault -> (unset)
+    $ ank check --strict; echo "exit $?"
+    error: signers: no ratification key declared: permissions are advisory, not enforced (§8)
+    └── raised to a fault by check --strict
+    check: 1 fault(s) — 0 tasks, 0 adr, 0 signal(s)
+    exit 8
+
 ## An act a role forbids
 
 With `permissions.enforce` at `warn` or `deny`, each recorded act whose actor's

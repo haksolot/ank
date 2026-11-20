@@ -143,14 +143,20 @@ impl Refusal {
     /// The refusal as a call's outcome: nothing ran, and the exit code says what
     /// would have refused it.
     ///
-    /// Written on standard error's side of the outcome because that is where a
-    /// refusal leaves the binary (§4), so a client reading `stderr` or reading
-    /// the text block finds the same sentence either way.
+    /// Written on standard error's side of the outcome, as the document the
+    /// binary writes there under `--json` (ADR-4d9fb7375dc1), so a refusal the
+    /// server raises reaches a client in the shape every other refusal does,
+    /// `structuredContent` included. By the one writer, never by hand.
     pub fn outcome(&self) -> Outcome {
         Outcome {
             code: self.code.code(),
             stdout: String::new(),
-            stderr: format!("error[{}]: {}\n  -> {}", self.code, self.message, self.hint),
+            stderr: ank_contract::json::refusal(
+                self.code,
+                &self.message,
+                std::slice::from_ref(&self.hint),
+                None,
+            ),
         }
     }
 }
@@ -494,8 +500,8 @@ mod tests {
         assert!(
             outcome
                 .stderr
-                .contains(&format!("error[{}]:", ExitCode::Environment)),
-            "the code is rendered as §4 renders it: {}",
+                .contains(&format!("\"error\":{{\"code\":{},", ExitCode::Environment)),
+            "the code is carried as the refusal document carries it: {}",
             outcome.stderr
         );
         assert!(

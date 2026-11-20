@@ -56,9 +56,18 @@ impl Outcome {
     /// that has to branch on it should not have to tell absence from zero. `check`
     /// exits 8 with findings and that is not a failure of the call.
     pub fn to_result(&self) -> String {
-        let text = match self.stdout.trim().is_empty() {
-            true => self.stderr.trim(),
-            false => self.stdout.trim(),
+        // **A refusal's document is on stderr** (ADR-4d9fb7375dc1): under
+        // `--json` the binary leaves stdout empty and writes one line keyed
+        // `error`, beside any warnings keyed `warning`. That line is the
+        // answer here, as text and as structure both.
+        let refusal = match self.stdout.trim().is_empty() {
+            true => self.stderr.lines().find(|l| is_refusal(l)),
+            false => None,
+        };
+        let text = match (refusal, self.stdout.trim().is_empty()) {
+            (Some(line), _) => line.trim(),
+            (None, true) => self.stderr.trim(),
+            (None, false) => self.stdout.trim(),
         };
         let block = Obj::new().str("type", "text").str("text", text).finish();
         let mut doc = Obj::new()
@@ -67,15 +76,15 @@ impl Outcome {
             .num("exitCode", self.code);
         // **The document itself, beside its text** (GitHub #781), so a client
         // does not parse JSON out of a string. Only when stdout is one JSON
-        // object, which is what `--json` answers: a refusal prints nothing
-        // there, and a verb whose answer is not a document (`hooks run`
+        // object, which is what `--json` answers, or when stderr carries the
+        // refusal document; a verb whose answer is not a document (`hooks run`
         // prints the harness's own bytes) carries none rather than a guess.
         // The text block stays, byte for byte, for a client that reads only
         // that.
         // Written back compact rather than pasted: a message is one line on
         // this transport, and a document that spanned several would end it.
         if let Ok(value @ serde_json::Value::Object(_)) =
-            serde_json::from_str::<serde_json::Value>(self.stdout.trim())
+            serde_json::from_str::<serde_json::Value>(refusal.unwrap_or(&self.stdout).trim())
         {
             doc = doc.raw("structuredContent", &value.to_string());
         }
@@ -86,6 +95,13 @@ impl Outcome {
         }
         doc.finish()
     }
+}
+
+/// Whether a line of stderr is the refusal document of ADR-4d9fb7375dc1: one
+/// JSON object carrying an `error` object.
+fn is_refusal(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line.trim())
+        .is_ok_and(|v| v.get("error").is_some_and(serde_json::Value::is_object))
 }
 
 /// The argv for a call, from the table and the client's arguments.

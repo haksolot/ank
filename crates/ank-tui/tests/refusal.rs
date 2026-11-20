@@ -13,8 +13,6 @@
 
 #![cfg(unix)]
 
-use crate::terminal;
-
 use crate::terminal::{Live, Repo};
 
 /// Wide enough that the note is not cut before its error.

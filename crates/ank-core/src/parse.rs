@@ -334,7 +334,7 @@ fn common_fields(
     // version 1 is optional, so its absence reads as "written before this
     // existed". Newer is refused on the version rather than on the first field
     // it does not recognise, which is the only diagnosis that names the cause.
-    if schema < MIN_SCHEMA || schema > SCHEMA_VERSION {
+    if !(MIN_SCHEMA..=SCHEMA_VERSION).contains(&schema) {
         return Err(Error::UnknownSchema {
             found: schema,
             supported: SCHEMA_VERSION,
@@ -534,10 +534,10 @@ fn emit_scalar(s: &str) -> String {
 
 fn emit_block(out: &mut String, key: &str, value: &str) {
     // `|` keeps the trailing newline; `|-` marks its absence.
-    if value.ends_with('\n') {
+    if let Some(body) = value.strip_suffix('\n') {
         out.push_str(key);
         out.push_str(": |\n");
-        for line in value[..value.len() - 1].split('\n') {
+        for line in body.split('\n') {
             out.push_str("  ");
             out.push_str(line);
             out.push('\n');

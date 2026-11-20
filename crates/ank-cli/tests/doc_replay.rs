@@ -339,14 +339,21 @@ fn kind_before(s: &[char], at: usize) -> bool {
 }
 
 /// What a replay mints and a page cannot know: an entity id and its short form,
-/// a commit and its short form, a content hash. A seeded id, with the zero
-/// prefix, is deterministic and is kept, as the golden redactor keeps it.
+/// a commit and its short form, a content hash. A seeded id is deterministic
+/// and is kept, by the golden redactor's own test and no second one.
+///
+/// **The zero prefix does not say seeded** (TASK-c84e1300be5a). A minted id
+/// carries it once in 65536; the redactor still masked it, so the page's line
+/// and the replay's agreed, but this answered "seeded", nothing was paired,
+/// and the next step named `TASK-5f1e` to a corpus holding `TASK-0000...`.
 fn is_minted(s: &[char], (a, b): (usize, usize)) -> bool {
     let n = b - a;
-    let zeros = s[a..b].iter().take(4).all(|&c| c == '0');
     match n {
         40 => true,
-        12 => !zeros,
+        12 => {
+            let word: String = s[a..b].iter().collect();
+            fixture::redacted(&word) != word
+        }
         4..=11 if kind_before(s, a) => true,
         7..=11 => true,
         _ => false,
@@ -1187,6 +1194,20 @@ fn a_page_naming_one_value_twice_is_caught() {
     assert!(p.learn("at c482be8", "at 1111111").is_err());
     assert!(p.learn("at 9c45c50", "at 2222222").is_err());
     assert_eq!(p.translate("ank show 9c45"), "ank show 1111");
+}
+
+/// **A minted id with the zero prefix is still minted, and the page's id
+/// still stands for it** (TASK-c84e1300be5a), as `docs/format.md:225` meets
+/// it once in 65536 runs: the page prints `created TASK-5f1e0a9c2b7d`, the
+/// binary minted `TASK-0000...`, and the next step names `TASK-5f1e`.
+#[test]
+fn a_minted_id_with_the_zero_prefix_is_paired_and_translated() {
+    let page = "created TASK-5f1e0a9c2b7d Migrate auth";
+    let replay = "created TASK-00003c7e91a4 Migrate auth";
+    assert_eq!(masked(page), masked(replay), "the two lines agree");
+    let mut p = Pairs::default();
+    p.learn(page, replay).unwrap();
+    assert_eq!(p.translate("ank claim TASK-5f1e"), "ank claim TASK-0000");
 }
 
 /// Every `<major>.<minor>.<patch>` literal in `text`: three runs of digits
