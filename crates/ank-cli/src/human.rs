@@ -7510,6 +7510,10 @@ struct Ratification {
     /// must still name, here and on the remote, for the new one to land; `None`
     /// for every other ratification, whose ref must not exist.
     replaces: Option<String>,
+    /// The tag a first `accept` left at `refs/ank/ratify/<id>` and that
+    /// ratifies the document as it now reads (#810): pushed as it is, and no
+    /// new tag written. `None` for every other ratification.
+    reuses: Option<String>,
 }
 
 /// Judges one id for `accept`: resolves it, refuses on its state, and names
@@ -7572,6 +7576,13 @@ fn prepare_ratification(
         })?;
     }
 
+    // A ref already at `refs/ank/ratify/<id>` (#810): a first `accept` that
+    // pushed and then failed to write the file, or one whose file was undone,
+    // leaves one, and `update-ref` used to fail on it with git's own text and
+    // no way forward. A ratification of exactly what the file now says is
+    // finished with that very tag; anything else is refused before a write.
+    let reuses = leftover_ratification(repo, &id, anchor_key, &anchor)?;
+
     // Everything that can refuse, refused before anything is written. A
     // half-performed succession is a corpus the ratification commit would then
     // make authoritative, and `accept` has no second pass to repair it.
@@ -7593,6 +7604,12 @@ fn prepare_ratification(
     // assert refusals — which is the shape CLAUDE.md warns about, found by a
     // test that finally ran the commit.
     promote(&mut entity, anchor.clone(), identity);
+    // The file is the blob the leftover tag ratified, and not a second
+    // promotion: its reading and its instant are the ones that were signed.
+    let reuses = reuses.map(|(tag, blob)| {
+        entity = blob;
+        tag
+    });
 
     let replaces = match replaced.target() {
         Some(t) => format!("supersedes: {}\n", t.id()),
@@ -7610,7 +7627,79 @@ fn prepare_ratification(
         ratifying_in_place,
         reanchors: None,
         replaces: None,
+        reuses,
     })
+}
+
+/// The tag `refs/ank/ratify/<id>` already names in this clone, with the entity
+/// its blob holds, when it ratifies `id` as the file now reads: the subject
+/// `ratify <id>`, the anchor of the current constraint (or body) and scope,
+/// and a blob that reads as this entity, accepted, over that same anchor.
+/// `None` when no such ref exists.
+///
+/// **A ref that does not match is refused, never overwritten** (#810): it may
+/// be somebody's signed ratification of an earlier text, and whether that or
+/// the file is the mistake is a human's call. The refusal reads nothing but
+/// the refs and objects this clone holds, so no git error text reaches the
+/// caller, and it names the ref, why, and the commands that clear it.
+fn leftover_ratification(
+    repo: &Repo,
+    id: &EntityId,
+    key: &str,
+    anchor: &str,
+) -> Result<Option<(String, Entity)>> {
+    let name = claim::ratify_ref(id);
+    let Some(object) = git::ank_refs(&repo.corpus)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|r| r.name == name)
+        .map(|r| r.object)
+    else {
+        return Ok(None);
+    };
+    let short = &object[..object.len().min(7)];
+    let refused = |why: String| {
+        CliError::new(
+            ExitCode::Transition,
+            format!(
+                "{name} already exists and does not ratify {id} as it now reads: {why}; nothing \
+                 is written (git cat-file -p {short} shows it). Restore the {} and scope it \
+                 ratifies, or remove the ref here and on origin",
+                anchored_text(key)
+            ),
+        )
+        .with_hint(format!(
+            "git push origin :{name}; git update-ref -d {name}; ank accept {id}"
+        ))
+    };
+    let Some(tag) = git::ratify_tags(&repo.corpus).remove(&id.to_string()) else {
+        return Err(refused(format!(
+            "{short} is not a ratification tag of {id} (no ratify {id} subject with an anchor \
+             line)"
+        )));
+    };
+    if tag.key != key || tag.anchor != anchor {
+        return Err(refused(format!(
+            "{short} ratifies {}: {}, and the document's {key} is now {anchor}",
+            tag.key, tag.anchor
+        )));
+    }
+    let blob = git::output(&repo.corpus, &["cat-file", "blob", &tag.object])
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| parse_entity(&String::from_utf8_lossy(&o.stdout)).ok())
+        .filter(|e| {
+            Anchored::of(e).is_some_and(|v| {
+                v.id == id && v.status == AdrStatus::Accepted && v.anchor() == anchor
+            })
+        });
+    match blob {
+        Some(entity) => Ok(Some((object, entity))),
+        None => Err(refused(format!(
+            "{short} carries the anchor {anchor}, but its object {} is not {id} accepted over it",
+            &tag.object[..tag.object.len().min(7)]
+        ))),
+    }
 }
 
 /// Judges one id for `accept --reanchor` (TASK-4b25843e6151): an accepted
@@ -7724,6 +7813,7 @@ fn prepare_reanchor(
         ratifying_in_place: false,
         reanchors: Some(commit.sha),
         replaces: None,
+        reuses: None,
     })
 }
 
@@ -7856,6 +7946,7 @@ fn prepare_rescope(
         ratifying_in_place: false,
         reanchors: None,
         replaces: Some(tag.tag),
+        reuses: None,
     })
 }
 
@@ -8832,6 +8923,9 @@ fn write_ratification(
 ) -> Result<String> {
     let cwd = &repo.corpus;
     let name = claim::ratify_ref(&r.id);
+    if let Some(tag) = &r.reuses {
+        return finish_ratification(store, repo, r, tag);
+    }
 
     // The bytes `store.write` is about to put on disk, version included, minus
     // the anchor nobody can know before the tag exists.
@@ -8885,6 +8979,50 @@ fn write_ratification(
         }
     }
 
+    write_ratified_files(store, r, &tag)?;
+    Ok(tag)
+}
+
+/// Finishes a ratification a first `accept` left at `refs/ank/ratify/<id>`
+/// (#810): the same tag object pushed where origin lacks it, then the files.
+/// Nothing is written but those: no blob, no tag, and the ref is not moved, so
+/// a push that does not land leaves the clone exactly as it was.
+fn finish_ratification(store: &Store, repo: &Repo, r: &Ratification, tag: &str) -> Result<String> {
+    let cwd = &repo.corpus;
+    let name = claim::ratify_ref(&r.id);
+    if git::remote(cwd)?.is_some() {
+        let refused = match git::push_ref(cwd, git::ORIGIN, &name, Some(tag), None)? {
+            git::Pushed::Ok => None,
+            // Origin already holds this very tag: the push the first run made,
+            // or one made by hand, and nothing is left to carry.
+            git::Pushed::Refused { holds: Some(other) } if other == tag => None,
+            git::Pushed::Refused { holds: Some(other) } => {
+                Some(format!("the remote already holds {other} there"))
+            }
+            git::Pushed::Refused { holds: None } => Some("the remote refused it".to_string()),
+            git::Pushed::Unreachable { reason } => Some(reason),
+            git::Pushed::Rejected { reason } => Some(format!("the remote refused it ({reason})")),
+        };
+        if let Some(why) = refused {
+            return Err(CliError::new(
+                ExitCode::Environment,
+                format!(
+                    "{name} did not reach origin, and nothing was changed: {} is as it was, and \
+                     the ref still names {} ({why})",
+                    r.id,
+                    &tag[..tag.len().min(7)]
+                ),
+            )
+            .with_hint(format!("git ls-remote origin {name}")));
+        }
+    }
+    write_ratified_files(store, r, tag)?;
+    Ok(tag.to_string())
+}
+
+/// The files a ratification writes once its ref is on origin: the retired
+/// document first, then the ratified one naming `tag` as its anchor.
+fn write_ratified_files(store: &Store, r: &Ratification, tag: &str) -> Result<()> {
     // The target first, and the order is the argument. Between the two writes
     // the corpus holds a target marked `superseded` whose superseder is still
     // `proposed`, which `check_adr` calls clean in both directions, because the
@@ -8902,14 +9040,14 @@ fn write_ratification(
     }
     let mut entity = r.entity.clone();
     match &mut entity {
-        Entity::Adr(a) => a.anchor = Some(tag.clone()),
-        Entity::Spec(s) => s.anchor = Some(tag.clone()),
+        Entity::Adr(a) => a.anchor = Some(tag.to_string()),
+        Entity::Spec(s) => s.anchor = Some(tag.to_string()),
         Entity::Task(_) | Entity::Log(_) => {
             unreachable!("accept resolves an ADR or a spec, and reached {}", r.id)
         }
     }
     store.write(&entity, r.base_version)?;
-    Ok(tag)
+    Ok(())
 }
 
 /// Whether `ratify.require_signature` holds, refusing at the code a missing
