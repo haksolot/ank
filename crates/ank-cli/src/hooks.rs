@@ -1155,7 +1155,26 @@ fn exe() -> Result<String> {
                 format!("the path of this binary cannot be read ({e})"),
             )
         })?;
-    Ok(format!("\"{}\"", exe.display()))
+    let exe = exe.display().to_string();
+    let exe = if cfg!(windows) { for_shell(&exe) } else { exe };
+    Ok(format!("\"{exe}\""))
+}
+
+/// A Windows path as a POSIX shell runs it. Claude Code runs a hook command
+/// with Git Bash on Windows, and `fs::canonicalize` answers there in the
+/// verbatim form, `\\?\C:\...`: inside double quotes bash collapses the
+/// `\\` and reads no backslash as a separator, so the binary is never found
+/// and every hook exits 127. The prefix comes off, `\\?\UNC\` back to the
+/// `\\` it stands for, and the separators become forward slashes, which Git
+/// Bash, cmd and Windows itself all accept. Pure text, so its test runs on
+/// every platform; only `exe` decides it applies on Windows alone, where a
+/// backslash cannot be part of a file name.
+fn for_shell(path: &str) -> String {
+    let path = match path.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_string(),
+    };
+    path.replace('\\', "/")
 }
 
 fn read(path: &Path) -> Result<Option<String>> {
@@ -1827,6 +1846,29 @@ mod tests {
             .iter()
             .map(|(_, e, _)| format!("\"/bin/ank\" hooks run claude {e}"))
             .collect()
+    }
+
+    #[test]
+    fn a_verbatim_drive_path_reaches_the_shell_without_its_prefix_and_with_slashes() {
+        assert_eq!(
+            for_shell(r"\\?\C:\Users\me\AppData\Roaming\npm\bin\ank.exe"),
+            "C:/Users/me/AppData/Roaming/npm/bin/ank.exe"
+        );
+    }
+
+    #[test]
+    fn a_verbatim_unc_path_becomes_the_share_it_names() {
+        assert_eq!(
+            for_shell(r"\\?\UNC\server\share\bin\ank.exe"),
+            "//server/share/bin/ank.exe"
+        );
+    }
+
+    #[test]
+    fn a_path_without_the_prefix_only_changes_separators() {
+        assert_eq!(for_shell(r"C:\tools\ank.exe"), "C:/tools/ank.exe");
+        assert_eq!(for_shell("C:/tools/ank.exe"), "C:/tools/ank.exe");
+        assert_eq!(for_shell("/usr/local/bin/ank"), "/usr/local/bin/ank");
     }
 
     #[test]
