@@ -2473,7 +2473,8 @@ pub const COMMANDS: &[CommandSpec] = &[
             ),
         ],
         notes: &[
-            "it declares nothing: watch.yml in this reader's configuration directory says which corpora to keep warm, and --where prints where that is",
+            "watch.yml in this reader's configuration directory says which corpora to keep warm, and --where prints where that is; started inside a checkout, it adds that one checkout first, and --list writes nothing",
+            "a running watcher re-reads watch.yml when it changes, and a declaration that stops resolving leaves the last one in force",
             "the only things it writes into a repository are that repository's own index and a mirror of refs/ank/claims/* under refs/ank/watch/<remote>/claims/, the claims and nothing else; it moves no branch, no tag and no claim of yours",
             "a change it sees becomes a line on events.jsonl beside watch.yml, saying which corpus moved and what kind of change it was, and never what to do about it",
             "every verb behaves the same with it stopped, its absence is never an error, and no route makes running it a condition of using ank",
@@ -2736,6 +2737,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         notes: &[
             "a target elsewhere is ank init <path>; with no argument it initialises the current directory",
             "--at <path> puts the corpus outside this tree and declares it, so the tree gains no file",
+            "a checkout with a commit is added to watch.yml, so ank watch keeps it warm; ANK_WATCH_DECLARE=off writes nothing there, and init never fails for it",
             // TASK-623d80886c2f: the refspec is skipped while origin has no
             // URL, so that `git remote add origin` still works, and the gap is
             // then reported rather than left silent.

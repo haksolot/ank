@@ -54,6 +54,13 @@ pub const ANK_INDEX_BUSY_MS: &str = "ANK_INDEX_BUSY_MS";
 pub const ANK_INDEX_STEPS: &str = "ANK_INDEX_STEPS";
 pub const ANK_INDEX_REFRESHED: &str = "ANK_INDEX_REFRESHED";
 pub const ANK_TRACE_READS: &str = "ANK_TRACE_READS";
+pub const ANK_WATCH_DECLARE: &str = "ANK_WATCH_DECLARE";
+
+/// Whether `ank init` and `ank watch` may add the checkout they run in to
+/// `watch.yml` (ADR-f6b8e6539335): yes, unless [`ANK_WATCH_DECLARE`] says `off`.
+pub fn watch_declare() -> bool {
+    std::env::var(ANK_WATCH_DECLARE).map_or(true, |v| !v.trim().eq_ignore_ascii_case("off"))
+}
 
 /// Set by `done` and `verify` for every verifier run they start
 /// (ADR-ebe85b3aa79d), and read by nothing of ank's: the full id of the task
@@ -232,6 +239,14 @@ pub const VARIABLES: &[Variable] = &[
                   the level `.ank/config.yml` declares, so a looser or unknown value is \
                   ignored and the hook says so. Unset or empty, the declared \
                   level",
+        interface: true,
+    },
+    Variable {
+        name: ANK_WATCH_DECLARE,
+        read_by: "`ank init`, `ank watch`",
+        changes: "`off` stops both verbs adding the checkout they run in to `watch.yml`; \
+                  unset or anything else, `init` declares a checkout that has a commit, and \
+                  `watch` declares the checkout it is started in",
         interface: true,
     },
     Variable {
