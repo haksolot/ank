@@ -5056,16 +5056,21 @@ fn check_anchor(view: &Anchored, repo: &Repo, consequence: &str, report: &mut Re
     // says** (ADR-5e47007a75be), so `context` and `scope` already serve it;
     // what is left to say is that the file has not caught up, which is the
     // file `accept` wrote on another machine and nobody has committed yet.
+    // The note is the command that brings it level (issue #810): `accept`
+    // finds the ref already verified and writes the file without a second tag.
     if ratified_by_ref(repo, *view) {
         let file = entity_rel_paths(repo, view.id).remove(0);
-        report.findings.push(Finding::signal(
-            Kind::RatificationBehind,
-            view.id,
-            format!(
-                "ratified by {}, but {file} still reads proposed: the file has not caught up",
-                claim::ratify_ref(view.id)
-            ),
-        ));
+        report.findings.push(
+            Finding::signal(
+                Kind::RatificationBehind,
+                view.id,
+                format!(
+                    "ratified by {}, but {file} still reads proposed: the file has not caught up",
+                    claim::ratify_ref(view.id)
+                ),
+            )
+            .with_note(vec![format!("ank accept {}", view.id)]),
+        );
     }
 
     // The anchor is worth exactly what the signature on the object carrying it
