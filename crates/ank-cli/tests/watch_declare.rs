@@ -66,6 +66,11 @@ impl Home {
     }
 
     /// A repository with one commit and no corpus yet.
+    ///
+    /// Its identity is its root commit, so `what` goes into the message: two
+    /// repositories with the same tree, author and message committed in the
+    /// same second share one hash, and the declaration then sees one checkout
+    /// identity with two paths.
     fn repository(&self, what: &str) -> PathBuf {
         let root = scratch::dir(what).join("tree");
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -76,7 +81,7 @@ impl Home {
         self.git(&root, &["config", "gc.auto", "0"]);
         self.git(&root, &["config", "maintenance.auto", "false"]);
         self.git(&root, &["add", "-A"]);
-        self.git(&root, &["commit", "-qm", "first"]);
+        self.git(&root, &["commit", "-qm", &format!("first {what}")]);
         root
     }
 
