@@ -54,10 +54,10 @@ inside the binary, built from `skill/`: the contract every agent loads, in
 them teach one activity of the work each, in `skill/plan`, `skill/drift`,
 `skill/loop`, `skill/tdd` and `skill/diagnose`, and `skill/herdr` teaches the
 agent orchestrating the others from a herdr-core terminal. A task may name any
-sibling, and planning designates one of the five. `ank new --method tdd` writes the designation into it, `ank context`
-names it and the sibling to load beneath the criterion once the task is
-claimed, `ank log --method tdd` records that it fired, and `ank skills` counts
-designations against firings per method. A name no sibling carries is refused
+sibling, and planning designates one of the five. `ank new --method tdd` writes the designation into it, `ank claim`
+prints the sibling's text after the criterion, `ank context` names it with the
+command that prints it, `ank skills tdd`, and `ank skills` counts designations
+against the load records written before ADR-cfc74e53a744 retired them. A name no sibling carries is refused
 at exit 7, when the task is written.
 
 No verb enforces one. `done` leaves `method` unread: the criterion is frozen

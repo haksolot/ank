@@ -1125,90 +1125,33 @@ fn the_plugin_manifest_lists_every_skill_directory() {
 }
 
 // ---------------------------------------------------------------------------
-// The load recorded, and the method set (ADR-a8f9c603a0e7, TASK-4a740284cd2c)
+// No load record, and the method set (ADR-cfc74e53a744, ADR-a8f9c603a0e7)
 // ---------------------------------------------------------------------------
 
-/// The siblings that execute under a claim, and so the only ones whose load
-/// `ank skills` can count against a task. Named by directory, which is the name
-/// `--method` takes: `ank log --method ank-tdd` is refused at 7.
-const EXECUTING_SIBLINGS: [&str; 3] = ["diagnose", "loop", "tdd"];
-
-/// **An executing sibling records its own load, once, where a write is
-/// possible.** The instruction is the whole mechanism of the rate `ank skills`
-/// reports: a sibling without it never fires, and one carrying it twice counts
-/// one load twice.
-///
-/// The placement is asserted because it is the point. ank-loop is loaded
-/// before there is a claim, and a log write on an open task nobody holds is
-/// refused at 6, so the instruction has to follow the claim step. It has to
-/// precede the first edit, or the record says the policy was loaded after the
-/// work it was meant to shape had started.
+/// **No method asks for a load record** (ADR-cfc74e53a744). `claim` prints the
+/// method's text at the moment it applies, so an entry saying it was loaded
+/// would record what the binary already did. `log --method` stays for the
+/// entries already written and the stale installed copies that still call it,
+/// and no file under `skill/` asks for it. ank-plan is the one file naming the
+/// flag at all, because it is where a task is given its method.
 #[test]
-fn every_executing_sibling_records_its_load_once_after_the_claim() {
-    let siblings = sibling_skills();
-    for name in EXECUTING_SIBLINGS {
-        let (_, text) = siblings
-            .iter()
-            .find(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("skill/{name}/SKILL.md is missing"));
-        let instruction = format!("ank log --method {name}");
-        assert_eq!(
-            text.matches(&instruction).count(),
-            1,
-            "skill/{name}/SKILL.md must carry `{instruction}` exactly once"
-        );
-        assert_eq!(
-            text.matches("--method").count(),
-            1,
-            "skill/{name}/SKILL.md mentions --method beside its own record \
-             instruction"
-        );
-
-        let (_, body) = split_skill(text);
-        let at = body.find(&instruction).expect("counted above");
-        let claim = body.find("ank claim").unwrap_or_else(|| {
-            panic!("skill/{name}/SKILL.md names no claim step for its record to follow")
-        });
-        assert!(
-            claim < at,
-            "skill/{name}/SKILL.md records its load before the claim step, where \
-             the write is refused at 6"
-        );
-        let edit = body
-            .find("edit")
-            .unwrap_or_else(|| panic!("skill/{name}/SKILL.md never names the first edit"));
-        assert!(
-            at < edit,
-            "skill/{name}/SKILL.md records its load after the first edit it names"
-        );
-    }
-}
-
-/// **The instruction exists in no other file.** A record written from a skill
-/// that does not execute under a claim counts a load that shaped no work, and
-/// the contract is loaded by every session, so a record there would fire on
-/// every task and measure nothing. ank-plan is the one other file that names
-/// the flag, because it is where a task is given its method.
-#[test]
-fn no_other_skill_records_a_load_and_plan_sets_the_method() {
-    let mut others = vec![("SKILL.md".to_string(), skill())];
-    others.extend(
+fn no_file_under_skill_asks_for_a_load_record_and_plan_sets_the_method() {
+    let mut files = vec![("SKILL.md".to_string(), skill())];
+    files.extend(
         sibling_skills()
             .into_iter()
-            .filter(|(n, _)| !EXECUTING_SIBLINGS.contains(&n.as_str()))
             .map(|(n, t)| (format!("{n}/SKILL.md"), t)),
     );
-    for (file, text) in &others {
+    for (file, text) in &files {
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
-            !text.contains("ank log --method"),
-            "skill/{file} carries a record instruction, and it executes under no \
-             claim"
+            !flat.contains("log --method"),
+            "skill/{file} asks for a load record, which ADR-cfc74e53a744 retired"
         );
         if file != "plan/SKILL.md" {
             assert!(
                 !text.contains("--method"),
-                "skill/{file} mentions --method, which only the executing \
-                 siblings and ank-plan carry"
+                "skill/{file} mentions --method, which only ank-plan carries"
             );
         }
     }

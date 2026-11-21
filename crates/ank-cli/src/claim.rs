@@ -2673,12 +2673,20 @@ fn run_with(
         .chain(acquired.sync.warning())
         .collect();
 
+    // The designated method's text, as `ank skills <name>` prints it
+    // (ADR-cfc74e53a744). Printed here and not by `context`: `claim` runs once
+    // per task, at the moment the method applies, beside the criterion the
+    // agent is already reading. Nothing records that it was printed, and `done`
+    // reads none of it: a method is policy, never dispatch.
+    let method_text = task.method.as_deref().and_then(crate::skills::method_text);
+
     if inv.json() {
         let doc = crate::json::Obj::document()
             .str("task", &acquired.id.to_string())
             .str("holder", &acquired.holder)
             .str("expires", &acquired.expires)
-            .strings("warnings", &warnings);
+            .strings("warnings", &warnings)
+            .opt_str("method_body", method_text.as_deref());
         // **The key arrives with the facts and never without them.** A document
         // is free to gain a field within a contract version, and an empty array
         // on every claim would still be a byte a parser sees that it did not see
@@ -2721,6 +2729,15 @@ fn run_with(
         // `--quiet` too: a rule is not the confirmation the flag silences.
         for line in crate::context::peer_sections(&peer_sections, inv.style()) {
             let _ = writeln!(out, "{line}");
+        }
+        // The criterion, then the method that works it. Under `--quiet` too:
+        // the text is the work's policy, not the confirmation the flag silences.
+        if let Some(text) = &method_text {
+            let _ = writeln!(out, "\n{}", inv.style().header("DONE_CRITERIA"));
+            for line in task.done_criteria.as_deref().unwrap_or("").lines() {
+                let _ = writeln!(out, "  {}", line.trim_end());
+            }
+            let _ = write!(out, "{text}");
         }
     }
     Ok(ExitCode::Ok)

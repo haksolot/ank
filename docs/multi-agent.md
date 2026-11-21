@@ -30,10 +30,11 @@ shows the projection per skill.
 ### The methods a corpus uses
 
 A task can name the sibling its work calls for with `ank new task --method tdd`,
-and `ank context` prints that name beneath the criterion once the task is
-claimed. A sibling that opens under a claim writes an entry saying so with
-`ank log --method tdd`, titled with its name and kept apart from the work trace
-(ADR-a8f9c603a0e7). The designation is read, never enforced, and `ank skills` is where it
+and `ank claim` prints the method's text after the criterion, as `ank skills
+tdd` prints it, while `ank context` names it on one line with that command
+(ADR-cfc74e53a744). No method asks for a load record; an entry written with
+`ank log --method tdd` before that, titled with its name and kept apart from
+the work trace (ADR-a8f9c603a0e7), is still counted. The designation is read, never enforced, and `ank skills` is where it
 is read: inside a corpus it prints the catalogue and then a second block. On a
 corpus of three tasks -- one designating `tdd` whose holder loaded it, one
 designating `diagnose` whose holder never did, and one designating nothing where

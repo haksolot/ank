@@ -10003,7 +10003,7 @@ fn context_names_the_method_after_the_claim_done_ignores_it_and_amend_replaces_i
         .find_map(|l| l.strip_prefix("id: "))
         .unwrap()
         .to_string();
-    let line = "METHOD diagnose, the skill to load before the first edit: ank-diagnose";
+    let line = "METHOD diagnose, printed by ank skills diagnose: read it before the first edit";
 
     // Orientation names no method: nobody is executing anything yet.
     let out = r.ank("claude-code@ank", &["context"]);
@@ -10158,6 +10158,78 @@ fn context_json_carries_the_method_beside_the_criterion_and_null_without_one() {
     assert_eq!(fields[at + 1], ("method", true), "{fields:?}");
     let method = &verb["returns"][0]["fields"][at + 1];
     assert_eq!(method["type"].as_str(), Some("string"), "{method:?}");
+}
+
+/// **The method arrives at the moment it applies** (ADR-cfc74e53a744). `claim`
+/// is the one output every executor reads, once per task, so it prints the
+/// criterion and then the method's text exactly as `ank skills <name>` prints
+/// it; a task designating none prints what `claim` always printed, and `--json`
+/// carries the same text under `method_body`, null without a method.
+#[test]
+fn claim_prints_the_criterion_then_the_method_text_and_nothing_without_one() {
+    let r = Repo::new();
+    let designated = created_id_of(new_task(
+        &r,
+        "Designated",
+        &["--criteria", "A verifiable criterion.", "--method", "tdd"],
+    ));
+    let undesignated = created_id_of(new_task(
+        &r,
+        "Undesignated",
+        &["--criteria", "Another criterion."],
+    ));
+    let body = stdout(&r.ank("claude-code@ank", &["skills", "tdd"]));
+    assert!(body.contains("# ank-tdd"), "{body}");
+
+    let out = r.ank("claude-code@ank", &["claim", &designated]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+    let (head, rest) = said
+        .split_once("\nDONE_CRITERIA\n  A verifiable criterion.\n")
+        .unwrap_or_else(|| panic!("no criterion after the claim line:\n{said}"));
+    assert!(
+        head.starts_with(&format!("claimed {designated} designated -> HEAD")),
+        "{said}"
+    );
+    assert_eq!(
+        rest, body,
+        "the method text is not ank skills tdd's, byte for byte"
+    );
+
+    // Without a method: the claim line alone, as before. The first claim is
+    // handed back so no overlap warning joins the line.
+    let out = r.ank(
+        "claude-code@ank",
+        &["release", &designated, "--reason", "r"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let out = r.ank("codex/1.0", &["claim", &undesignated]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        format!("claimed {undesignated} undesignated -> HEAD\n")
+    );
+
+    // The machine surface: the same text, and null on a task naming none.
+    let json = stdout(&r.ank("claude-code@ank", &["skills", "tdd", "--json"]));
+    let skill: serde_yaml::Value = serde_yaml::from_str(&json).unwrap();
+    let out = r.ank("codex/1.0", &["release", &undesignated, "--reason", "r"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    for (agent, id, expected) in [
+        ("gemini/1.0", &designated, skill["body"].as_str()),
+        ("gemini/2.0", &undesignated, None),
+    ] {
+        let out = r.ank(agent, &["claim", id, "--json"]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        let doc: serde_yaml::Value = serde_yaml::from_str(&stdout(&out)).unwrap();
+        assert_eq!(doc["contract"].as_u64(), Some(1));
+        assert_eq!(doc["method_body"].as_str(), expected, "{}", stdout(&out));
+        assert!(
+            stdout(&out).contains("\"method_body\":"),
+            "{}",
+            stdout(&out)
+        );
+    }
 }
 
 fn created_id_of(text: String) -> String {

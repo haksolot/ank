@@ -531,6 +531,9 @@ const CLAIM_OUT: &[Field] = &[
     f("holder", Type::Str),
     f("expires", Type::Str),
     f("warnings", Type::Strings),
+    // The designated method's text, as `ank skills <name>` prints it, null on a
+    // task naming none (ADR-cfc74e53a744).
+    opt("method_body", Type::Str),
 ];
 
 /// The same document, plus the live claims this identity already holds in the
@@ -548,6 +551,7 @@ const CLAIM_OUT_ELSEWHERE: &[Field] = &[
     f("holder", Type::Str),
     f("expires", Type::Str),
     f("warnings", Type::Strings),
+    opt("method_body", Type::Str),
     f(
         "claims_elsewhere",
         Type::Array(&[
@@ -1753,7 +1757,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "--amends declares the ADRs an adr changes in part; each stays accepted and binding, and check resolves it",
             "--enforced-by <path>#<symbol> names what holds an adr mechanically; context then serves it by its title, and check confronts the entry with the tree",
             "a new task carries the verifiers config.yml marks default: true; --verify names its own instead, and --no-verify declines them",
-            "--method names the sibling skill the work calls for, by its short name (tdd, diagnose); context prints it after the claim, and done never reads it",
+            "--method names the sibling skill the work calls for, by its short name (tdd, diagnose); claim prints its text after the criterion, context names the command that prints it, and done never reads it",
             "where finished tasks declared other entries beside a task's --scope, new names them, two of them at least, five at most and the most frequent first, so the scope can widen before --criteria freezes at claim; it adds none itself",
         ],
         refuses_globals: &[],
