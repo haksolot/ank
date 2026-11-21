@@ -4831,7 +4831,7 @@ fn a_short_flag_the_verb_does_not_take_names_the_flag_it_stands_for() {
 ///
 /// The second half is the one worth a test. The listing carries one line per
 /// verb, and a second spelling of every flag is exactly the kind of addition
-/// that arrives looking like an improvement. Grouping it (ADR-e4a5a8873fe3)
+/// that arrives looking like an improvement. Grouping it (ADR-cfc74e53a744)
 /// changed what stands between the lines and nothing on them.
 #[test]
 fn help_shows_both_forms_for_one_verb_and_leaves_the_listing_lines_alone() {
@@ -6053,7 +6053,7 @@ fn status_names_every_live_claim_of_this_identity() {
 /// an unmerged branch would not look free everywhere else, and named this gap
 /// without settling it -- on the ground that `close` is "a human act and a rare
 /// one", which the skill decision retired by dissolving the human side entirely
-/// (ADR-e4a5a8873fe3).
+/// (ADR-cfc74e53a744).
 /// That is history, and `.ank/` carries it (TASK-78326e2e3e89). The code has
 /// behaved this way throughout; what it lacked was a decision saying so and a
 /// test holding it.
@@ -10867,7 +10867,7 @@ fn help_from_nowhere(args: &[&str]) -> Output {
 ///
 /// The trailer is the block opening with `global:` at column 0, and it is what
 /// bounds the listing now that a blank line no longer does. The listing is
-/// grouped (ADR-e4a5a8873fe3), so an empty line is a boundary *between* groups
+/// grouped (ADR-cfc74e53a744), so an empty line is a boundary *between* groups
 /// -- a parser that stopped at the first one would read `run the loop`, find six
 /// verbs, and call that the whole surface. A folded description is indented and
 /// so can never be mistaken for the trailer.
@@ -10955,7 +10955,7 @@ fn help_answers_outside_a_repository_and_lists_every_verb() {
     }
 
     // Grouped by the moment a verb is used, and never by who uses it
-    // (ADR-e4a5a8873fe3). These four headings sorted callers -- agent loop,
+    // (ADR-cfc74e53a744). These four headings sorted callers -- agent loop,
     // agent off-loop, human -- which is the two-surface model speaking through
     // the output an agent reads, and a CLI that refuses on state and never on
     // identity has no such grouping to print. That refusal is untouched: what
@@ -11029,7 +11029,7 @@ fn help_for_one_verb_answers_and_an_unknown_one_is_a_two() {
     assert!(text.contains("--criteria"), "{text}");
     assert!(
         !text.contains("audience"),
-        "the audience line is what ADR-e4a5a8873fe3 removes, and it is the \
+        "the audience line is what ADR-cfc74e53a744 removes, and it is the \
          line an agent reads about itself:\n{text}"
     );
     assert!(
@@ -11375,7 +11375,7 @@ fn help_json_reaches_the_process_intact() {
 }
 
 /// Every verb of the table appears exactly once in the grouped listing, under a
-/// heading, and in the table's order inside it (ADR-e4a5a8873fe3).
+/// heading, and in the table's order inside it (ADR-cfc74e53a744).
 ///
 /// Through the binary, against `ank help --json`: the same table read out of the
 /// same process, so the assertion is that the two renderings agree rather than
@@ -11450,7 +11450,7 @@ fn the_grouped_listing_prints_every_verb_exactly_once() {
 }
 
 /// Every verb carries a non-empty group, and every group is a heading the
-/// listing prints (ADR-e4a5a8873fe3).
+/// listing prints (ADR-cfc74e53a744).
 ///
 /// This is what stops a twenty-second verb from being added with no home and
 /// disappearing off the end unnoticed. The test above would pass on such a verb
@@ -11490,7 +11490,7 @@ fn every_verb_carries_a_group_and_no_group_goes_unprinted() {
              heading:\n{listing}"
         );
         // And a group says when a verb is used, never who may use it: the wall
-        // ADR-e4a5a8873fe3 pulled down was built out of exactly these words.
+        // ADR-cfc74e53a744 pulled down was built out of exactly these words.
         for who in ["agent", "human", "caller", "you"] {
             assert!(
                 !group.split_whitespace().any(|w| w == who),
@@ -11511,7 +11511,7 @@ fn every_verb_carries_a_group_and_no_group_goes_unprinted() {
 }
 
 // ---------------------------------------------------------------------------
-// Dead constraints in the prose (ADR-e4a5a8873fe3)
+// Dead constraints in the prose (ADR-cfc74e53a744)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -14682,7 +14682,7 @@ fn surface() -> Vec<(String, String, Vec<String>)> {
     for line in listing_body(&text) {
         // The listing is `<usage>` padded, then the description. Its folded
         // continuation lines are indented and open no verb (TASK-fe130d2b732c),
-        // and a group heading opens none either (ADR-e4a5a8873fe3).
+        // and a group heading opens none either (ADR-cfc74e53a744).
         let Some(rest) = line.strip_prefix("ank ") else {
             continue;
         };

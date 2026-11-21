@@ -64,7 +64,7 @@ No verb enforces one. `done` leaves `method` unread: the criterion is frozen
 by hash at claim, `done` runs the declared verifiers itself and records what
 they returned, and the proof records the route by which it arrived. A verifier
 measures the tree, whatever process produced it, which is the point
-(ADR-e4a5a8873fe3). An agent graded on its process learns to fake the process.
+(ADR-cfc74e53a744). An agent graded on its process learns to fake the process.
 An agent graded on the tree has to change the tree.
 
 So the method is taught and the outcome is measured, and the cost is the mirror
