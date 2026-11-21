@@ -38,6 +38,25 @@ pub fn run(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> 
         .filter(|r| context::in_perimeter(&r.scope, perimeter.as_deref()))
         .collect();
     nodes.sort_by_key(|r| r.id.to_string());
+    // Every task in the perimeter, whatever the narrowing below drops: a
+    // blocker the narrowing left out is not outside the perimeter, and saying
+    // it is would send the reader looking for it in the wrong place.
+    let perimeter_ids: HashSet<&EntityId> = nodes.iter().map(|r| &r.id).collect();
+
+    // What is not finished, and the finished tasks that block it
+    // (ADR-302efb9c5e40). The history is most of a corpus that has lived, and
+    // an agent reads this before every claim; `--all` draws it whole.
+    let mut left_out = 0usize;
+    if !inv.has("--all") {
+        let waited_on: HashSet<&EntityId> = nodes
+            .iter()
+            .filter(|r| !finished(r))
+            .flat_map(|r| r.blocked_by.iter())
+            .collect();
+        let before = nodes.len();
+        nodes.retain(|r| !finished(r) || waited_on.contains(&r.id));
+        left_out = before - nodes.len();
+    }
 
     let inside: HashSet<&EntityId> = nodes.iter().map(|r| &r.id).collect();
     let row_of: HashMap<&EntityId, &Row> = nodes.iter().map(|r| (&r.id, *r)).collect();
@@ -58,7 +77,13 @@ pub fn run(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> 
                 held_inside += 1;
             }
         }
-        let outside = row.blocked_by.len() - held_inside;
+        // Only what the perimeter excludes: a finished blocker the narrowing
+        // dropped blocks a finished task, and nothing waits on that.
+        let outside = row
+            .blocked_by
+            .iter()
+            .filter(|b| !perimeter_ids.contains(b))
+            .count();
         let mut note = String::new();
         // Never silently a root. A task held up by something the perimeter
         // excludes is not free to start, and drawing it flush left would say
@@ -103,6 +128,12 @@ pub fn run(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> 
     let _ = writeln!(out, "{shown}");
     if nodes.is_empty() {
         let _ = writeln!(out, "\nno task in this perimeter");
+        if left_out > 0 {
+            let _ = writeln!(
+                out,
+                "{left_out} finished task(s) not drawn, --all draws them"
+            );
+        }
         return Ok(ExitCode::Ok);
     }
     let _ = writeln!(out);
@@ -150,7 +181,19 @@ pub fn run(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> 
         nodes.len(),
         roots.len()
     );
+    if left_out > 0 {
+        let _ = writeln!(
+            out,
+            "{left_out} finished task(s) blocking nothing unfinished not drawn, --all draws them"
+        );
+    }
     Ok(ExitCode::Ok)
+}
+
+/// Done or closed: the two terminal statuses, the ones the default drawing
+/// leaves out unless something unfinished waits on them.
+fn finished(row: &Row) -> bool {
+    matches!(row.status.as_str(), "done" | "closed")
 }
 
 /// One node and everything it unblocks, depth first.
