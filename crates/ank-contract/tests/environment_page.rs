@@ -97,6 +97,7 @@ fn the_command_prints_a_row_for_every_variable_the_binary_reads() {
         "COMPUTERNAME",
         "ConEmuANSI",
         "EDITOR",
+        "HC_TERMINAL_ID",
         "HOME",
         "HOSTNAME",
         "LOGNAME",

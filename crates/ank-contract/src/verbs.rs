@@ -105,6 +105,16 @@ const SKILLS_OUT: &[Field] = &[
     ),
 ];
 
+/// `skills <name> --json`: one skill whole, as the binary prints it
+/// (ADR-cfc74e53a744). `body` is what `ank skills <name>` prints, the contract
+/// completed with help's lines where it lists verbs.
+const SKILL_OUT: &[Field] = &[
+    f("name", Type::Str),
+    f("revision", Type::Str),
+    f("description", Type::Str),
+    f("body", Type::Str),
+];
+
 /// `update --check --json`: the running version, the latest release, and
 /// whether the second is above the first (ADR-64f32c74a0f9). `latest` is null
 /// when the repository holds no tag of the release form, and `newer` is then
@@ -2773,12 +2783,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         // the binary at build time, and the installers run this verb straight
         // after unpacking, wherever the person happens to be.
         coordinates: false,
-        summary: "the skills this binary carries, one line each, and in a corpus how often each sibling is designated and fires; --install writes them to a directory and hands it to npx skills add",
+        summary: "the skills this binary carries, one line each, and in a corpus how often each sibling is designated and fires; a name prints that skill whole; --install writes them to a directory and hands it to npx skills add",
         subcommands: &[],
         kinds: &[],
         min_positionals: 0,
-        max_positionals: 0,
-        positional_help: "",
+        max_positionals: 1,
+        positional_help: "[<name>]",
         flags: &[switch("--install")],
         refuses: &[
             refuses(
@@ -2793,11 +2803,18 @@ pub const COMMANDS: &[CommandSpec] = &[
                 ExitCode::Environment,
                 "--install, and the npx found on PATH cannot be started",
             ),
+            refuses(
+                ExitCode::Prerequisite,
+                "a name the binary carries no skill under; the refusal names the ones it does",
+            ),
+            refuses(ExitCode::Generic, "a name with --install, which writes every skill"),
         ],
         notes: &[
             "each line is a skill's name, the revision its file declares, and its description; a build with no skill/ to read carries none and says so in one line",
             "run in a corpus, a METHODS section follows with one line per sibling: designated, the tasks naming it as method; fired, those of them carrying its method entry; undesignated, its entries on tasks naming no method",
             "outside a corpus it prints the catalogue and no counts, and --json says counted: false",
+            "ank skills <name> prints the body of one skill, by its frontmatter name or without the ank- prefix: ank skills ank is the contract, ank skills tdd the method; it reads no corpus",
+            "where the contract lists verbs it prints the lines ank help prints for them, and it names ank-herdr only where HC_TERMINAL_ID is set",
             "--install writes a new directory under the temporary directory, one subdirectory per skill named as its frontmatter names it, and runs npx skills add <that directory> with npm_config_yes set",
             "without npx on PATH it prints the directory it wrote and the command to run, and exits 0",
             "an npx that fails is this verb failing: it exits with npx's own code, and npx's output is the reason",
@@ -2811,7 +2828,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         // existed. `--install` keeps having none: what it produces is a
         // directory and npx's own run on the same stdout, so `--json` beside it
         // is refused above.
-        output: &[one(SKILLS_OUT)],
+        output: &[when("no name", SKILLS_OUT), when("a name", SKILL_OUT)],
         owner_task: None,
     },
     // After `skills` and before `update`, which is §4's order, and in their
