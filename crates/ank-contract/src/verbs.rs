@@ -2847,7 +2847,7 @@ pub const COMMANDS: &[CommandSpec] = &[
                 ExitCode::Prerequisite,
                 "a name the binary carries no skill under; the refusal names the ones it does",
             ),
-            refuses(ExitCode::Generic, "a name with --install, which writes every skill"),
+            refuses(ExitCode::Generic, "a name with --install, which writes the stub alone"),
         ],
         notes: &[
             "each line is a skill's name, the revision its file declares, and its description; a build with no skill/ to read carries none and says so in one line",
@@ -2855,7 +2855,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "outside a corpus it prints the catalogue and no counts, and --json says counted: false",
             "ank skills <name> prints the body of one skill, by its frontmatter name or without the ank- prefix: ank skills ank is the contract, ank skills tdd the method; it reads no corpus",
             "where the contract lists verbs it prints the lines ank help prints for them, and it names ank-herdr only where HC_TERMINAL_ID is set",
-            "--install writes a new directory under the temporary directory, one subdirectory per skill named as its frontmatter names it, and runs npx skills add <that directory> with npm_config_yes set",
+            "--install writes a new directory under the temporary directory holding ank/SKILL.md, the stub naming ank skills ank and nothing else, and runs npx skills add <that directory> with npm_config_yes set",
             "without npx on PATH it prints the directory it wrote and the command to run, and exits 0",
             "an npx that fails is this verb failing: it exits with npx's own code, and npx's output is the reason",
             "it never reads standard input and never asks: the flag given is the consent",

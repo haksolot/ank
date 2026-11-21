@@ -27,7 +27,17 @@ fn repo_file(rel: &str) -> String {
     fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 
+/// The contract's source, `skill/ank.md`: embedded, printed by `ank skills
+/// ank`, and installed by no channel (ADR-cfc74e53a744). What it teaches is
+/// held on what the binary prints, `printed_contract`; the file is read here
+/// for what only the file has, its revision and its length.
 fn skill() -> String {
+    repo_file("skill/ank.md")
+}
+
+/// The one installed file, `skill/SKILL.md`: a stub that triggers and hands
+/// over to `ank skills ank` (ADR-cfc74e53a744).
+fn stub() -> String {
     repo_file("skill/SKILL.md")
 }
 
@@ -462,7 +472,7 @@ fn the_skill_teaches_the_read_form_of_log() {
 /// that works around them in good faith.
 #[test]
 fn the_skill_says_what_the_rules_protect() {
-    let text = skill();
+    let text = printed_contract();
     for token in ["two planes", "anchored"] {
         assert!(
             text.contains(token),
@@ -485,7 +495,7 @@ fn the_skill_says_what_the_rules_protect() {
 /// rewrite from a removal is a test nobody trusts twice.
 #[test]
 fn the_skill_describes_accept_without_inviting_it() {
-    let text = skill();
+    let text = printed_contract();
     for token in ["accept", "signed", "default branch"] {
         assert!(
             text.contains(token),
@@ -578,7 +588,7 @@ fn the_skill_teaches_nothing_beyond_what_is_frozen() {
 /// reports it as a removal.
 #[test]
 fn the_skill_states_that_what_an_agent_reads_is_never_styled() {
-    let text = skill();
+    let text = printed_contract();
     for token in ["terminal", "pipe", "--json"] {
         assert!(
             text.contains(token),
@@ -618,7 +628,7 @@ fn the_skill_states_that_what_an_agent_reads_is_never_styled() {
 /// resting on it would stay green over a deleted paragraph.
 #[test]
 fn the_skill_states_the_execution_model_it_assumes() {
-    let text = skill();
+    let text = printed_contract();
     for token in ["worktree", "ANK_AGENT", "degraded"] {
         assert!(
             text.contains(token),
@@ -660,7 +670,7 @@ fn the_skill_states_the_execution_model_it_assumes() {
 /// a deleted paragraph.
 #[test]
 fn the_skill_says_how_to_choose_work_beside_another_agent() {
-    let text = skill();
+    let text = printed_contract();
     for token in ["intersects", "unblocked", "collide"] {
         assert!(
             text.contains(token),
@@ -749,24 +759,29 @@ fn the_skill_says_which_revision_it_is() {
 // The siblings, anchored the same way (ADR-cfc74e53a744, TASK-e26516d35da9)
 // ---------------------------------------------------------------------------
 
-/// The sibling skills beside the contract: every `skill/<dir>/SKILL.md`, as
-/// `(dir, content)`. Discovered rather than listed, so a skill added later is
-/// anchored by the tests below without anyone remembering to enrol it.
+/// The methods beside the contract: every `skill/<name>.md` but the contract
+/// and the stub, as `(name, content)`. Discovered rather than listed, so a
+/// method added later is anchored by the tests below without anyone
+/// remembering to enrol it.
 fn sibling_skills() -> Vec<(String, String)> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skill");
     let mut found = Vec::new();
     for entry in fs::read_dir(&root).expect("skill/ must exist") {
         let path = entry.expect("skill/ must be readable").path();
-        let md = path.join("SKILL.md");
-        if path.is_dir() && md.is_file() {
-            found.push((
-                path.file_name()
-                    .expect("a directory has a name")
-                    .to_string_lossy()
-                    .to_string(),
-                fs::read_to_string(&md).unwrap_or_else(|e| panic!("{}: {e}", md.display())),
-            ));
+        let Some(name) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".md"))
+        else {
+            continue;
+        };
+        if !path.is_file() || name == "SKILL" || name == "ank" {
+            continue;
         }
+        found.push((
+            name.to_string(),
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+        ));
     }
     found.sort();
     found
@@ -785,7 +800,7 @@ fn the_named_sibling_skills_exist() {
     for expected in ["diagnose", "drift", "herdr", "loop", "plan", "tdd"] {
         assert!(
             names.contains(&expected.to_string()),
-            "skill/{expected}/SKILL.md is missing: ADR-cfc74e53a744 names \
+            "skill/{expected}.md is missing: ADR-cfc74e53a744 names \
              it as one of the methods beside the contract"
         );
     }
@@ -815,7 +830,7 @@ fn the_contract_names_every_sibling_skill() {
             section
                 .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
                 .any(|word| word == entry),
-            "skill/{name}/SKILL.md exists, but the skills section of \
+            "skill/{name}.md exists, but the skills section of \
              skill/SKILL.md does not name {entry}: list it beside the other \
              siblings, one line saying what activity it carries"
         );
@@ -829,9 +844,9 @@ fn the_contract_names_every_sibling_skill() {
     );
 }
 
-/// The body of `skill/herdr/SKILL.md`, frontmatter set aside.
+/// The body of `skill/herdr.md`, frontmatter set aside.
 fn herdr_skill() -> (String, String) {
-    let text = repo_file("skill/herdr/SKILL.md");
+    let text = repo_file("skill/herdr.md");
     split_skill(&text)
 }
 
@@ -844,7 +859,7 @@ fn line_teaching<'a>(body: &'a str, point: &str, tokens: &[&str]) -> &'a str {
         .find(|line| tokens.iter().all(|t| line.contains(t)))
         .unwrap_or_else(|| {
             panic!(
-                "skill/herdr/SKILL.md has no line teaching that {point}: no line \
+                "skill/herdr.md has no line teaching that {point}: no line \
                  carries all of {tokens:?}"
             )
         })
@@ -859,13 +874,13 @@ fn the_herdr_sibling_is_named_and_triggers_in_a_herdr_core_terminal() {
     let (front, _) = herdr_skill();
     assert!(
         front.lines().any(|l| l.trim() == "name: ank-herdr"),
-        "skill/herdr/SKILL.md is not named ank-herdr:\n{front}"
+        "skill/herdr.md is not named ank-herdr:\n{front}"
     );
     let description = front
         .lines()
         .find_map(|l| l.strip_prefix("description:"))
         .map(str::trim)
-        .expect("skill/herdr/SKILL.md declares a description");
+        .expect("skill/herdr.md declares a description");
     assert!(
         description.chars().count() < 300,
         "the description is {} characters, and every session pays for it: {description}",
@@ -1049,22 +1064,37 @@ fn no_file_outside_the_corpus_cites_the_superseded_orchestration_adr() {
     );
 }
 
-/// Each sibling is anchored exactly as the contract is: a declared revision the
-/// test recomputes, because TASK-b495234f192c measured what an unanchored
-/// installed copy costs and the failure does not care which file it happens to.
+/// **Every file under `skill/` declares a revision that is the hash of its
+/// body** (ADR-cfc74e53a744): the stub, the contract and each method, walked
+/// rather than listed, because TASK-b495234f192c measured what an unanchored
+/// copy costs and the failure does not care which file it happens to.
 #[test]
-fn every_sibling_skill_says_which_revision_it_is() {
-    for (name, text) in sibling_skills() {
-        let (front, body) = split_skill(&text);
-        let declared = declared_revision(&front)
-            .unwrap_or_else(|| panic!("skill/{name}/SKILL.md declares no metadata.revision"));
-        let actual = ank_core::freeze_hash_short(&body);
-        assert_eq!(
-            declared, actual,
-            "skill/{name}/SKILL.md was edited without its revision: set \
-             metadata.revision to \"{actual}\""
-        );
+fn every_file_under_skill_says_which_revision_it_is() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skill");
+    let mut stack = vec![root.clone()];
+    let mut seen = 0;
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).expect("skill/ must be readable") {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let rel = path.strip_prefix(&root).unwrap().display().to_string();
+            let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("skill/{rel}: {e}"));
+            let (front, body) = split_skill(&text);
+            let declared = declared_revision(&front)
+                .unwrap_or_else(|| panic!("skill/{rel} declares no metadata.revision"));
+            let actual = ank_core::freeze_hash_short(&body);
+            assert_eq!(
+                declared, actual,
+                "skill/{rel} was edited without its revision: set \
+                 metadata.revision to \"{actual}\""
+            );
+            seen += 1;
+        }
     }
+    assert_eq!(seen, 8, "the stub, the contract and six methods");
 }
 
 /// The ceiling of ADR-cfc74e53a744 is per skill, for the by-hand route where a
@@ -1076,11 +1106,11 @@ fn every_sibling_skill_stays_within_one_page() {
         let words = text.split_whitespace().count();
         assert!(
             lines <= 180,
-            "skill/{name}/SKILL.md is {lines} lines, over the 180 ceiling"
+            "skill/{name}.md is {lines} lines, over the 180 ceiling"
         );
         assert!(
             words <= 1500,
-            "skill/{name}/SKILL.md is {words} words, over the 1500 ceiling"
+            "skill/{name}.md is {words} words, over the 1500 ceiling"
         );
     }
 }
@@ -1095,32 +1125,139 @@ fn every_sibling_defers_to_the_contract_and_never_invites_accept() {
     for (name, text) in sibling_skills() {
         assert!(
             text.contains("contract"),
-            "skill/{name}/SKILL.md never says the contract applies: a policy \
+            "skill/{name}.md never says the contract applies: a policy \
              that restates the rules is a second copy waiting to drift"
         );
         assert!(
             !text.contains("ank accept"),
-            "skill/{name}/SKILL.md shows `ank accept`: described, never invited \
+            "skill/{name}.md shows `ank accept`: described, never invited \
              holds in every skill that mentions it (ADR-cfc74e53a744)"
         );
     }
 }
 
-/// The plugin manifest is how a harness finds the skills, so a sibling the
-/// manifest does not list ships to nobody.
+/// **The plugin installs the stub alone** (ADR-cfc74e53a744): the manifest
+/// lists `./skill` and no other directory, so no harness loads a copy of the
+/// contract or of a method that a release could leave stale.
 #[test]
-fn the_plugin_manifest_lists_every_skill_directory() {
+fn the_plugin_manifest_lists_the_stub_directory_alone() {
     let manifest = repo_file(".claude-plugin/plugin.json");
+    let list = manifest
+        .split_once("\"skills\"")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(list, _)| list.to_string())
+        .expect(".claude-plugin/plugin.json lists no skills");
+    let dirs: Vec<&str> = list.split('"').filter(|s| s.starts_with("./")).collect();
+    assert_eq!(dirs, ["./skill"], "{manifest}");
+}
+
+/// **No file but the stub is named `SKILL.md`.** A channel that discovers
+/// skills by that name, the skills CLI walking a repository among them, finds
+/// the stub and nothing else, so the contract and the methods are embedded and
+/// never installed.
+#[test]
+fn no_file_under_skill_but_the_stub_is_named_skill_md() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skill");
+    let mut stack = vec![root.clone()];
+    let mut named = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") {
+                named.push(path.strip_prefix(&root).unwrap().display().to_string());
+            }
+        }
+    }
+    assert_eq!(named, ["SKILL.md"]);
+}
+
+// ---------------------------------------------------------------------------
+// The stub, and the contract the binary prints (ADR-cfc74e53a744)
+// ---------------------------------------------------------------------------
+
+/// **The stub triggers and hands over, and teaches nothing a release changes.**
+/// Under 40 lines; it names `ank skills ank`; it holds no verb table, no exit
+/// code table and no rule; and its description still fires in a repository
+/// holding `.ank/`.
+#[test]
+fn the_stub_names_the_contract_command_and_carries_no_verb_code_or_rule() {
+    let text = stub();
+    let lines = text.lines().count();
     assert!(
-        manifest.contains("\"./skill\""),
-        ".claude-plugin/plugin.json does not list ./skill, the contract"
+        lines < 40,
+        "skill/SKILL.md is {lines} lines, a stub is under 40"
     );
-    for (name, _) in sibling_skills() {
+    let (front, body) = split_skill(&text);
+    assert!(front.lines().any(|l| l.trim() == "name: ank"), "{front}");
+    let description = front
+        .lines()
+        .find_map(|l| l.strip_prefix("description:"))
+        .expect("the stub declares a description");
+    assert!(description.contains(".ank/"), "{description}");
+    assert!(body.contains("ank skills ank"), "{body}");
+    // No verb table: no usage line of a verb, indented or fenced.
+    for line in body.lines() {
+        let t = line.trim_start();
         assert!(
-            manifest.contains(&format!("\"./skill/{name}\"")),
-            ".claude-plugin/plugin.json does not list ./skill/{name}: the \
-             sibling exists and no harness will find it"
+            !(line.starts_with(' ') && t.starts_with("ank ")) && !t.starts_with("```"),
+            "skill/SKILL.md carries a verb table line: {line}"
         );
+        // No exit code table: no line opening on a code and two spaces.
+        let code =
+            t.chars().next().is_some_and(|c| c.is_ascii_digit()) && t.get(1..3) == Some("  ");
+        assert!(!code, "skill/SKILL.md carries an exit code line: {line}");
+    }
+    for rule in [
+        "Rules that are not negotiable",
+        "frozen at claim",
+        "is binding",
+        "opaque",
+        "one working tree",
+        "collide",
+        "never styled",
+    ] {
+        assert!(
+            !body.contains(rule),
+            "skill/SKILL.md carries a rule: {rule:?}"
+        );
+    }
+}
+
+/// **What the contract carried on 1dbd58ff, the binary prints**
+/// (ADR-cfc74e53a744): the model's three statements, the six rules and the
+/// nine exit codes, as literals written from that revision, on the text
+/// `ank skills ank` prints with its lines rejoined.
+#[test]
+fn the_printed_contract_carries_the_model_every_rule_and_the_exit_codes() {
+    let flat = printed_contract()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for line in [
+        "**Constraints and work are two planes, joined only by scope.**",
+        "**Nothing is trusted, everything is anchored.**",
+        "**So the tool is not a gatekeeper and never pretends to be one.**",
+        "## Rules that are not negotiable",
+        "- **The criterion is frozen at claim.**",
+        "- **`constraint` in an ADR is binding**, not advice.",
+        "- **`.ank/` is opaque, like `.git/`.**",
+        "- **One agent, one working tree, one identity.**",
+        "- **Take the task that cannot collide, or take none.**",
+        "- **What you read is never styled.**",
+        "Exit codes carry meaning, and errors always name the exact next command:",
+        "1 generic",
+        "2 no such entity, or a prefix matching several",
+        "3 the entity moved under you: redo `context`",
+        "4 not yours to take: held by another agent, or finished elsewhere",
+        "5 a proof missing, malformed or refused, or a declared verifier that failed",
+        "6 the state forbids the act: a frozen field diverged, or no claim is held",
+        "7 a prerequisite is missing: blocked, no criterion, a mandatory flag absent, or you already hold a live claim",
+        "8 `check` or `review` found a fault; a signal alone exits `0`",
+        "9 an environment to repair rather than work that failed",
+    ] {
+        assert!(flat.contains(line), "ank skills ank no longer prints {line:?}");
     }
 }
 
@@ -1156,10 +1293,10 @@ fn no_file_under_skill_asks_for_a_load_record_and_plan_sets_the_method() {
         }
     }
 
-    let plan = repo_file("skill/plan/SKILL.md");
+    let plan = repo_file("skill/plan.md");
     assert!(
         plan.contains("ank new task --method"),
-        "skill/plan/SKILL.md does not teach --method on ank new task, so no \
+        "skill/plan.md does not teach --method on ank new task, so no \
          planned task designates the policy its shape calls for"
     );
 }
@@ -1231,7 +1368,7 @@ fn printed_skill_revision() -> Option<String> {
 /// whose stamp was never taken.
 #[test]
 fn the_binary_names_the_skill_revision_it_was_built_alongside() {
-    let (front, body) = split_skill(&skill());
+    let (front, body) = split_skill(&stub());
     let declared = declared_revision(&front).expect("SKILL.md declares no metadata.revision");
 
     let printed = printed_skill_revision().unwrap_or_else(|| {
@@ -1284,6 +1421,35 @@ fn manifest_skills() -> Vec<(String, String, Vec<u8>)> {
                 .join("../..")
                 .join(&rel);
             let bytes = fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let (front, _) = split_skill(&String::from_utf8_lossy(&bytes));
+            let name = front
+                .lines()
+                .find_map(|l| l.strip_prefix("name:"))
+                .map(|v| v.trim().to_string())
+                .unwrap_or_else(|| panic!("{rel} declares no name"));
+            (name, rel, bytes)
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// Every skill the binary carries, as `(frontmatter name, path relative to the
+/// repository, bytes)`: the contract, `skill/ank.md`, and each method,
+/// `skill/<name>.md`. The stub is not among them: it is what `--install`
+/// writes, and `ank skills` lists the contract and the methods.
+fn catalogue_skills() -> Vec<(String, String, Vec<u8>)> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut rels = vec!["skill/ank.md".to_string()];
+    rels.extend(
+        sibling_skills()
+            .into_iter()
+            .map(|(name, _)| format!("skill/{name}.md")),
+    );
+    let mut found: Vec<(String, String, Vec<u8>)> = rels
+        .into_iter()
+        .map(|rel| {
+            let bytes = fs::read(root.join(&rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
             let (front, _) = split_skill(&String::from_utf8_lossy(&bytes));
             let name = front
                 .lines()
@@ -1373,7 +1539,7 @@ fn agent_detecting(name: &str) -> bool {
 fn written_directory(stdout: &str) -> PathBuf {
     let first = stdout.lines().next().unwrap_or_default();
     let (_, dir) = first
-        .split_once(" skills to ")
+        .split_once(" skill to ")
         .unwrap_or_else(|| panic!("--install did not say where it wrote:\n{stdout}"));
     PathBuf::from(dir)
 }
@@ -1447,7 +1613,7 @@ fn ank_skills_prints_one_line_per_skill_it_carries() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let lines: Vec<&str> = stdout.lines().collect();
-    let skills = manifest_skills();
+    let skills = catalogue_skills();
     assert_eq!(skills.len(), 7, "the tree holds {} skills", skills.len());
     assert_eq!(
         lines.len(),
@@ -1504,7 +1670,7 @@ fn ank_skills_json_outside_a_corpus_carries_the_catalogue_and_no_counts() {
         .map(|s| s["name"].as_str().unwrap().to_string())
         .collect();
     names.sort();
-    let mut expected: Vec<String> = manifest_skills().into_iter().map(|(n, _, _)| n).collect();
+    let mut expected: Vec<String> = catalogue_skills().into_iter().map(|(n, _, _)| n).collect();
     expected.sort();
     assert_eq!(names, expected, "{stdout}");
 
@@ -1527,7 +1693,7 @@ fn ank_skills_json_outside_a_corpus_carries_the_catalogue_and_no_counts() {
     );
 }
 
-/// **`--install` writes every skill, hands the directory to npx, and exits with
+/// **`--install` writes the stub alone, hands the directory to npx, and exits with
 /// npx's code.** The stub is what proves the argv, and what it records is read
 /// back rather than the code that builds the command: `skills`, `add`, the
 /// directory and `-y`, which answers the selection prompt the skills CLI
@@ -1579,26 +1745,35 @@ fn ank_skills_install_runs_npx_on_the_directory_it_wrote() {
         );
     }
 
-    let skills = manifest_skills();
-    let mut subdirectories: Vec<String> = fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
-        .collect();
-    subdirectories.sort();
-    let names: Vec<String> = skills.iter().map(|(name, _, _)| name.clone()).collect();
-    assert_eq!(
-        subdirectories, names,
-        "one subdirectory per skill, named as the manifest's skills name themselves"
-    );
-    for (name, rel, bytes) in &skills {
-        let written = fs::read(dir.join(name).join("SKILL.md"))
-            .unwrap_or_else(|e| panic!("{name}/SKILL.md was not written: {e}"));
-        assert!(
-            written == *bytes,
-            "{name}/SKILL.md is not byte for byte {rel}: the binary carries \
-             another body than the tree's"
-        );
+    // **One directory, holding the stub alone** (ADR-cfc74e53a744): nothing
+    // installed carries what a release changes.
+    let mut written: Vec<String> = Vec::new();
+    let mut stack = vec![dir.clone()];
+    while let Some(d) = stack.pop() {
+        for entry in fs::read_dir(&d).unwrap_or_else(|e| panic!("{}: {e}", d.display())) {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                written.push(path.strip_prefix(&dir).unwrap().display().to_string());
+            }
+        }
     }
+    let one = PathBuf::from("ank").join("SKILL.md").display().to_string();
+    assert_eq!(
+        written,
+        [one],
+        "--install writes one directory holding one file"
+    );
+    let bytes = fs::read(dir.join("ank").join("SKILL.md")).unwrap();
+    let tree =
+        fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skill/SKILL.md")).unwrap();
+    assert!(
+        bytes == tree,
+        "ank/SKILL.md is not byte for byte skill/SKILL.md"
+    );
+    let skills = manifest_skills();
+    assert_eq!(skills.len(), 1, "the manifest lists the stub alone");
 }
 
 /// **No node on `PATH` is not a failure.** The directory is written and stays,
@@ -2033,7 +2208,7 @@ fn printed_help() -> String {
 fn ank_skills_name_prints_each_skill_by_either_name_inside_and_outside_a_corpus() {
     let outside = scratch::dir("skills-named");
     let inside = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let skills = manifest_skills();
+    let skills = catalogue_skills();
     let mut shorts: Vec<String> = Vec::new();
     for (name, rel, bytes) in &skills {
         let (_, body) = split_skill(&String::from_utf8_lossy(bytes));
@@ -2160,7 +2335,7 @@ fn the_verbs_the_contract_prints_are_the_lines_help_prints_and_skill_holds_none(
     }
     assert!(printed >= 14, "{printed} verb entries printed");
 
-    for (_, rel, bytes) in manifest_skills() {
+    for (_, rel, bytes) in catalogue_skills() {
         let text = String::from_utf8_lossy(&bytes);
         for entry in &entries {
             for line in entry {
@@ -2215,7 +2390,7 @@ fn ank_skills_name_json_carries_the_skill_whole() {
     );
     let doc: serde_yaml::Value = serde_yaml::from_str(&stdout_of(&out)).expect("a JSON document");
     assert_eq!(doc["name"].as_str(), Some("ank-tdd"));
-    let (front, body) = split_skill(&repo_file("skill/tdd/SKILL.md"));
+    let (front, body) = split_skill(&repo_file("skill/tdd.md"));
     assert_eq!(doc["body"].as_str(), Some(body.as_str()));
     assert_eq!(
         doc["revision"].as_str(),

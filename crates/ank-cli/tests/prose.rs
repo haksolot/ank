@@ -56,13 +56,14 @@ const BUDGET: &[(&str, usize)] = &[
     ("docs/specification.md", 2),
     ("docs/splitting-verifiers.md", 5),
     ("docs/watch.md", 24),
-    ("skill/SKILL.md", 19),
-    ("skill/diagnose/SKILL.md", 9),
-    ("skill/drift/SKILL.md", 3),
-    ("skill/herdr/SKILL.md", 8),
-    ("skill/loop/SKILL.md", 11),
-    ("skill/plan/SKILL.md", 4),
-    ("skill/tdd/SKILL.md", 4),
+    ("skill/SKILL.md", 0),
+    ("skill/ank.md", 19),
+    ("skill/diagnose.md", 9),
+    ("skill/drift.md", 3),
+    ("skill/herdr.md", 8),
+    ("skill/loop.md", 11),
+    ("skill/plan.md", 4),
+    ("skill/tdd.md", 4),
 ];
 
 /// `\b(not a|never|rather than|is not|are not|instead of|not the)\b`, the
@@ -99,21 +100,24 @@ fn pages() -> Vec<String> {
         }
     }
     let root = root();
-    let mut out = vec!["README.md".to_string(), "skill/SKILL.md".to_string()];
+    let mut out = vec![
+        "README.md".to_string(),
+        "skill/SKILL.md".to_string(),
+        "skill/ank.md".to_string(),
+    ];
     walk(&root.join("docs"), "docs", &mut out);
     out.extend(skill_files());
     out.sort();
     out
 }
 
-/// `skill/*/SKILL.md`, the siblings of the contract.
+/// `skill/*.md` but the stub and the contract: the methods.
 fn skill_files() -> Vec<String> {
     let mut out = Vec::new();
     for entry in fs::read_dir(root().join("skill")).unwrap() {
-        let entry = entry.unwrap();
-        if entry.path().join("SKILL.md").is_file() {
-            let name = entry.file_name().into_string().unwrap();
-            out.push(format!("skill/{name}/SKILL.md"));
+        let name = entry.unwrap().file_name().into_string().unwrap();
+        if name.ends_with(".md") && name != "SKILL.md" && name != "ank.md" {
+            out.push(format!("skill/{name}"));
         }
     }
     out

@@ -31,12 +31,13 @@
 //! it is derived from is outside this package, so nothing Cargo watches by
 //! default would notice it moving (TASK-ecda4070354f).
 //!
-//! **Every skill under `skill/` is embedded too** (ADR-e1d750884b82,
-//! TASK-544ec9655570): the contract and each sibling, frontmatter and body, read
-//! whole from the one source ADR-8b3045cf11db names and handed to the crate as
-//! bytes, so `ank skills --install` writes what the tree holds and nothing is
-//! committed a second time for it. The whole directory is watched, because a
-//! sibling added beside the others is a skill the next build has to carry.
+//! **Every file under `skill/` is embedded too** (ADR-cfc74e53a744,
+//! ADR-e1d750884b82): the contract, `skill/ank.md`, and each method,
+//! `skill/<name>.md`, frontmatter and body, read whole from the one source
+//! ADR-8b3045cf11db names, are what `ank skills <name>` prints; the stub,
+//! `skill/SKILL.md`, is embedded apart, as the one file `--install` writes. The
+//! whole directory is watched, because a method added beside the others is one
+//! the next build has to carry.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -129,8 +130,9 @@ fn skill_revision(dir: &str) -> String {
     ank_core::freeze_hash_short(&rest[end + "\n---\n".len()..])
 }
 
-/// The Rust source `src/skills.rs` includes: one `Embedded` per skill under
-/// `skill/`, the contract first and the siblings after it in name order.
+/// The Rust source `src/skills.rs` includes: one `Embedded` per `skill/*.md`
+/// but the stub, in name order, and `STUB`, the stub's bytes or `None` where
+/// there is no `skill/` to read.
 ///
 /// **What is read from the frontmatter is what the file declares**, `name`,
 /// `description` and `metadata.revision`, and nothing is recomputed: whether the
@@ -146,16 +148,14 @@ fn skill_revision(dir: &str) -> String {
 fn embedded_skills(dir: &str) -> String {
     let root = PathBuf::from(dir).join(SKILLS);
     let mut files: Vec<PathBuf> = Vec::new();
-    if root.join("SKILL.md").is_file() {
-        files.push(root.join("SKILL.md"));
-    }
     if let Ok(entries) = std::fs::read_dir(&root) {
         for entry in entries {
             let path = entry
                 .unwrap_or_else(|e| panic!("{}: {e}", root.display()))
                 .path();
-            if path.is_dir() && path.join("SKILL.md").is_file() {
-                files.push(path.join("SKILL.md"));
+            let md = path.extension().is_some_and(|e| e == "md");
+            if path.is_file() && md && path.file_name().is_some_and(|n| n != "SKILL.md") {
+                files.push(path);
             }
         }
     }
@@ -198,6 +198,15 @@ fn embedded_skills(dir: &str) -> String {
         ));
     }
     source.push_str("];\n");
+    let stub = root.join("SKILL.md");
+    if stub.is_file() {
+        source.push_str(&format!(
+            "pub const STUB: Option<&[u8]> = Some(include_bytes!({:?}));\n",
+            stub.display().to_string()
+        ));
+    } else {
+        source.push_str("pub const STUB: Option<&[u8]> = None;\n");
+    }
     source
 }
 
