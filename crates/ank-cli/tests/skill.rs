@@ -385,7 +385,7 @@ const INVESTIGATION_VERBS: [&str; 3] = ["scope", "status", "find --type spec"];
 
 #[test]
 fn the_skill_carries_the_whole_loop() {
-    let text = skill();
+    let text = printed_contract();
     for verb in LOOP_VERBS {
         assert!(
             text.contains(&format!("ank {verb}")),
@@ -409,7 +409,7 @@ fn the_skill_carries_the_whole_loop() {
 /// green, deleting the name from both places turns it red.
 #[test]
 fn the_skill_carries_the_planning_mode() {
-    let text = skill();
+    let text = printed_contract();
     for verb in PLANNING_VERBS {
         assert!(
             text.contains(&format!("ank {verb}")),
@@ -424,7 +424,7 @@ fn the_skill_carries_the_planning_mode() {
 /// file names.
 #[test]
 fn the_skill_carries_the_investigation_mode() {
-    let text = skill();
+    let text = printed_contract();
     for verb in INVESTIGATION_VERBS {
         assert!(
             text.contains(&format!("ank {verb}")),
@@ -444,7 +444,7 @@ fn the_skill_carries_the_investigation_mode() {
 /// the state this mode was added to end.
 #[test]
 fn the_skill_teaches_the_read_form_of_log() {
-    let text = skill();
+    let text = printed_contract();
     assert!(
         text.contains("ank log <id>"),
         "SKILL.md shows `ank log` only as a write: the read form is how a \
@@ -548,7 +548,7 @@ fn the_skill_stays_within_one_page() {
 /// what every session pays for them. Each one costs a succession.
 #[test]
 fn the_skill_teaches_nothing_beyond_what_is_frozen() {
-    let text = skill();
+    let text = printed_contract();
     // `reject` is `accept`'s other half and a human act on its terms
     // (ADR-0f4248812651), so it is shown no more than `accept` is.
     for verb in ["accept", "reject", "close", "attest", "edit"] {
@@ -2034,4 +2034,251 @@ fn the_relicensing_boundary_is_stated_the_same_way_everywhere() {
              written down there. Found statements in: {files:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// `ank skills <name>`: the binary serves a skill whole (TASK-b79fa61e90bd)
+// ---------------------------------------------------------------------------
+
+/// The binary in `cwd`, with `HC_TERMINAL_ID` set to `terminal` or removed:
+/// the suite may itself run inside a herdr-core terminal, and what the contract
+/// prints depends on that variable and on nothing else in the environment.
+fn named_run(args: &[&str], cwd: &Path, terminal: Option<&str>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ank"));
+    command.args(args).current_dir(cwd).stdin(Stdio::null());
+    match terminal {
+        Some(id) => command.env("HC_TERMINAL_ID", id),
+        None => command.env_remove("HC_TERMINAL_ID"),
+    };
+    command.output().expect("the binary must have been built")
+}
+
+fn stdout_of(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// The contract as the binary prints it, outside a herdr-core terminal.
+fn printed_contract() -> String {
+    let out = named_run(
+        &["skills", "ank"],
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        None,
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    stdout_of(&out)
+}
+
+/// `ank help`, printed by the binary.
+fn printed_help() -> String {
+    stdout_of(&named_run(
+        &["help"],
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        None,
+    ))
+}
+
+/// **Every skill, by either of its names, inside a corpus and outside one.** A
+/// sibling's body is printed exactly as its file holds it below the
+/// frontmatter; the contract's is the one the binary completes, so it is held to
+/// carrying every paragraph of its file that is prose.
+#[test]
+fn ank_skills_name_prints_each_skill_by_either_name_inside_and_outside_a_corpus() {
+    let outside = scratch::dir("skills-named");
+    let inside = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let skills = manifest_skills();
+    let mut shorts: Vec<String> = Vec::new();
+    for (name, rel, bytes) in &skills {
+        let (_, body) = split_skill(&String::from_utf8_lossy(bytes));
+        let short = name.strip_prefix("ank-").unwrap_or(name).to_string();
+        shorts.push(short.clone());
+        for spelling in [name.as_str(), short.as_str()] {
+            for cwd in [&outside, &inside] {
+                let out = named_run(&["skills", spelling], cwd, None);
+                assert_eq!(
+                    out.status.code(),
+                    Some(0),
+                    "ank skills {spelling} in {}: {}",
+                    cwd.display(),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let printed = stdout_of(&out);
+                if name == "ank" {
+                    for paragraph in body.split("\n\n").filter(|p| {
+                        !p.starts_with("```") && !p.contains("ank-herdr") && !p.trim().is_empty()
+                    }) {
+                        assert!(
+                            printed.contains(paragraph.trim()),
+                            "ank skills {spelling} lost a paragraph of {rel}:\n{paragraph}"
+                        );
+                    }
+                } else {
+                    assert_eq!(
+                        printed, body,
+                        "ank skills {spelling} is not the body of {rel}"
+                    );
+                }
+            }
+        }
+    }
+    shorts.sort();
+    assert_eq!(
+        shorts,
+        ["ank", "diagnose", "drift", "herdr", "loop", "plan", "tdd"],
+        "the skills the tree holds"
+    );
+}
+
+#[test]
+fn ank_skills_name_refuses_a_name_the_binary_does_not_carry_naming_the_ones_it_does() {
+    let outside = scratch::dir("skills-unknown");
+    for name in ["ank-nothing", "nothing", "contract"] {
+        let out = named_run(&["skills", name], &outside, None);
+        assert_eq!(out.status.code(), Some(7), "ank skills {name}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        for carried in [
+            "ank",
+            "ank-diagnose",
+            "ank-drift",
+            "ank-herdr",
+            "ank-loop",
+            "ank-plan",
+            "ank-tdd",
+        ] {
+            assert!(
+                err.contains(carried),
+                "the refusal does not name {carried}:\n{err}"
+            );
+        }
+        assert!(stdout_of(&out).is_empty(), "a refusal printed a skill");
+    }
+}
+
+/// The lines of `ank help` that belong to a verb's entry: its usage line and the
+/// summary lines beneath it.
+fn help_entries(help: &str) -> Vec<Vec<String>> {
+    let mut entries: Vec<Vec<String>> = Vec::new();
+    for line in help.lines() {
+        if line.starts_with("ank ") {
+            entries.push(vec![line.to_string()]);
+        } else if line.starts_with(' ') {
+            if let Some(last) = entries.last_mut() {
+                last.push(line.to_string());
+            }
+        }
+    }
+    entries
+}
+
+/// **The verbs the contract prints are `ank help`'s own lines, byte for byte**,
+/// a whole entry at a time, and the tree holds them nowhere: a table written
+/// into a skill is a second copy, and the one that goes stale.
+#[test]
+fn the_verbs_the_contract_prints_are_the_lines_help_prints_and_skill_holds_none() {
+    let help = printed_help();
+    let contract = printed_contract();
+    let entries = help_entries(&help);
+    let mut printed = 0;
+    let lines: Vec<&str> = contract.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.starts_with("ank ") && line.contains("  ") {
+            let entry = entries.iter().find(|e| e[0] == line).unwrap_or_else(|| {
+                panic!("the contract prints a verb line help does not:\n{line}")
+            });
+            for (n, expected) in entry.iter().enumerate() {
+                assert_eq!(
+                    lines.get(i + n).copied(),
+                    Some(expected.as_str()),
+                    "the entry for {line}"
+                );
+            }
+            printed += 1;
+            i += entry.len();
+        } else {
+            i += 1;
+        }
+    }
+    for verb in [
+        "context", "claim", "show", "log", "done", "release", "new", "find", "review", "graph",
+        "check", "amend", "scope", "status",
+    ] {
+        assert!(
+            contract
+                .lines()
+                .any(|l| l.starts_with(&format!("ank {verb} "))),
+            "the contract prints no help line for {verb}:\n{contract}"
+        );
+    }
+    assert!(printed >= 14, "{printed} verb entries printed");
+
+    for (_, rel, bytes) in manifest_skills() {
+        let text = String::from_utf8_lossy(&bytes);
+        for entry in &entries {
+            for line in entry {
+                assert!(
+                    !text.lines().any(|l| l.trim() == line.trim()),
+                    "{rel} holds a line of ank help, a second copy of its table:\n{line}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_contract_names_herdr_only_inside_a_herdr_core_terminal() {
+    let outside = scratch::dir("skills-herdr");
+    let without = stdout_of(&named_run(&["skills", "ank"], &outside, None));
+    assert!(
+        !without.contains("herdr"),
+        "named outside a herdr-core terminal:\n{without}"
+    );
+    let with = stdout_of(&named_run(&["skills", "ank"], &outside, Some("t1")));
+    assert!(
+        with.contains("ank-herdr"),
+        "not named inside a herdr-core terminal:\n{with}"
+    );
+    let empty = stdout_of(&named_run(&["skills", "ank"], &outside, Some("")));
+    assert!(
+        !empty.contains("herdr"),
+        "an empty HC_TERMINAL_ID is no terminal:\n{empty}"
+    );
+}
+
+#[test]
+fn help_ends_on_the_line_naming_the_contract() {
+    let help = printed_help();
+    let last = help.lines().last().expect("help prints something");
+    assert!(last.starts_with("ank skills ank"), "help ends on {last:?}");
+}
+
+/// The MCP surface is generated from the verb table, so the name reaches it as
+/// the tool's one argument; and `--json`, which every MCP call passes, answers
+/// the skill as a document.
+#[test]
+fn ank_skills_name_json_carries_the_skill_whole() {
+    let outside = scratch::dir("skills-named-json");
+    let out = named_run(&["skills", "tdd", "--json"], &outside, None);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_yaml::Value = serde_yaml::from_str(&stdout_of(&out)).expect("a JSON document");
+    assert_eq!(doc["name"].as_str(), Some("ank-tdd"));
+    let (front, body) = split_skill(&repo_file("skill/tdd/SKILL.md"));
+    assert_eq!(doc["body"].as_str(), Some(body.as_str()));
+    assert_eq!(
+        doc["revision"].as_str(),
+        declared_revision(&front).as_deref()
+    );
+    assert!(doc["description"]
+        .as_str()
+        .is_some_and(|d| d.starts_with("Drive")));
 }

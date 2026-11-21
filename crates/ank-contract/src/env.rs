@@ -47,6 +47,7 @@ pub const HOME: &str = "HOME";
 pub const PATH: &str = "PATH";
 pub const PATHEXT: &str = "PATHEXT";
 pub const CLAUDE_CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
+pub const HC_TERMINAL_ID: &str = "HC_TERMINAL_ID";
 pub const ANK_GUARD_CORPUS: &str = "ANK_GUARD_CORPUS";
 pub const ANK_GUARD_EDIT: &str = "ANK_GUARD_EDIT";
 pub const ANK_PERMISSIONS_ENFORCE: &str = "ANK_PERMISSIONS_ENFORCE";
@@ -210,6 +211,13 @@ pub const VARIABLES: &[Variable] = &[
         changes: "the directory holding the `settings.json` the entries are written into and \
                   taken out of, as Claude Code reads it; unset or empty, `.claude` under the \
                   home directory, which is `HOME`, and the profile directory on Windows",
+        interface: true,
+    },
+    Variable {
+        name: HC_TERMINAL_ID,
+        read_by: "`ank skills ank`",
+        changes: "set and not empty, says the session runs in a herdr-core terminal, and the \
+                  contract names `ank-herdr` among the skills; unset or empty, it does not",
         interface: true,
     },
     Variable {

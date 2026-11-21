@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "65c46a4935c5"
+  revision: "0daa79d2dda5"
 ---
 
 # ank
@@ -45,52 +45,50 @@ criterion. Everything below suffices on its own to execute work.
 
 ## The verbs
 
-One line each, grouped by the moment they are used. Flags and refusals live in
-`ank help`, loaded when you need them.
+Grouped by the moment they are used, each as `ank help` prints it; flags and
+refusals live in `ank help <verb>`, loaded when you need them.
 
 Orient first:
 
-    ank context <path>    what binds this perimeter, what is claimable; run it first, always;
-                          ank context --since, once you hold a claim, names by id what moved
-                          since your last work on it
-    ank scope <path>      every entity covering a path: why is this file constrained, and by what
-    ank status            where am I: branch and the default branch, drift, identity,
-                          the claim held and when it expires, the claims other agents
-                          hold, the perimeter, the queue, the corpus's faults and signals
-    ank find <query>      titles, scopes and criteria; ank find --type spec reaches the
-                          specification, ank find --status open lists what remains
-    ank log <id>          the read form, no claim needed: what previous holders tried and
-                          why they stopped, read before repeating them
-    ank check [path]      what is already known to be wrong, before you add to it
+```verbs
+context scope status find check
+```
+
+Run `ank context <path>` first, always; once you hold a claim,
+`ank context --since` names by id what moved since your last work on it.
+`ank find --type spec` reaches the specification, `ank find --status open`
+lists what remains.
+`ank log <id>` is the read form, no claim needed: what previous holders tried
+and why they stopped, read before repeating them. `ank check` is what is
+already known to be wrong, before you add to it; its findings are for reading,
+not silencing.
 
 Execute:
 
-    ank claim <id>        takes the task and freezes its done_criteria by hash
-    ank show <id>         the entity whole; the body is where the reasoning lives, read it
-                          before the first edit
-    ank log "<message>"   what you learned, logged when you learn it; renews the claim
-    ank done              runs the verifiers itself and records the proof; never edit status
-                          by hand, an agent that grades itself can simply be wrong
-    ank release --reason "<why>"    stuck or wrong about the approach: say so, never let a
-                          claim lapse in silence
+```verbs
+claim show log done release
+```
+
+The body `ank show` prints is where the reasoning lives: read it before the
+first edit. `ank log "<message>"` is what you learned, logged when you learn
+it. `ank done` measures the tree: never edit status by hand, an agent that
+grades itself can simply be wrong. Stuck or wrong about the approach,
+`ank release --reason "<why>"`: say so, never let a claim lapse in silence.
 
 Shape:
 
-    ank new task          a scope is mandatory; a discovered subtask is a new task with
-                          blocked_by, never a softened criterion. Point the edge the way
-                          the work runs: if the new task carries part of your criterion,
-                          yours waits on it and never the reverse. Backwards, neither
-                          moves, and `graph` reports no cycle because the dependency is
-                          in the criterion's prose and not in an edge
-    ank new adr           a decision the corpus is held to afterwards, not a thing to do
-                          now; lands proposed, binding nobody until ratified
-    ank amend <id>        blocked_by, scope and criteria, added and removed explicitly;
-                          refuses a criterion a live claim has frozen
-    ank review            the ratification queue, and the scopes gone dead
-    ank graph             the blocked_by DAG: what is genuinely a root
-    ank check             the mechanical invariants; findings are for reading, not silencing
-    ank archive           moves what check calls cold into .ank/archive/entities/ and commits
-                          nothing; --dry-run first, and the move lands by pull request
+```verbs
+new amend review graph archive
+```
+
+`ank new task` makes a scope mandatory; a discovered subtask is a new task with
+blocked_by, never a softened criterion. Point the edge the way the work runs:
+if the new task carries part of your criterion, yours waits on it and never the
+reverse. Backwards, neither moves, and `graph` reports no cycle because the
+dependency is in the criterion's prose and not in an edge. `ank new adr` is a
+decision the corpus is held to afterwards, not a thing to do now; it lands
+proposed, binding nobody until ratified. `ank archive --dry-run` first, and the
+move lands by pull request.
 
 **accept is not yours to run.** It turns a proposed decision into a binding
 one, and it is a human act: a signed ref, on any branch, binding the moment it
