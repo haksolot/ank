@@ -1750,7 +1750,7 @@ fn the_graphed_fixture_is_a_chain_a_diamond_a_closed_blocker_and_a_lone_task() {
         .lock()
         .unwrap_or_else(|held| held.into_inner());
     let fixture = Repo::graphed();
-    let doc = fixture.repo.stdout(&["graph", "--json"]);
+    let doc = fixture.repo.stdout(&["graph", "--all", "--json"]);
     let ids = crate::terminal::ids_of(&doc);
     assert_eq!(ids.len(), 11, "{doc}");
     assert_eq!(doc.matches("\"status\":\"open\"").count(), 9, "{doc}");
@@ -1843,7 +1843,7 @@ fn historied() -> (Graphed, String) {
         .to_string();
     let done = repo.tried(&["done", "--proof", &format!("commit:{sha}")], &historian);
     assert!(done.status.success(), "done by the historian: {done:?}");
-    let doc = repo.stdout(&["graph", "--json"]);
+    let doc = repo.stdout(&["graph", "--all", "--json"]);
     assert!(
         doc.contains(&format!("\"id\":\"{history}\""))
             && doc.matches("\"status\":\"done\"").count() == 1,
