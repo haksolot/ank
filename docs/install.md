@@ -272,10 +272,10 @@ work](multi-agent.md#the-methods-a-corpus-uses) reads.
 
 `ank skills <name>` prints one of them whole, by the name in that first column or
 without its `ank-` prefix: `ank skills ank` is the contract, `ank skills tdd` the
-test-first method. It reads no corpus and prints the same text anywhere. Where
-the contract lists verbs it prints the lines `ank help` prints for them, so the
-table is never a second copy, and it names `ank-herdr` only inside a herdr-core
-terminal, where `HC_TERMINAL_ID` is set. `ank help` ends on the line naming it.
+test-first method. It prints the same text in any directory. Where the
+contract lists verbs it prints the lines `ank help` prints for them, so the table
+has one source, and it names `ank-herdr` inside a herdr-core terminal, where
+`HC_TERMINAL_ID` is set. `ank help` ends on the line naming it.
 
 `ank skills --install` writes them into a new directory under the temporary
 directory and hands that directory to the `skills` CLI below, without asking:
