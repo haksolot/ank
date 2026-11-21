@@ -343,11 +343,52 @@ fn write_entry(
         message,
         &crate::commands::entropy(),
     );
-    let seq = next_seq(store, index, subject)?;
+    // **An entry about a finished task is born in the archive**
+    // (ADR-302efb9c5e40): its subject is cold, so it is too, and writing it hot
+    // would leave `check` a signal and `ank archive` a sweep for every attest
+    // or amend after the close. Its rank counts the archived entries, which
+    // the walking index the caller opened does not answer.
+    let finished = finished_task(subject);
+    let seq = if finished {
+        next_seq(store, &Index::open_with_archive(store.root())?, subject)?
+    } else {
+        next_seq(store, index, subject)?
+    };
     let mut entry = from_line(id.clone(), subject, seq, &line);
     entry.records = records.map(str::to_string);
     store.create(&Entity::Log(entry))?;
+    if finished {
+        // Written, then moved by the one road `ank archive` takes: one rename,
+        // so the bytes the index records the digest of are the bytes written.
+        store.move_to_archive(&id)?;
+    }
     Ok(id)
+}
+
+/// A task that is done or closed in this tree: what makes its entries cold
+/// (ADR-302efb9c5e40), asked of the entity in hand and of no branch.
+fn finished_task(subject: &Entity) -> bool {
+    matches!(subject, Entity::Task(t) if matches!(t.status, TaskStatus::Done | TaskStatus::Closed))
+}
+
+/// **Moves every hot entry about a task that has just finished into the
+/// archive**, and answers how many moved (ADR-302efb9c5e40).
+///
+/// What `done` and `close` call once the transition is written, so the move is
+/// part of the act that makes the entries cold and lands with the change that
+/// carries it, uncommitted like everything a verb writes. The road is
+/// [`Store::move_to_archive`], the one `ank archive` takes, so the digest the
+/// index records for each file is the one it arrived with. A subject that is
+/// not a finished task moves nothing.
+pub fn archive_about(store: &Store, subject: &Entity) -> Result<usize> {
+    if !finished_task(subject) {
+        return Ok(0);
+    }
+    let rows = Index::open(store.root())?.entries_about(subject.id())?;
+    for row in &rows {
+        store.move_to_archive(&row.id)?;
+    }
+    Ok(rows.len())
 }
 
 /// The hash a machinery entry carries: the state the write replaced

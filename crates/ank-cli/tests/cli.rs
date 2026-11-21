@@ -469,8 +469,11 @@ impl Repo {
     /// seeding one meaningful.
     fn log_text(&self, id: &str) -> String {
         let mut rows: Vec<((String, u64, String), String)> = Vec::new();
-        for entry in std::fs::read_dir(self.0.join(".ank/entities"))
-            .into_iter()
+        // Both roots: an entry about a finished task lives in the archive
+        // (ADR-302efb9c5e40), and it is still that task's log.
+        for entry in ["entities", "archive/entities"]
+            .iter()
+            .flat_map(|d| std::fs::read_dir(self.0.join(".ank").join(d)))
             .flatten()
             .flatten()
         {
@@ -26854,7 +26857,7 @@ fn cold_corpus() -> Repo {
     r.git(&["add", "-A"]);
     r.git(&["commit", "-qm", "a corpus"]);
     // Done in this working tree and not yet on the default branch: its entries
-    // are not cold until the default branch says so.
+    // are cold all the same, since the rule reads the tree (ADR-302efb9c5e40).
     let here = r
         .task_text(DONE_HERE_ONLY)
         .replace("status: open", "status: done");
@@ -26892,6 +26895,8 @@ fn ank_archive_moves_exactly_the_cold_set_and_commits_nothing() {
         ABOUT_COLD_SPEC.to_string(),
         ABOUT_COLD_ADR.to_string(),
         ABOUT_DONE_ON_MAIN.to_string(),
+        // Done in this tree is enough (ADR-302efb9c5e40): no branch is asked.
+        ABOUT_DONE_HERE_ONLY.to_string(),
     ];
     cold.sort();
     let hot = [
@@ -26903,7 +26908,6 @@ fn ank_archive_moves_exactly_the_cold_set_and_commits_nothing() {
         STILL_OPEN,
         ABOUT_HOT_SPEC,
         ABOUT_STILL_OPEN,
-        ABOUT_DONE_HERE_ONLY,
     ];
 
     let (_, before) = said_by_check(&r);
@@ -27001,12 +27005,14 @@ fn a_scope_naming_an_entity_file_in_neither_root_is_still_dead() {
     );
 }
 
-/// **What `ank archive` asks git does not grow with the corpus**
-/// (ADR-cc65f1388a71): "done on the default branch" is read for every candidate
-/// task in one batch, so two done tasks with entries and twelve start the same
-/// git processes. Counted with `GIT_TRACE2_EVENT`.
+/// **`ank archive` asks git nothing, however many tasks are done**
+/// (ADR-302efb9c5e40, ADR-cc65f1388a71): an entry about a task done in this
+/// tree is cold with no question to the default branch, so two done tasks with
+/// entries and twelve start the same git processes, which is none. Counted with
+/// `GIT_TRACE2_EVENT`; the entries are written by hand, as a corpus predating
+/// the rule holds them, so there is something to move.
 #[test]
-fn ank_archive_asks_git_once_however_many_tasks_are_done() {
+fn ank_archive_asks_git_nothing_however_many_tasks_are_done() {
     fn starts(tasks: usize) -> usize {
         let r = Repo::new();
         for i in 0..tasks {
@@ -27033,19 +27039,250 @@ fn ank_archive_asks_git_once_however_many_tasks_are_done() {
             "every entry about a done task moves: {}",
             stdout(&out)
         );
-        let text = std::fs::read_to_string(&trace).expect("git must have written the trace");
-        let starts = text.matches("\"event\":\"start\"").count();
-        assert!(starts > 0, "this test measures nothing");
-        starts
+        // No trace file is git never started.
+        std::fs::read_to_string(&trace)
+            .unwrap_or_default()
+            .matches("\"event\":\"start\"")
+            .count()
     }
     let few = starts(2);
     let many = starts(12);
     assert_eq!(
-        few,
-        many,
-        "twelve done tasks cost archive {} more git process(es)",
-        many as i64 - few as i64
+        (few, many),
+        (0, 0),
+        "archive started git {few} time(s) for two done tasks and {many} for twelve"
     );
+}
+
+// ---------------------------------------------------------------------------
+// done and close archive what they end (TASK-ed7990dab03c, ADR-302efb9c5e40)
+// ---------------------------------------------------------------------------
+
+/// The entries about `id` in one root, as file name and bytes, sorted by name.
+/// Read from the files: what has to be true is where the bytes are.
+fn entries_in(r: &Repo, root: &str, id: &str) -> Vec<(String, Vec<u8>)> {
+    let dir = r.0.join(root);
+    let Ok(listing) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let about = format!("\nabout: {id}\n");
+    let mut out: Vec<(String, Vec<u8>)> = listing
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("LOG-"))
+        })
+        .map(|p| {
+            let bytes = std::fs::read(&p).unwrap();
+            (p.file_name().unwrap().to_string_lossy().to_string(), bytes)
+        })
+        .filter(|(_, bytes)| {
+            String::from_utf8_lossy(bytes)
+                .replace("\r\n", "\n")
+                .contains(&about)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+fn hot_entries(r: &Repo, id: &str) -> Vec<(String, Vec<u8>)> {
+    entries_in(r, ".ank/entities", id)
+}
+
+fn archived_entries(r: &Repo, id: &str) -> Vec<(String, Vec<u8>)> {
+    entries_in(r, ".ank/archive/entities", id)
+}
+
+/// The ids `ank log <id> --json` prints, work and machinery together.
+fn logged_ids(r: &Repo, id: &str) -> Vec<String> {
+    let out = r.ank("claude-code@ank", &["log", id, "--json"]);
+    assert_eq!(code(&out), 0, "log {id}: {}", stderr(&out));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&stdout(&out)).unwrap();
+    let mut ids: Vec<String> = ["entries", "machinery"]
+        .iter()
+        .flat_map(|k| doc[*k].as_sequence().cloned().unwrap_or_default())
+        .map(|e| e["id"].as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+fn minted_task(r: &Repo, title: &str, verifier: &str) -> String {
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            title,
+            "--scope",
+            "src/**",
+            "--criteria",
+            "A criterion.",
+            "--verify",
+            verifier,
+            "--json",
+        ],
+    );
+    assert_eq!(code(&out), 0, "new: {}", stderr(&out));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&stdout(&out)).unwrap();
+    doc["id"].as_str().unwrap().to_string()
+}
+
+/// No fault, and no signal naming `ank archive`: what check owes for a corpus
+/// whose finished task took its entries with it.
+fn assert_check_owes_nothing_for_the_move(r: &Repo, when: &str) {
+    let (exit, said) = said_by_check(r);
+    let faults: Vec<&String> = said.iter().filter(|l| l.starts_with("fault")).collect();
+    assert!(faults.is_empty(), "{when}: {faults:#?}");
+    assert_eq!(exit, 0, "{when}: {said:#?}");
+    assert!(
+        !said.iter().any(|l| l.contains("ank archive")),
+        "{when}: a cold signal: {said:#?}"
+    );
+}
+
+/// The state after a verb ended `id`: nothing about it hot, everything that was
+/// hot before now archived byte for byte, and one entry more, the closing one.
+fn assert_moved_with_the_close(r: &Repo, id: &str, before: &[(String, Vec<u8>)], verb: &str) {
+    assert!(
+        hot_entries(r, id).is_empty(),
+        "{verb} left entries about {id} hot: {:?}",
+        hot_entries(r, id).iter().map(|e| &e.0).collect::<Vec<_>>()
+    );
+    let archived = archived_entries(r, id);
+    for entry in before {
+        assert!(
+            archived.contains(entry),
+            "{verb} did not archive {} byte for byte",
+            entry.0
+        );
+    }
+    assert_eq!(
+        archived.len(),
+        before.len() + 1,
+        "{verb}: the closing entry is not in the archive: {:?}",
+        archived.iter().map(|e| &e.0).collect::<Vec<_>>()
+    );
+}
+
+/// **done and close move the entries of the task they end into the archive**
+/// (ADR-302efb9c5e40), through the binary, on a task branch: the closing entry
+/// is born there, nothing is committed, `ank log` reads the same entries, attest
+/// and amend on a finished task write theirs in the archive, a failed done moves
+/// nothing, and check owes nothing before and after the merge.
+#[test]
+fn done_and_close_move_the_entries_of_the_task_they_end_into_the_archive() {
+    const AGENT: &str = "claude-code@ank";
+    let r = Repo::new().with_verifiers(
+        "verifiers:\n  ok:\n    run: git --version\n  nope:\n    run: git no-such-command\n",
+    );
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "").unwrap();
+    std::fs::create_dir_all(r.0.join("docs")).unwrap();
+    std::fs::write(r.0.join("docs/index.md"), "").unwrap();
+    let finished = minted_task(&r, "Finished by done", "ok");
+    let closed = minted_task(&r, "Ended by close", "ok");
+    let failing = minted_task(&r, "Refused by its verifier", "nope");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "three tasks"]);
+    r.git(&["checkout", "-q", "-b", "feature"]);
+
+    // done.
+    assert_eq!(code(&r.ank(AGENT, &["claim", &finished])), 0);
+    let out = r.ank(AGENT, &["log", &finished, "a finding on the way"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let before = hot_entries(&r, &finished);
+    assert!(before.len() >= 2, "the fixture logs nothing: {before:?}");
+    let logged_before = logged_ids(&r, &finished);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "the claim and its entries"]);
+    let head = r.head();
+    let out = r.ank(AGENT, &["done"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert_moved_with_the_close(&r, &finished, &before, "done");
+    assert_eq!(r.head(), head, "done wrote a commit");
+    let logged_after = logged_ids(&r, &finished);
+    let closing: Vec<&String> = logged_after
+        .iter()
+        .filter(|id| !logged_before.contains(id))
+        .collect();
+    assert!(
+        logged_before.iter().all(|id| logged_after.contains(id)) && closing.len() == 1,
+        "log read other entries after the close:\nbefore {logged_before:?}\nafter  {logged_after:?}"
+    );
+    assert_check_owes_nothing_for_the_move(&r, "after done");
+
+    // attest and amend on the finished task.
+    let archived = archived_entries(&r, &finished).len();
+    let out = r.ank(
+        AGENT,
+        &["attest", &finished, "--proof", &format!("commit:{head}")],
+    );
+    assert_eq!(code(&out), 0, "attest: {}", stderr(&out));
+    let out = r.ank(AGENT, &["amend", &finished, "--scope", "docs/**"]);
+    assert_eq!(code(&out), 0, "amend: {}", stderr(&out));
+    assert!(
+        hot_entries(&r, &finished).is_empty(),
+        "attest or amend wrote a hot entry about a finished task: {:?}",
+        hot_entries(&r, &finished)
+            .iter()
+            .map(|e| &e.0)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        archived_entries(&r, &finished).len(),
+        archived + 2,
+        "attest and amend did not each write their entry in the archive"
+    );
+
+    // close.
+    assert_eq!(code(&r.ank(AGENT, &["claim", &closed])), 0);
+    let before = hot_entries(&r, &closed);
+    let out = r.ank(
+        AGENT,
+        &["close", &closed, "--reason", "the pipeline does it"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_moved_with_the_close(&r, &closed, &before, "close");
+
+    // A done the verifier refuses moves nothing.
+    assert_eq!(code(&r.ank(AGENT, &["claim", &failing])), 0);
+    let before = hot_entries(&r, &failing);
+    let out = r.ank(AGENT, &["done"]);
+    assert_eq!(code(&out), 5, "{}", stderr(&out));
+    assert_eq!(
+        hot_entries(&r, &failing),
+        before,
+        "a failed done moved entries"
+    );
+    assert!(archived_entries(&r, &failing).is_empty());
+    assert_eq!(code(&r.ank(AGENT, &["release", "--reason", "it fails"])), 0);
+
+    let dry = r.ank(AGENT, &["archive", "--dry-run", "--json"]);
+    assert_eq!(code(&dry), 0, "{}", stderr(&dry));
+    for id in [&finished, &closed] {
+        for (name, _) in archived_entries(&r, id) {
+            let entry = name.trim_end_matches(".md");
+            assert!(
+                !stdout(&dry).contains(entry),
+                "archive --dry-run names {entry}: {}",
+                stdout(&dry)
+            );
+        }
+    }
+    assert_eq!(r.head(), head, "a verb wrote a commit");
+    assert_check_owes_nothing_for_the_move(&r, "on the task branch");
+
+    // The move lands with the change that carries the close.
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "the closes"]);
+    r.git(&["checkout", "-q", "main"]);
+    r.git(&["merge", "-q", "--no-ff", "-m", "merge feature", "feature"]);
+    assert!(hot_entries(&r, &finished).is_empty() && hot_entries(&r, &closed).is_empty());
+    assert_check_owes_nothing_for_the_move(&r, "after the merge");
 }
 
 /// `ank help watch` describes the mirror the watcher actually keeps

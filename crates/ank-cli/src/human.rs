@@ -1539,8 +1539,8 @@ pub fn inspect_with(
     // (ADR-467ce7e9cda1): once for the corpus, never once per entity, and a
     // signal because nothing is wrong with a corpus that has not been archived
     // yet -- it is heavier than it needs to be. The rule is `archive::cold`'s,
-    // the same function the verb moves by, and "done on the default branch" is
-    // read from the batch preloaded above, so this starts no process.
+    // the same function the verb moves by, and it reads the tree and asks no
+    // branch (ADR-302efb9c5e40), so this starts no process.
     {
         let hot: Vec<crate::archive::Hot> = entities
             .iter()
@@ -1563,8 +1563,7 @@ pub fn inspect_with(
                 },
             })
             .collect();
-        let branch = default_branch.as_ref().and_then(|b| b.as_deref().ok());
-        let cold = crate::archive::cold(&hot, &archived, &|id| done_on(repo, branch, id));
+        let cold = crate::archive::cold(&hot, &archived);
         if !cold.is_empty() {
             report.findings.push(
                 Finding::signal(
@@ -9403,6 +9402,7 @@ pub fn close(
     let closed = Entity::Task(task);
     store.write(&closed, base_version)?;
     record_entry(&store, repo, &closed, identity, format!("closed: {reason}"))?;
+    crate::entries::archive_about(&store, &closed)?;
 
     let deleted = claim::delete(&repo.corpus, &id)?;
     let revoked = deleted.existed;
@@ -11444,7 +11444,7 @@ mod tests {
         fn log(&self, id: &EntityId) -> Vec<LogEntry> {
             let store = self.store();
             let loaded = store.load(id).unwrap();
-            let index = Index::in_memory(store.root()).unwrap();
+            let index = Index::in_memory_with_archive(store.root()).unwrap();
             crate::entries::about(&store, &index, &loaded.entity)
                 .unwrap()
                 .into_iter()

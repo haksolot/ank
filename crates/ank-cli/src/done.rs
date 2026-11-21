@@ -272,6 +272,9 @@ pub fn run(
         &claim::now_utc(),
         &done_message(&proofs),
     )?;
+    // The entries about the task leave the hot corpus in the same act, the
+    // closing one having been born in the archive (ADR-302efb9c5e40).
+    crate::entries::archive_about(&store, &finished)?;
 
     let (completed, sync) = claim::complete(&repo.corpus, &id, identity)?;
     // A completion that did not reach the remote closes the window it exists
@@ -1202,7 +1205,7 @@ mod tests {
             let id = EntityId::parse("TASK-000000000001").unwrap();
             let store = self.store();
             let loaded = store.load(&id).unwrap();
-            let index = crate::index::Index::in_memory(store.root()).unwrap();
+            let index = crate::index::Index::in_memory_with_archive(store.root()).unwrap();
             crate::entries::about(&store, &index, &loaded.entity)
                 .unwrap()
                 .into_iter()
