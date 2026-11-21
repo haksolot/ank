@@ -5,7 +5,7 @@ slug: the-skill-system-gains-tdd-and-diagnose-and-meth
 title: The skill system gains tdd and diagnose, and method stays policy rather than dispatch
 created: 2026-09-02T13:55:04Z
 author: claude-code/fable-5
-status: accepted
+status: superseded
 scope:
   - skill/**
   - crates/ank-cli/tests/skill.rs
@@ -25,7 +25,7 @@ verified:
   - by: haksolot@vmi3223161
     at: 2026-09-05T12:22:17Z
 schema: 4
-version: 2
+version: 3
 ---
 
 ## Context
