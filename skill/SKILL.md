@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "0daa79d2dda5"
+  revision: "c53ded2e4970"
 ---
 
 # ank
@@ -87,8 +87,9 @@ if the new task carries part of your criterion, yours waits on it and never the
 reverse. Backwards, neither moves, and `graph` reports no cycle because the
 dependency is in the criterion's prose and not in an edge. `ank new adr` is a
 decision the corpus is held to afterwards, not a thing to do now; it lands
-proposed, binding nobody until ratified. `ank archive --dry-run` first, and the
-move lands by pull request.
+proposed, binding nobody until ratified. `done` and `close` archive the entries
+of the task they end, uncommitted, and they land with the close; for what is
+left cold, `ank archive --dry-run` first, and the move lands by pull request.
 
 **accept is not yours to run.** It turns a proposed decision into a binding
 one, and it is a human act: a signed ref, on any branch, binding the moment it

@@ -51,7 +51,7 @@ $ ank claim 820d && ank log "jwt.verify removed from session.ts" && ank done
 -->
 
     $ ank check
-    signal: corpus: 5 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
+    signal: corpus: 2 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
     2 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
     check: ok — 1 tasks, 1 adr, 1 signal(s)
 
@@ -63,7 +63,7 @@ starting with its subject:
 
     $ ank check --all
     signal: TASK-820d259af6a7: finished on another branch, main has not caught up
-    signal: corpus: 5 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
+    signal: corpus: 2 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
     signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
     check: ok — 1 tasks, 1 adr, 3 signal(s)
 
@@ -89,33 +89,30 @@ Commit, and the completion record is pruned:
 
     $ git add -A && git commit -m "the migration is done"
     $ ank check
-    signal: corpus: 3 hot entities are cold and belong in .ank/archive/entities/, with every entry about them (ank archive)
-    └── ank archive --dry-run lists them and moves nothing
     1 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
     pruned refs/ank/claims/TASK-820d259af6a7
-    check: ok — 1 tasks, 1 adr, 1 signal(s)
+    check: ok — 1 tasks, 1 adr, 0 signal(s)
 
 **`check` writes, and that line is why.** It is the only verb that prunes
 `refs/ank/claims`: orphans, and completion records whose task is `done` or
 `closed` on the default branch. Everything else it does is read-only, but a
 verb that writes is not a verb to poll.
 
-The new signal is the corpus noticing that three log entries are cold. An entry
-is cold with its subject, and their subject is a task that is done
-(ADR-467ce7e9cda1). The line under it is the command that answers it, and that
-command reads before it moves:
+Nothing is cold, although the task holds three log entries. An entry is cold
+with its subject, and their subject is a task that is done, so `done` moved them
+into `.ank/archive/entities/` in the act that finished it, its own closing
+entry included, and the commit you just made carried the move
+(ADR-302efb9c5e40). `ank log 820d` still reads them. `ank archive` is for what
+that rule does not reach, a superseded document and the entries of a task
+finished before it, and it reads before it moves:
 
-<!-- replay check unordered -->
+<!-- replay check -->
 
     $ ank archive --dry-run
-    LOG-3b92d9719950  created (version 0 to 1, produced 4cc65f12691c)
-    LOG-6b0f39d7a4c1  jwt.verify removed from session.ts
-    LOG-f234f9b08f06  done, proof test:local/e3b0c44298fc@9c45c50
-    3 cold, nothing moved (--dry-run): ank archive moves them
+    nothing is cold
 
-It lists and moves nothing, which on a corpus this size is the right answer.
-When the move is worth making, it is a human's decision landing by pull request:
-[Ratifying and archiving](ratifying.md#archiving-what-is-cold).
+When it does list something, the move is a human's decision landing by pull
+request: [Ratifying and archiving](ratifying.md#archiving-what-is-cold).
 
 ## A fault
 
@@ -133,10 +130,8 @@ $ f=.ank/entities/TASK-51c2a0f6d418.md && sed 's/names no JWT/names nothing/' "$
     error: TASK-51c2a0f6d418: done_criteria diverges from the claim (claimed 03c659e46adf, now ef485fff585a)
     signal: TASK-51c2a0f6d418: content is 3eff92338baa where the last write left 2e29f326854e: it was edited outside the CLI, which is legal and leaves no entry
     signal: corpus: 2 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
-    signal: corpus: 3 hot entities are cold and belong in .ank/archive/entities/, with every entry about them (ank archive)
-    └── ank archive --dry-run lists them and moves nothing
     1 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
-    check: 1 fault(s) — 2 tasks, 1 adr, 3 signal(s)
+    check: 1 fault(s) — 2 tasks, 1 adr, 2 signal(s)
     exit 8
 
 A fault prints as `error:`, first, and the summary line counts it. The signal
