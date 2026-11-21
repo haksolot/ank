@@ -1688,7 +1688,14 @@ pub fn inspect_with(
     check_weight(cfg, &mut report);
     check_requires_ank(cfg, &mut report);
     check_role_words(repo, cfg, &mut report);
-    check_roles(cfg, &ratifiers, &entities, &in_scope, &mut report);
+    check_roles(
+        cfg,
+        &ratifiers,
+        &entities,
+        &archived_entries,
+        &in_scope,
+        &mut report,
+    );
     check_peer_halves(repo, cfg, &entities, &mut report);
 
     settle_owed(&mut report, &entities, &coord);
@@ -3893,6 +3900,7 @@ fn check_roles(
     cfg: &Config,
     ratifiers: &HashMap<String, String>,
     entities: &[(PathBuf, Entity)],
+    archived_entries: &[ank_core::Log],
     in_scope: &dyn Fn(&Entity) -> bool,
     report: &mut Report,
 ) {
@@ -3928,23 +3936,41 @@ fn check_roles(
             }
         }
         let Entity::Log(l) = e else { continue };
-        let Some(who) = l.author.as_deref() else {
-            continue;
-        };
-        let about = l.about.to_string();
-        match l.records.as_deref() {
-            None if l.title.starts_with("closed: ") => signal(&about, who, "task:close"),
-            Some(ank_core::model::RECORDS_EDIT)
-                if about.starts_with("ADR-")
-                    && l.title
-                        .split(" (version ")
-                        .next()
-                        .is_some_and(|f| f.split(", ").any(|f| f == "constraint")) =>
-            {
-                signal(&about, who, "adr:edit-constraint")
-            }
-            _ => {}
+        entry_act(l, &mut signal);
+    }
+    // **An act is still an act once its entry is archived**
+    // (ADR-302efb9c5e40): `close` moves its own entry into the archive, so
+    // reading the hot corpus alone would lose every forbidden close the day it
+    // happened. Read from the rows the index holds, never re-parsed, and a hot
+    // copy of the same entry is the one already read above.
+    let hot: BTreeSet<&EntityId> = entities.iter().map(|(_, e)| e.id()).collect();
+    for l in archived_entries.iter().filter(|l| !hot.contains(&l.id)) {
+        if in_scope(&Entity::Log(l.clone())) {
+            entry_act(l, &mut signal);
         }
+    }
+}
+
+/// The act an entry records, judged by `signal`: a close, or an edit of an
+/// ADR's constraint. The one reading of an entry `check_roles` applies to both
+/// roots.
+fn entry_act(l: &ank_core::Log, signal: &mut dyn FnMut(&str, &str, &str)) {
+    let Some(who) = l.author.as_deref() else {
+        return;
+    };
+    let about = l.about.to_string();
+    match l.records.as_deref() {
+        None if l.title.starts_with("closed: ") => signal(&about, who, "task:close"),
+        Some(ank_core::model::RECORDS_EDIT)
+            if about.starts_with("ADR-")
+                && l.title
+                    .split(" (version ")
+                    .next()
+                    .is_some_and(|f| f.split(", ").any(|f| f == "constraint")) =>
+        {
+            signal(&about, who, "adr:edit-constraint")
+        }
+        _ => {}
     }
 }
 

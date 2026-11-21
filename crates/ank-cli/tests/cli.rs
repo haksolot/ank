@@ -518,8 +518,11 @@ impl Repo {
     /// the corpus actually holds. What `log_text` renders, this counts.
     fn entry_ids(&self, id: &str) -> Vec<String> {
         let mut ids: Vec<String> = Vec::new();
-        for entry in std::fs::read_dir(self.0.join(".ank/entities"))
-            .into_iter()
+        // Both roots: an entry about a finished task is born in the archive
+        // (ADR-302efb9c5e40).
+        for entry in ["entities", "archive/entities"]
+            .iter()
+            .flat_map(|d| std::fs::read_dir(self.0.join(".ank").join(d)))
             .flatten()
             .flatten()
         {
