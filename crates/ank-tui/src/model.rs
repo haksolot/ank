@@ -579,7 +579,9 @@ pub struct Dag {
 
 impl Dag {
     pub fn load(ank: &Ank) -> Result<Dag, Failed> {
-        Ok(Dag::read(&ank.json("graph", &[])?))
+        // `--all`: the reader folds the history away itself, and shows it
+        // when the fold says so, so it reads the whole DAG.
+        Ok(Dag::read(&ank.json("graph", &["--all"])?))
     }
 
     /// A document with no `tasks` and no `edges` is the empty graph.
