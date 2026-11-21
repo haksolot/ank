@@ -2,7 +2,7 @@
 //!
 //! `skill/SKILL.md` is not documentation: it is loaded into an agent's context
 //! permanently, on every session, in every repository that installs it. That is
-//! what makes its content the thing actually frozen (ADR-e4a5a8873fe3) -- the
+//! what makes its content the thing actually frozen (ADR-cfc74e53a744) -- the
 //! dispatch table refuses nobody, and the two modes exist because this file
 //! teaches them and teaches nothing else. Four properties are therefore worth a
 //! test rather than a habit: that it carries the whole loop, that it carries
@@ -183,7 +183,7 @@ fn section_4_order() -> Vec<String> {
 }
 
 /// The listing, as the headings `ank help` prints and the verbs under each of
-/// them (ADR-e4a5a8873fe3).
+/// them (ADR-cfc74e53a744).
 ///
 /// Through the binary, because the ADR is a statement about what the process
 /// prints, not about the table it is derived from. The listing is everything
@@ -323,7 +323,7 @@ fn every_verb_section_4_lists_ships_or_is_declared_unimplemented() {
 }
 
 /// **Grouped by the moment a verb is used, and §4's order inside every group**
-/// (ADR-e4a5a8873fe3). Until
+/// (ADR-cfc74e53a744). Until
 /// this test the ADR described the output rather than constraining it, and the
 /// two orders agreed only while somebody remembered. Fixing the drift of
 /// TASK-5c868c20472f introduced a fresh one in the same edit -- `attest` placed
@@ -356,19 +356,19 @@ fn help_prints_section_4s_order_inside_every_group() {
     }
 }
 
-/// The loop and what is off it: how work gets done (ADR-e4a5a8873fe3).
+/// The loop and what is off it: how work gets done (ADR-cfc74e53a744).
 const LOOP_VERBS: [&str; 8] = [
     "context", "claim", "show", "log", "done", "new", "find", "release",
 ];
 
-/// Planning: how the work that gets done comes to exist (ADR-e4a5a8873fe3).
+/// Planning: how the work that gets done comes to exist (ADR-cfc74e53a744).
 ///
 /// `new adr` is spelled out rather than covered by `new`, because the whole
 /// point of the addition is the path from noticing an architectural problem to
 /// recording one — and `ank new task` alone does not carry it.
 const PLANNING_VERBS: [&str; 5] = ["review", "graph", "check", "amend", "new adr"];
 
-/// Investigation: how an agent arrives informed (ADR-e4a5a8873fe3).
+/// Investigation: how an agent arrives informed (ADR-cfc74e53a744).
 ///
 /// The two that carry the mode are `scope` and `status`: they answer *what
 /// governs this file* and *where am I*, they were shipped long before this, and
@@ -395,7 +395,7 @@ fn the_skill_carries_the_whole_loop() {
     }
 }
 
-/// The half ADR-e4a5a8873fe3 added. An agent taught only the loop can execute
+/// The half ADR-cfc74e53a744 added. An agent taught only the loop can execute
 /// work and cannot propose a decision, correct a graph, or notice the corpus
 /// has gone incoherent -- which is the gap that ADR names and this asserts is
 /// closed.
@@ -419,7 +419,7 @@ fn the_skill_carries_the_planning_mode() {
     }
 }
 
-/// The third mode ADR-e4a5a8873fe3 added, asserted on the same terms as the
+/// The third mode ADR-cfc74e53a744 added, asserted on the same terms as the
 /// other two: the verb is named, because an agent only knows the verbs this
 /// file names.
 #[test]
@@ -435,7 +435,7 @@ fn the_skill_carries_the_investigation_mode() {
 }
 
 /// **The read form of `log` is taught, and it is the half that is easy to lose**
-/// (ADR-e4a5a8873fe3).
+/// (ADR-cfc74e53a744).
 ///
 /// `ank log "<message>"` writes and renews the claim; `ank log <id>` reads, needs
 /// no claim, and is where the previous holder said why they handed the task
@@ -453,7 +453,7 @@ fn the_skill_teaches_the_read_form_of_log() {
     );
 }
 
-/// **The file says why before it says how** (ADR-e4a5a8873fe3).
+/// **The file says why before it says how** (ADR-cfc74e53a744).
 ///
 /// Asserted by the two things the argument has to establish rather than by any
 /// phrasing, on the standard the accept and styling tests already set: a test
@@ -467,12 +467,12 @@ fn the_skill_says_what_the_rules_protect() {
         assert!(
             text.contains(token),
             "SKILL.md does not say {token:?}: it teaches the verbs without the \
-             model behind them, which is the gap ADR-e4a5a8873fe3 closed"
+             model behind them, which is the gap ADR-cfc74e53a744 closed"
         );
     }
 }
 
-/// **`accept` is described and never invited** (ADR-e4a5a8873fe3).
+/// **`accept` is described and never invited** (ADR-cfc74e53a744).
 ///
 /// The two halves are one rule and neither works alone. The skill must say what
 /// `accept` is, so a planning agent knows where its own authority ends rather
@@ -506,7 +506,7 @@ fn the_skill_describes_accept_without_inviting_it() {
 /// It moved twice, from 80/700 to 140/1200 and then to 180/1500, and each time
 /// because a decision said so — which is the only way it is allowed to move.
 /// A ceiling raised to accommodate whatever was just written is not a ceiling.
-/// The number in force is the one ADR-e4a5a8873fe3 states; which decision made
+/// The number in force is the one ADR-cfc74e53a744 states; which decision made
 /// which move is the corpus's to answer, and `ank show` walks `supersedes:`.
 ///
 /// The last move carries a measurement the earlier ones did not: what a session
@@ -528,7 +528,7 @@ fn the_skill_stays_within_one_page() {
 }
 
 /// These verbs run for whoever types them -- nothing here is refused to an
-/// agent (ADR-e4a5a8873fe3). What this asserts is narrower and is the whole of
+/// agent (ADR-cfc74e53a744). What this asserts is narrower and is the whole of
 /// the freeze: SKILL.md does not *teach* them. Naming one as a thing to run
 /// would grow what every session pays for, by habit rather than by decision,
 /// which is how a permanently loaded file actually grows.
@@ -537,7 +537,7 @@ fn the_skill_stays_within_one_page() {
 /// when it moved into the loop, back when the loop was still called a surface;
 /// `review`, `check` and `amend` left it when planning was bought with a raised
 /// ceiling, which said so; `status` and `scope` left it when investigation was
-/// bought the same way. The decision in force is ADR-e4a5a8873fe3, and which
+/// bought the same way. The decision in force is ADR-cfc74e53a744, and which
 /// earlier one made which removal is what `supersedes:` carries. `accept` is
 /// the interesting survivor: the skill now *describes* it, and still must not
 /// show the command, so it stays here while
@@ -603,7 +603,7 @@ fn the_skill_states_that_what_an_agent_reads_is_never_styled() {
 /// (TASK-a548c95261a5).
 ///
 /// Not a superseding ADR, and the reason is measured rather than assumed. What
-/// ADR-e4a5a8873fe3 freezes is which *verbs* the file teaches, which
+/// ADR-cfc74e53a744 freezes is which *verbs* the file teaches, which
 /// `the_skill_teaches_nothing_beyond_what_is_frozen` enforces, plus the ceiling
 /// below. This adds neither a verb nor a flag: it is a fact about the
 /// arrangement an agent is already working inside, the same register as "the
@@ -723,7 +723,7 @@ fn declared_revision(front: &str) -> Option<String> {
 /// It sits in `metadata`, which the Agent Skills standard defines as an
 /// arbitrary map for properties the standard does not itself define, so it is
 /// metadata about the file and not part of what the file teaches. That is the
-/// whole of the freeze (ADR-e4a5a8873fe3), and the three assertions above are
+/// whole of the freeze (ADR-cfc74e53a744), and the three assertions above are
 /// the enforcement -- none of them moves because of a fingerprint.
 #[test]
 fn the_skill_says_which_revision_it_is() {
@@ -746,7 +746,7 @@ fn the_skill_says_which_revision_it_is() {
 }
 
 // ---------------------------------------------------------------------------
-// The siblings, anchored the same way (ADR-e4a5a8873fe3, TASK-e26516d35da9)
+// The siblings, anchored the same way (ADR-cfc74e53a744, TASK-e26516d35da9)
 // ---------------------------------------------------------------------------
 
 /// The sibling skills beside the contract: every `skill/<dir>/SKILL.md`, as
@@ -772,9 +772,9 @@ fn sibling_skills() -> Vec<(String, String)> {
     found
 }
 
-/// The five activities ADR-e4a5a8873fe3 names, all of them in the tree now that
-/// `tdd` has landed with TASK-135cde611e3f and `diagnose` with
-/// TASK-587a185bef49, and the sixth ADR-2fc9b88cc0bd adds, `herdr`. A sibling
+/// The six methods ADR-cfc74e53a744 names, all of them in the tree now that
+/// `tdd` has landed with TASK-135cde611e3f, `diagnose` with TASK-587a185bef49
+/// and `herdr` with ADR-2fc9b88cc0bd. A sibling
 /// beyond these is allowed and anchored like the rest; one of these missing is
 /// the skill system shipping a contract without its policies -- the tests below
 /// hold whatever exists, and this one is what makes a sibling's disappearance a
@@ -785,8 +785,8 @@ fn the_named_sibling_skills_exist() {
     for expected in ["diagnose", "drift", "herdr", "loop", "plan", "tdd"] {
         assert!(
             names.contains(&expected.to_string()),
-            "skill/{expected}/SKILL.md is missing: ADR-e4a5a8873fe3 and \
-             ADR-2fc9b88cc0bd name it as one of the policies beside the contract"
+            "skill/{expected}/SKILL.md is missing: ADR-cfc74e53a744 names \
+             it as one of the methods beside the contract"
         );
     }
 }
@@ -851,7 +851,7 @@ fn line_teaching<'a>(body: &'a str, point: &str, tokens: &[&str]) -> &'a str {
 }
 
 /// **The sibling announces itself where it applies and nowhere else.** The
-/// description is the part every session pays for (ADR-e4a5a8873fe3), so it
+/// description is the part every session pays for (ADR-cfc74e53a744), so it
 /// names the one place the policy is for, a herdr-core terminal, and stays
 /// short.
 #[test]
@@ -1067,7 +1067,7 @@ fn every_sibling_skill_says_which_revision_it_is() {
     }
 }
 
-/// The ceiling of ADR-e4a5a8873fe3 is per skill, for the by-hand route where a
+/// The ceiling of ADR-cfc74e53a744 is per skill, for the by-hand route where a
 /// harness loads whole files.
 #[test]
 fn every_sibling_skill_stays_within_one_page() {
@@ -1101,7 +1101,7 @@ fn every_sibling_defers_to_the_contract_and_never_invites_accept() {
         assert!(
             !text.contains("ank accept"),
             "skill/{name}/SKILL.md shows `ank accept`: described, never invited \
-             holds in every skill that mentions it (ADR-e4a5a8873fe3)"
+             holds in every skill that mentions it (ADR-cfc74e53a744)"
         );
     }
 }
