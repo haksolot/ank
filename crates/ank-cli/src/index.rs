@@ -52,7 +52,10 @@ use std::path::{Path, PathBuf};
 ///
 /// Moved to 14 by `verdict.unowed`, the count `status` names beside the owed
 /// signals (ADR-61c273118d97).
-pub const SCHEMA_VERSION: u32 = 14;
+///
+/// Moved to 15 by `walk`, the legacy ratification walk kept under HEAD's
+/// commit (TASK-813700f66d63).
+pub const SCHEMA_VERSION: u32 = 15;
 
 /// The index of this build's schema, and the only one it opens
 /// (ADR-3db9735a7036).
@@ -259,6 +262,10 @@ CREATE TABLE verdict (
     drift_branch   TEXT,
     drift_entities INTEGER NOT NULL
 );
+CREATE TABLE walk (
+    head  TEXT PRIMARY KEY,
+    found TEXT NOT NULL
+);
 ";
 
 /// The searchable columns, in the order the FTS table declares them, because
@@ -307,11 +314,11 @@ fn tables_present_in(conn: &Connection) -> rusqlite::Result<bool> {
     let found: i64 = conn.query_row(
         "SELECT count(*) FROM sqlite_master \
          WHERE type = 'table' \
-         AND name IN ('meta', 'files', 'entities', 'signatures', 'verdict', 'carried')",
+         AND name IN ('meta', 'files', 'entities', 'signatures', 'verdict', 'carried', 'walk')",
         [],
         |r| r.get(0),
     )?;
-    Ok(found == 6)
+    Ok(found == 7)
 }
 
 fn schema_version_of(conn: &Connection) -> rusqlite::Result<Option<u32>> {
@@ -362,6 +369,7 @@ fn wipe_in(conn: &Connection) -> rusqlite::Result<()> {
         "signatures",
         "verdict",
         "carried",
+        "walk",
     ] {
         conn.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
     }
@@ -716,6 +724,75 @@ impl Drop for Index {
                 .conn
                 .set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, false);
         }
+    }
+}
+
+/// How long the stored walk waits for the index before it is a miss.
+///
+/// Far below [`BUSY_TIMEOUT`], because nothing is lost by giving up: a read
+/// that misses walks the history as it always did, and a write that fails is
+/// made again by the next process.
+const WALK_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// A connection to this build's index file as it stands, for the stored walk.
+///
+/// **It never creates the file and never installs a schema**: an index that is
+/// absent, of another shape or busy answers `None`, and the caller pays the
+/// walk. Whoever opens the index properly builds it; this reads and writes one
+/// row of a file somebody else brought up to date.
+fn walk_connection(ank: &Path) -> Option<Connection> {
+    use rusqlite::OpenFlags;
+    let conn = Connection::open_with_flags(
+        ank.join(db_file()),
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    // The same reason `open_raw` gives: the last connection out of a WAL
+    // database checkpoints it under an exclusive lock, and this one is short
+    // and frequent.
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+        .ok()?;
+    conn.busy_timeout(WALK_WAIT).ok()?;
+    Some(conn)
+}
+
+/// What the history walk found when HEAD was `head`, as the caller wrote it,
+/// or `None` — which always means *walk* (TASK-813700f66d63).
+///
+/// **The key is HEAD's commit object name and nothing else** (ADR-f3d1dea65d84
+/// asks that a cache state its key). What a commit reaches never changes, so
+/// the walk from it is the same walk for ever; a HEAD that moved, forward or
+/// back, is another key and a miss.
+pub fn stored_walk(ank: &Path, head: &str) -> Option<String> {
+    walk_connection(ank)?
+        .query_row(
+            "SELECT found FROM walk WHERE head = ?1",
+            params![head],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .ok()?
+}
+
+/// Keeps what the walk from `head` found. **One row, and the previous one
+/// goes**, on the terms [`Index::remember_verdict`] states; a write that fails
+/// is not an error, and the next process walks.
+pub fn store_walk(ank: &Path, head: &str, found: &str) {
+    let Some(mut conn) = walk_connection(ank) else {
+        return;
+    };
+    let Ok(tx) = conn.transaction() else {
+        return;
+    };
+    let wrote = tx.execute("DELETE FROM walk", params![]).is_ok()
+        && tx
+            .execute(
+                "INSERT INTO walk (head, found) VALUES (?1, ?2)",
+                params![head, found],
+            )
+            .is_ok();
+    if wrote {
+        let _ = tx.commit();
     }
 }
 
@@ -2375,6 +2452,42 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// The stored walk is one row under one commit (TASK-813700f66d63): asked
+    /// under the commit it was kept for it answers, under any other it is a
+    /// miss, and a later one replaces it.
+    #[test]
+    fn the_stored_walk_answers_for_the_commit_it_was_kept_under_and_no_other() {
+        let t = Temp::new();
+        drop(Index::open(&t.0).unwrap());
+        assert_eq!(stored_walk(&t.0, "aaaa"), None, "nothing was kept yet");
+        store_walk(&t.0, "aaaa", "the walk from a");
+        assert_eq!(
+            stored_walk(&t.0, "aaaa").as_deref(),
+            Some("the walk from a")
+        );
+        assert_eq!(stored_walk(&t.0, "bbbb"), None, "another commit is a miss");
+        store_walk(&t.0, "bbbb", "the walk from b");
+        assert_eq!(
+            stored_walk(&t.0, "bbbb").as_deref(),
+            Some("the walk from b")
+        );
+        assert_eq!(
+            stored_walk(&t.0, "aaaa"),
+            None,
+            "one row, and the previous one went"
+        );
+    }
+
+    /// An index that is not there is not created by the stored walk: the write
+    /// is dropped, the read is a miss, and the caller walks.
+    #[test]
+    fn the_stored_walk_neither_creates_an_index_nor_answers_without_one() {
+        let t = Temp::new();
+        store_walk(&t.0, "aaaa", "the walk from a");
+        assert!(!t.db().exists(), "the stored walk created an index file");
+        assert_eq!(stored_walk(&t.0, "aaaa"), None);
     }
 
     fn task(hex: &str, title: &str, status: TaskStatus) -> Entity {
