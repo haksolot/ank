@@ -2669,13 +2669,37 @@ fn all_ratifications(cwd: &Path) -> Result<HashMap<String, Ratification>> {
     // own before each record, which is what the reader below steps past.
     // `%at` rides in the same walk, so the instant a ratification took effect
     // costs no process of its own (ADR-52bb0da2023a).
+    //
+    // **Kept across processes, under HEAD's commit** (TASK-813700f66d63). The
+    // walk was half of a `show` on this repository and was paid again by every
+    // reading verb. What a commit reaches never changes, so the commit's own
+    // name is the whole key: resolved first, then walked *by that name* and
+    // never as `HEAD`, so a HEAD moving between the two questions cannot file
+    // one history under the other's name. A HEAD that does not resolve has no
+    // key: walked as before, kept nowhere.
+    let head = run(cwd, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let ank = cwd.join(".ank");
+    if let Some(head) = head.as_deref() {
+        if !WALK_AFRESH.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Some(found) = crate::index::stored_walk(&ank, head).and_then(|t| walk_read(&t)) {
+                if let Ok(mut seen) = memo.lock() {
+                    seen.insert(cwd.to_path_buf(), found.clone());
+                }
+                return Ok(found);
+            }
+        }
+    }
     let args = [
         "rev-list",
         "--full-history",
         "--format=%H%x00%at%x00%ct%x00%s%x00%b%x00",
-        "HEAD",
+        head.as_deref().unwrap_or("HEAD"),
     ];
     let out = output(cwd, &args)?;
+    let walked = out.status.success();
     let mut found: HashMap<String, Ratification> = HashMap::new();
     if out.status.success() {
         let text = String::from_utf8_lossy(&out.stdout);
@@ -2731,10 +2755,88 @@ fn all_ratifications(cwd: &Path) -> Result<HashMap<String, Ratification>> {
             }
         }
     }
+    // Only a walk git completed is kept: a failed one found nothing because it
+    // read nothing, and filing that under the commit would be the lie
+    // ADR-f3d1dea65d84 names.
+    if let (true, Some(head)) = (walked, head.as_deref()) {
+        crate::index::store_walk(&ank, head, &walk_written(&found));
+    }
     if let Ok(mut seen) = memo.lock() {
         seen.insert(cwd.to_path_buf(), found.clone());
     }
     Ok(found)
+}
+
+/// Set by `check`, which takes no shortcut (ADR-1556aaffe0c5): it walks on
+/// every run and stores what it found, so a stored walk is never older than
+/// the last check.
+static WALK_AFRESH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The walk is made by this process whatever the index holds.
+pub fn walk_afresh() {
+    WALK_AFRESH.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// What the stored walk opens with. A row of another shape is a miss.
+const WALK_FORMAT: &str = "ank-walk 1";
+
+/// The walk as the index keeps it: one line per ratification, tab-separated,
+/// `id sha anchor authored committed`, a date that would not read left empty.
+/// None of the five can hold a tab or a newline: an identifier, two object
+/// names, and two integers.
+fn walk_written(found: &HashMap<String, Ratification>) -> String {
+    let mut lines: Vec<String> = found
+        .iter()
+        .map(|(id, r)| {
+            let date = |d: Option<i64>| d.map(|d| d.to_string()).unwrap_or_default();
+            format!(
+                "{id}\t{}\t{}\t{}\t{}",
+                r.sha,
+                r.anchor,
+                date(r.authored),
+                date(r.committed)
+            )
+        })
+        .collect();
+    lines.sort();
+    format!("{WALK_FORMAT}\n{}", lines.join("\n"))
+}
+
+/// The stored walk read back, or `None` for anything [`walk_written`] did not
+/// write: a miss, and the history is walked.
+fn walk_read(text: &str) -> Option<HashMap<String, Ratification>> {
+    let mut lines = text.lines();
+    if lines.next()? != WALK_FORMAT {
+        return None;
+    }
+    let mut found = HashMap::new();
+    for line in lines {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [id, sha, anchor, authored, committed] = fields[..] else {
+            return None;
+        };
+        if id.is_empty() || sha.is_empty() || anchor.contains(char::is_whitespace) {
+            return None;
+        }
+        let date = |d: &str| -> Option<Option<i64>> {
+            if d.is_empty() {
+                Some(None)
+            } else {
+                d.parse::<i64>().ok().map(Some)
+            }
+        };
+        found.insert(
+            id.to_string(),
+            Ratification {
+                sha: sha.to_string(),
+                anchor: anchor.to_string(),
+                authored: date(authored)?,
+                committed: date(committed)?,
+                via: Via::Commit,
+            },
+        );
+    }
+    Some(found)
 }
 
 /// The commit object of a ratification, out of one batch read for the whole

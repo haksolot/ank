@@ -1079,6 +1079,163 @@ fn the_root_commit_is_walked_once_and_then_read_from_where_it_was_kept() {
     assert!(again.contains(&keyed), "{keyed} is in {again}");
 }
 
+/// What the legacy ratification walk looks like in git's own trace.
+fn walks_the_history(argv: &str) -> bool {
+    argv.starts_with("rev-list --full-history")
+}
+
+/// The one walk of everything HEAD reaches, as against the search of one
+/// path's history that a decision no walk carries falls back to: that search
+/// is what answers when the walk is out of date within a process, it is asked
+/// only of a decision with no `ratify` commit, and it is not what is stored.
+fn walks_the_whole_history(argv: &str) -> bool {
+    argv.starts_with("rev-list --full-history '--format=")
+}
+
+/// What `show` says of a decision a `ratify <id>` commit anchors.
+const RATIFIED_BY_COMMIT: &str = "RATIFIED BY commit";
+
+/// The `ratify <id>` commits are found by walking the whole history, and the
+/// walk is kept in the index under HEAD's commit (TASK-813700f66d63).
+///
+/// Measured on this repository before the change, 2 839 commits: the walk
+/// wrote 1.7 MB and was about half of a `show` that prints one file, paid
+/// again by every reading verb. What a commit reaches never changes, so the
+/// answer is a function of HEAD's object name and of nothing else.
+#[test]
+fn a_read_at_an_unchanged_head_walks_no_history_and_says_the_same() {
+    let c = Corpus::new();
+    c.seed_ratifications(3);
+    let decision = adr_id(1);
+    let reads: [&[&str]; 4] = [
+        &["show", &decision],
+        &["find", "decision"],
+        &["context"],
+        &["scope", "doc"],
+    ];
+
+    let mut walked = 0;
+    for args in reads {
+        let (cold, first) = c.git_processes(args);
+        walked += cold.iter().filter(|a| walks_the_history(a)).count();
+        let (warm, again) = c.git_processes(args);
+        assert_eq!(
+            warm.iter().filter(|a| walks_the_history(a)).count(),
+            0,
+            "ank {args:?} walks the history again at the HEAD it already walked: {warm:#?}"
+        );
+        assert_eq!(
+            first, again,
+            "ank {args:?} answers differently from the stored walk"
+        );
+    }
+    assert_eq!(
+        walked, 1,
+        "the four verbs walk once between them, the first time the question is asked"
+    );
+    let (_, shown) = c.git_processes(&["show", &decision]);
+    assert!(
+        shown.contains(RATIFIED_BY_COMMIT),
+        "the stored walk still carries the ratification: {shown}"
+    );
+}
+
+/// The key is HEAD's commit and nothing else: a HEAD moved back off a
+/// ratification stops reporting it, and the commit landing again reports it,
+/// each time by a walk of the history HEAD now names.
+#[test]
+fn a_head_that_moved_is_walked_again_and_the_answer_follows_it() {
+    let c = Corpus::new();
+    c.seed_ratifications(3);
+    let last = adr_id(2);
+    let tip = c.git(&["rev-parse", "HEAD"]);
+    let walks = |started: &[String]| {
+        started
+            .iter()
+            .filter(|a| walks_the_whole_history(a))
+            .count()
+    };
+
+    let (_, at_the_tip) = c.git_processes(&["show", &last]);
+    assert!(at_the_tip.contains(RATIFIED_BY_COMMIT), "{at_the_tip}");
+
+    // Back one commit: the last decision's `ratify` commit is the tip, so HEAD
+    // no longer reaches it.
+    c.git(&["update-ref", "refs/heads/main", &format!("{tip}~1")]);
+    let (started, behind) = c.git_processes(&["show", &last]);
+    assert_eq!(
+        walks(&started),
+        1,
+        "a HEAD that moved is walked: {started:#?}"
+    );
+    assert!(
+        !behind.contains(RATIFIED_BY_COMMIT),
+        "a ratification HEAD does not reach is still reported, from the walk \
+         of another commit: {behind}"
+    );
+
+    // And the `ratify` commit lands on HEAD.
+    c.git(&["update-ref", "refs/heads/main", &tip]);
+    let (started, landed) = c.git_processes(&["show", &last]);
+    assert_eq!(
+        walks(&started),
+        1,
+        "one row is kept, and it was the other commit's: {started:#?}"
+    );
+    assert!(
+        landed.contains(RATIFIED_BY_COMMIT),
+        "a ratification that landed on HEAD is not reported: {landed}"
+    );
+    assert_eq!(at_the_tip, landed);
+}
+
+/// `check` takes no shortcut (ADR-1556aaffe0c5): it walks on every run, and
+/// what it found is what the next read is served.
+#[test]
+fn check_walks_the_history_every_time_and_keeps_what_it_found() {
+    let c = Corpus::new();
+    c.seed_ratifications(3);
+    let walks = |started: &[String]| started.iter().filter(|a| walks_the_history(a)).count();
+
+    let (first, _) = c.git_processes(&["check"]);
+    assert_eq!(walks(&first), 1, "{first:#?}");
+    let (second, _) = c.git_processes(&["check"]);
+    assert_eq!(
+        walks(&second),
+        1,
+        "check answered from a stored walk: {second:#?}"
+    );
+
+    let (read, shown) = c.git_processes(&["show", &adr_id(0)]);
+    assert_eq!(
+        walks(&read),
+        0,
+        "check kept nothing for the read after it: {read:#?}"
+    );
+    assert!(shown.contains(RATIFIED_BY_COMMIT), "{shown}");
+}
+
+/// A HEAD that names no commit has no key, so nothing is kept and the verb
+/// answers as it always did.
+#[test]
+fn a_read_with_no_head_to_key_on_answers_all_the_same() {
+    let c = Corpus::new();
+    c.seed_ratifications(1);
+    let (_, before) = c.git_processes(&["find", "decision"]);
+    c.git(&["update-ref", "-d", "refs/heads/main"]);
+    let (_, unborn) = c.git_processes(&["find", "decision"]);
+    let (_, again) = c.git_processes(&["find", "decision"]);
+    assert_eq!(unborn, again);
+    assert!(
+        unborn.contains(&adr_id(0)[..8]),
+        "the decision is still found with no commit under HEAD: {unborn}"
+    );
+    assert_ne!(
+        before, unborn,
+        "the walk of the commit HEAD used to name was served to a HEAD that names none"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // What the answer says
 // ---------------------------------------------------------------------------

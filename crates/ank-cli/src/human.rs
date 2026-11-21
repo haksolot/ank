@@ -760,6 +760,9 @@ pub fn check(
     bounds: &[String],
     out: &mut dyn Write,
 ) -> Result<ExitCode> {
+    // No shortcut here (ADR-1556aaffe0c5): the history is walked on every
+    // check, and what it finds replaces what the index kept (TASK-813700f66d63).
+    git::walk_afresh();
     let kind = kind_flag(inv)?;
     let path = crate::context::perimeter(inv, repo)?;
     // `--strict` writes nothing (ADR-55460a57353a): no remote repaired, no ref
