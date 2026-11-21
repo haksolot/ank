@@ -533,6 +533,17 @@ const CLAIM_OUT: &[Field] = &[
     f("warnings", Type::Strings),
 ];
 
+/// The same document on a task naming a method: its text, as `ank skills
+/// <name>` prints it (ADR-cfc74e53a744). A document of its own rather than a
+/// null on every claim, for the reason [`CLAIM_OUT_ELSEWHERE`] gives.
+const CLAIM_OUT_METHOD: &[Field] = &[
+    f("task", Type::Str),
+    f("holder", Type::Str),
+    f("expires", Type::Str),
+    f("warnings", Type::Strings),
+    f("method_body", Type::Str),
+];
+
 /// The same document, plus the live claims this identity already holds in the
 /// other corpora the reader declared in `corpora.yml` (ADR-ed3e14d0f991).
 ///
@@ -548,6 +559,27 @@ const CLAIM_OUT_ELSEWHERE: &[Field] = &[
     f("holder", Type::Str),
     f("expires", Type::Str),
     f("warnings", Type::Strings),
+    f(
+        "claims_elsewhere",
+        Type::Array(&[
+            f("task", Type::Str),
+            // Where the reader declared that corpus, never the repository
+            // identity: the map is keyed on the tree a reader stands in
+            // (ADR-96174f1ac2b7), which is not the corpus the claim is in.
+            f("corpus", Type::Str),
+            f("expires", Type::Str),
+        ]),
+    ),
+];
+
+/// Both: a task naming a method, claimed by an identity holding a claim in a
+/// declared corpus.
+const CLAIM_OUT_ELSEWHERE_METHOD: &[Field] = &[
+    f("task", Type::Str),
+    f("holder", Type::Str),
+    f("expires", Type::Str),
+    f("warnings", Type::Strings),
+    f("method_body", Type::Str),
     f(
         "claims_elsewhere",
         Type::Array(&[
@@ -1510,7 +1542,12 @@ pub const COMMANDS: &[CommandSpec] = &[
             PUSH_DEGRADES,
         ],
         refuses_globals: &[],
-        output: &[one(CLAIM_OUT), when("this identity holds a live claim in another corpus the reader declared", CLAIM_OUT_ELSEWHERE)],
+        output: &[
+            one(CLAIM_OUT),
+            when("this identity holds a live claim in another corpus the reader declared", CLAIM_OUT_ELSEWHERE),
+            when("the task names a method", CLAIM_OUT_METHOD),
+            when("the task names a method, and this identity holds a live claim in another corpus the reader declared", CLAIM_OUT_ELSEWHERE_METHOD),
+        ],
         owner_task: None,
     },
     CommandSpec {
@@ -1753,7 +1790,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "--amends declares the ADRs an adr changes in part; each stays accepted and binding, and check resolves it",
             "--enforced-by <path>#<symbol> names what holds an adr mechanically; context then serves it by its title, and check confronts the entry with the tree",
             "a new task carries the verifiers config.yml marks default: true; --verify names its own instead, and --no-verify declines them",
-            "--method names the sibling skill the work calls for, by its short name (tdd, diagnose); context prints it after the claim, and done never reads it",
+            "--method names the sibling skill the work calls for, by its short name (tdd, diagnose); claim prints its text after the criterion, context names the command that prints it, and done never reads it",
             "where finished tasks declared other entries beside a task's --scope, new names them, two of them at least, five at most and the most frequent first, so the scope can widen before --criteria freezes at claim; it adds none itself",
         ],
         refuses_globals: &[],
