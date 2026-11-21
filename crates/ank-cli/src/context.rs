@@ -1811,14 +1811,14 @@ pub(crate) fn peer_sections(sections: &[PeerSection], style: Style) -> Vec<Strin
     out
 }
 
-/// `METHOD <name>`, and the sentence that says what to do with it.
+/// `METHOD <name>`, and the command that prints it (ADR-cfc74e53a744).
 ///
-/// The harness knows the skill by its frontmatter name, `ank-<name>`, so the
-/// line gives that too: the short name is what the task stores, and the long one
-/// is what an agent asks its harness to load.
+/// The command and never the text: `claim` printed the text once, at the moment
+/// it applies, and `context` runs many times under one claim, so reprinting
+/// several kilobytes each time would charge every page for what was read once.
 fn method_line(method: &str, style: Style) -> String {
     format!(
-        "{} {method}, the skill to load before the first edit: ank-{method}",
+        "{} {method}, printed by ank skills {method}: read it before the first edit",
         style.header("METHOD")
     )
 }
@@ -3769,7 +3769,7 @@ The document.
     /// page without it keeps at that budget less what the line costs.
     #[test]
     fn the_method_line_is_charged_before_the_log_and_absent_without_a_method() {
-        let line = "METHOD tdd, the skill to load before the first edit: ank-tdd";
+        let line = "METHOD tdd, printed by ank skills tdd: read it before the first edit";
         let (with, _) = execution_page(Some("tdd"), 100_000);
         let (without, _) = execution_page(None, 100_000);
         assert!(!without.contains("METHOD"), "{without}");
@@ -3788,7 +3788,7 @@ The document.
             "the line and its separator are the whole difference"
         );
         let cost = chars(&[String::new(), line.to_string()]);
-        assert_eq!(cost, 62, "the separator, the line and two newlines");
+        assert_eq!(cost, 70, "the separator, the line and two newlines");
         assert_eq!(with.chars().count(), without.chars().count() + cost);
 
         for budget in [600, 800, 1000, 1200] {

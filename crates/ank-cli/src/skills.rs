@@ -182,6 +182,17 @@ fn print_one(
     Ok(ExitCode::Ok)
 }
 
+/// The text `ank skills <method>` prints, for `claim` to print after the
+/// criterion (ADR-cfc74e53a744): the method arrives at the moment it applies,
+/// from the binary that runs, so no installed copy can serve a stale one.
+/// `None` for a name this binary does not carry, a task written by another
+/// build: `claim` then prints what it printed before rather than refusing a
+/// claim over a recommendation.
+pub fn method_text(method: &str) -> Option<String> {
+    let skill = named(EMBEDDED, method).ok()?;
+    Some(body_of(skill, herdr_terminal()))
+}
+
 /// The skill carried under `name`, its frontmatter name or that name without
 /// the `ank-` prefix, or the refusal naming every one the binary carries.
 ///
