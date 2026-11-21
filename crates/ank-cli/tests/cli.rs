@@ -1940,6 +1940,112 @@ fn graph_terminates_on_a_cycle_and_says_where_it_is() {
     );
 }
 
+/// `graph` prints what is not finished and the finished tasks that block it,
+/// and `--all` prints the whole DAG (TASK-ef052ab40f0f, ADR-302efb9c5e40).
+///
+/// Measured on this repository before the change: 75 820 bytes with one task
+/// open, read before every claim. The fixture gives each clause something to
+/// be wrong about: a finished blocker of an open task (shown), a finished task
+/// blocking only a finished one (hidden), a finished leaf and a closed one
+/// (hidden), and an open task blocked by nothing (shown).
+///
+/// **`--all` is held to a literal**, the bytes the binary printed on this
+/// fixture before the change, captured from that binary and never derived
+/// from the code under test.
+#[test]
+fn graph_prints_what_is_not_finished_and_all_prints_the_whole_dag() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let older = "TASK-000000000e01"; // done, blocks `blocker` only
+    let blocker = "TASK-000000000e02"; // done, blocks `waits`
+    let waits = "TASK-000000000e03"; // open, blocked by `blocker`
+    let free = "TASK-000000000e04"; // open, blocked by nothing
+    let leaf = "TASK-000000000e05"; // done, blocks nothing
+    let dropped = "TASK-000000000e06"; // closed, blocks nothing
+    for id in [older, blocker, waits, free, leaf, dropped] {
+        r.seed_task(id, Some("A verifiable criterion."));
+    }
+    r.blocked(blocker, &[older]);
+    r.blocked(waits, &[blocker]);
+    for (id, status) in [
+        (older, "done"),
+        (blocker, "done"),
+        (leaf, "done"),
+        (dropped, "closed"),
+    ] {
+        let text = r
+            .task_text(id)
+            .replace("status: open", &format!("status: {status}"));
+        std::fs::write(r.0.join(".ank/entities").join(format!("{id}.md")), text).unwrap();
+    }
+
+    let out = r.ank("claude-code@ank", &["graph"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+    for shown in [blocker, waits, free] {
+        assert!(said.contains(&shown[5..]), "{shown} is drawn:\n{said}");
+    }
+    for hidden in [older, leaf, dropped] {
+        assert!(
+            !said.contains(&hidden[5..]),
+            "{hidden} is finished and blocks nothing unfinished:\n{said}"
+        );
+    }
+    assert!(
+        !said.contains("outside"),
+        "a finished blocker left out by the narrowing is not outside the perimeter:\n{said}"
+    );
+    assert!(
+        said.contains("--all"),
+        "the narrowed drawing names how to see the rest:\n{said}"
+    );
+
+    let all = stdout(&r.ank("claude-code@ank", &["graph", "--all"]));
+    assert_eq!(all, ALL_BEFORE, "--all is the drawing graph printed before");
+
+    let j = stdout(&r.ank("claude-code@ank", &["graph", "--json"]));
+    for shown in [blocker, waits, free] {
+        assert!(j.contains(&format!("\"id\":\"{shown}\"")), "{shown}: {j}");
+    }
+    for hidden in [older, leaf, dropped] {
+        assert!(
+            !j.contains(&format!("\"id\":\"{hidden}\"")),
+            "{hidden}: {j}"
+        );
+    }
+    assert!(
+        j.contains(&format!(
+            "{{\"task\":\"{waits}\",\"blocked_by\":\"{blocker}\"}}"
+        )),
+        "{j}"
+    );
+    let j = stdout(&r.ank("claude-code@ank", &["graph", "--all", "--json"]));
+    for id in [older, blocker, waits, free, leaf, dropped] {
+        assert!(
+            j.contains(&format!("\"id\":\"{id}\"")),
+            "--all --json: {id}: {j}"
+        );
+    }
+
+    let help = stdout(&r.ank("claude-code@ank", &["help", "graph"]));
+    assert!(
+        help.contains("--all"),
+        "help graph documents --all:\n{help}"
+    );
+}
+
+const ALL_BEFORE: &str = ".\n\
+\n\
+TASK-000000000e01  [done] Example task\n\
+└── TASK-000000000e02  [done] Example task\n\
+\x20   └── TASK-000000000e03  [open] Example task\n\
+TASK-000000000e04  [open] Example task\n\
+TASK-000000000e05  [done] Example task\n\
+TASK-000000000e06  [closed] Example task\n\
+\n\
+6 task(s), 4 root(s) — indented under what blocks them\n";
+
 /// `ank show` on a task says what it unblocks, not only what blocks it
 /// (TASK-2415ddb92df8).
 ///

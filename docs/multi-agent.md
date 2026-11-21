@@ -96,7 +96,9 @@ mechanically: every open task in the perimeter, the ready ones first, ordered by
 how many other tasks each would unblock. Do not serialize independent tasks
 because they belong to the same change. If the order matters, that is a
 `blocked_by`; if there is no `blocked_by`, the order is a fiction. `ank graph`
-prints the DAG when you want the shape rather than the next move.
+prints the DAG when you want the shape rather than the next move: the tasks
+still open or in progress, and the finished tasks that block them. `ank graph
+--all` prints it whole, history included.
 
 **One branch per task.** Each agent claims its task, works in its own tree on
 its own branch, and finishes there. `ank done` proves the task in the working

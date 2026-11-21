@@ -1329,6 +1329,41 @@ fn a_legal_call_satisfies_the_schema_the_server_publishes_for_it() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
+/// `ank_graph` takes `--all` (TASK-ef052ab40f0f): the schema the server
+/// publishes names it as a switch, and a call carrying it is legal against that
+/// schema and is answered.
+#[test]
+fn the_graph_tool_takes_all() {
+    let repo = corpus();
+    let replies = talk(
+        &repo,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ank_graph","arguments":{"all":true}}}"#,
+        ],
+    );
+    let schemas = published_schemas(&replies[0]);
+    let schema = &schemas
+        .iter()
+        .find(|(t, _)| t == "ank_graph")
+        .expect("ank_graph is published")
+        .1;
+    assert_eq!(
+        schema["properties"]["all"]["type"].as_str(),
+        Some("boolean"),
+        "ank_graph publishes --all as a switch: {schema:?}"
+    );
+    let call: serde_yaml::Value = serde_yaml::from_str(r#"{"all":true}"#).unwrap();
+    assert_eq!(violation(schema, &call, "ank_graph"), None);
+    assert_eq!(
+        field(&replies[1], "exitCode").as_deref(),
+        Some("0"),
+        "the call with all is answered: {}",
+        replies[1]
+    );
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 /// `required` is declared exactly where the binary refuses the call without a
 /// positional, measured rather than read (GitHub #780).
 ///
