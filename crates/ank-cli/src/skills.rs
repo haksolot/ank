@@ -111,6 +111,16 @@ fn method_among(name: &str, carried: &[&str]) -> Result<String> {
 }
 
 pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
+    if let Some(name) = inv.positionals.first() {
+        if inv.has("--install") {
+            return Err(CliError::new(
+                ExitCode::Generic,
+                format!("--install writes every skill, and takes no name: '{name}'"),
+            )
+            .with_hint("ank skills --install"));
+        }
+        return print_one(EMBEDDED, name, inv.json(), out);
+    }
     if inv.has("--install") {
         // **Refused rather than ignored** (§4, §9). Under `--json` stdout is a
         // document a parser reads and nothing else, and what `--install`
@@ -142,6 +152,159 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
         );
     }
     Ok(ExitCode::Ok)
+}
+
+/// `skills <name>`: one skill whole (ADR-cfc74e53a744).
+///
+/// **It reads no corpus and asks git nothing**, like the catalogue outside one:
+/// what it prints is what the build read, so it answers the same wherever it
+/// runs, and the moment it is most needed is the one before any corpus is
+/// involved.
+fn print_one(
+    skills: &'static [Embedded],
+    name: &str,
+    json: bool,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
+    let skill = named(skills, name)?;
+    let body = body_of(skill, herdr_terminal());
+    if json {
+        let doc = Obj::document()
+            .str("name", skill.name)
+            .str("revision", skill.revision)
+            .str("description", skill.description)
+            .str("body", &body)
+            .finish();
+        let _ = writeln!(out, "{doc}");
+    } else {
+        let _ = write!(out, "{body}");
+    }
+    Ok(ExitCode::Ok)
+}
+
+/// The skill carried under `name`, its frontmatter name or that name without
+/// the `ank-` prefix, or the refusal naming every one the binary carries.
+///
+/// **Both spellings, unlike `--method`.** A method is a value stored in a task
+/// and counted, so it has one spelling; this is a name typed to read, and the
+/// harness calls the skill `ank-tdd` where the task calls its method `tdd`.
+fn named(skills: &'static [Embedded], name: &str) -> Result<&'static Embedded> {
+    let name = name.trim();
+    if let Some(skill) = skills
+        .iter()
+        .find(|s| s.name == name || s.name.strip_prefix(SIBLING) == Some(name))
+    {
+        return Ok(skill);
+    }
+    if skills.is_empty() {
+        return Err(CliError::new(ExitCode::Prerequisite, NONE).with_hint("ank skills"));
+    }
+    let carried: Vec<&str> = skills.iter().map(|s| s.name).collect();
+    Err(CliError::new(
+        ExitCode::Prerequisite,
+        format!(
+            "no skill named '{name}' in this binary, which carries {}",
+            carried.join(", ")
+        ),
+    )
+    .with_hint(format!("ank skills {}", carried[0])))
+}
+
+/// Whether this session runs in a herdr-core terminal: `HC_TERMINAL_ID` set and
+/// not empty (ADR-2fc9b88cc0bd).
+fn herdr_terminal() -> bool {
+    std::env::var_os(ank_contract::env::HC_TERMINAL_ID).is_some_and(|v| !v.is_empty())
+}
+
+/// The name of the contract skill, the one whose body the binary completes.
+const CONTRACT: &str = "ank";
+
+/// What `ank skills <name>` prints: the file below its frontmatter, and for the
+/// contract that body completed.
+///
+/// **Where the contract lists verbs, help's own lines** (ADR-cfc74e53a744). The
+/// file names the verbs of a moment in a fenced block whose info string is
+/// `verbs`, and the block printed holds the entry `ank help` prints for each,
+/// usage and summary, byte for byte: the table lives in the verb table and
+/// nowhere under `skill/`, so a release cannot leave a copy of it stale.
+///
+/// **herdr is named only where it applies.** Outside a herdr-core terminal a
+/// line naming it is dropped, because a skill that cannot run there is a line
+/// every other session pays for.
+fn body_of(skill: &Embedded, herdr: bool) -> String {
+    let text = String::from_utf8_lossy(skill.content).replace("\r\n", "\n");
+    let body = match text
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n"))
+    {
+        Some((_, body)) => body.to_string(),
+        None => text,
+    };
+    if skill.name != CONTRACT {
+        return body;
+    }
+    complete_contract(&body, &help_text(), herdr)
+}
+
+/// `ank help` as the binary prints it, uncoloured.
+fn help_text() -> String {
+    let mut help = Vec::new();
+    if let Ok(inv) = crate::cli::parse(&["help".to_string()]) {
+        let _ = crate::cli::help(&inv, &mut help);
+    }
+    String::from_utf8_lossy(&help).into_owned()
+}
+
+/// The info string opening a block of verb names in the contract.
+const VERBS_FENCE: &str = "```verbs";
+
+fn complete_contract(body: &str, help: &str, herdr: bool) -> String {
+    let entries = help_entries(help);
+    let mut out = String::new();
+    let mut lines = body.split_inclusive('\n');
+    while let Some(line) = lines.next() {
+        if !herdr && line.contains("herdr") {
+            continue;
+        }
+        if line.trim_end() != VERBS_FENCE {
+            out.push_str(line);
+            continue;
+        }
+        out.push_str("```\n");
+        for names in lines.by_ref() {
+            if names.trim_end() == "```" {
+                break;
+            }
+            for verb in names.split_whitespace() {
+                for (_, entry) in entries.iter().filter(|(v, _)| v == verb) {
+                    out.push_str(entry);
+                }
+            }
+        }
+        out.push_str("```\n");
+    }
+    out
+}
+
+/// Every entry of `ank help`'s listing, keyed by its verb: the usage line and
+/// the summary lines indented beneath it, each with its newline.
+fn help_entries(help: &str) -> Vec<(String, String)> {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for line in help.split_inclusive('\n') {
+        if let Some(rest) = line.strip_prefix("ank ") {
+            let verb: String = rest.chars().take_while(char::is_ascii_lowercase).collect();
+            entries.push((verb, line.to_string()));
+        } else if line.starts_with(' ') {
+            if let Some((_, entry)) = entries.last_mut() {
+                entry.push_str(line);
+            }
+        } else {
+            // A heading or a blank line closes the entry above it, so the
+            // trailer's lines never join the last verb of the last group.
+            entries.push((String::new(), String::new()));
+        }
+    }
+    entries
 }
 
 /// The corpus the counts are read from, or `None` where there is none to read.

@@ -1585,3 +1585,41 @@ fn the_terminal_and_the_server_say_so_before_they_are_called() {
     );
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+/// **The `skills` tool takes the name** (TASK-b79fa61e90bd): its schema has the
+/// one argument the verb table declares, and a call naming a skill answers that
+/// skill whole as its document.
+#[test]
+fn the_skills_tool_takes_a_name_and_answers_that_skill_whole() {
+    let repo = corpus();
+    let replies = talk(
+        &repo,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ank_skills","arguments":{"arguments":["tdd"]}}}"#,
+        ],
+    );
+    let list: serde_yaml::Value = serde_yaml::from_str(&replies[0]).unwrap();
+    let tool = list["result"]["tools"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"].as_str() == Some("ank_skills"))
+        .expect("ank_skills is published");
+    assert_eq!(
+        tool["inputSchema"]["properties"]["arguments"]["type"].as_str(),
+        Some("array"),
+        "the skills tool takes no name: {tool:?}"
+    );
+    let called: serde_yaml::Value = serde_yaml::from_str(&replies[1]).unwrap();
+    let doc = &called["result"]["structuredContent"];
+    assert_eq!(doc["name"].as_str(), Some("ank-tdd"), "{}", replies[1]);
+    assert!(
+        doc["body"]
+            .as_str()
+            .is_some_and(|b| b.contains("# ank-tdd")),
+        "{}",
+        replies[1]
+    );
+    let _ = std::fs::remove_dir_all(&repo);
+}

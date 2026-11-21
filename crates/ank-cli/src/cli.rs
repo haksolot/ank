@@ -1098,6 +1098,12 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
     // to look next rather than when a verb is used (ADR-cfc74e53a744). A flag
     // nobody can discover answers nobody's question.
     let _ = writeln!(out, "ank --version for the build");
+    // Last, and that is the point (ADR-cfc74e53a744): the line a reader ends
+    // on names where the rules and the methods are, printed by this binary.
+    let _ = writeln!(
+        out,
+        "ank skills ank for how to work: the contract, and ank skills <name> for a method"
+    );
     Ok(ExitCode::Ok)
 }
 
