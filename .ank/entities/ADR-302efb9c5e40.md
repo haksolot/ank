@@ -5,15 +5,20 @@ slug: done-and-close-archive-the-entries-of-the-task-t
 title: done and close archive the entries of the task they end, and an entry about a finished task is born in the archive
 created: 2026-11-21T19:44:17Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
   - docs/**
 constraint: |
   An entry whose subject is a task that is done or closed in the tree it sits in is cold, with no reference to the default branch. done and close move every entry about the task they end into .ank/archive/entities/ in the same act, their own closing entry included, record each digest as ank archive does, and commit nothing: the move lands with the change that carries the close. A verb that writes an entry about a finished task, attest and amend among them, writes it in the archive. A task is never cold, and ank archive stays for a superseded document and for what predates this rule. graph prints what is not finished and the finished tasks that block it; --all prints the whole DAG.
 amends: [ADR-467ce7e9cda1]
+ratified: c17d94f9fd1a
+anchor: 2cf89e8441741293339a64100b47527eb2a9b225
+verified:
+  - by: claude-code/fable-5.2+ratify
+    at: 2026-11-21T22:13:07Z
 schema: 4
-version: 1
+version: 2
 ---
 
 Issue #832. Amends ADR-467ce7e9cda1 on when the cold set moves; its directory, digest, reading rule and budget stand.
