@@ -166,7 +166,7 @@ claimed TASK-efd813eedb23 one -> HEAD
 -->
 
     $ ANK_AGENT=tool/2.0 ank claim TASK-0e61 --json
-    {"contract":1,"task":"TASK-0e6148ab8b03","holder":"tool/2.0","expires":"2026-09-20T18:15:44Z","warnings":["tool/1.0 holds TASK-efd813eedb23, overlapping on src/**"],"method_body":null}
+    {"contract":1,"task":"TASK-0e6148ab8b03","holder":"tool/2.0","expires":"2026-09-20T18:15:44Z","warnings":["tool/1.0 holds TASK-efd813eedb23, overlapping on src/**"]}
 
 An intersecting claim is named and never refused (ADR-052accd6e3b2), so the fact
 has to reach a caller somewhere it will be read, and under `--json` that is the

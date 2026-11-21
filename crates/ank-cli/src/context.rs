@@ -3788,7 +3788,7 @@ The document.
             "the line and its separator are the whole difference"
         );
         let cost = chars(&[String::new(), line.to_string()]);
-        assert_eq!(cost, 62, "the separator, the line and two newlines");
+        assert_eq!(cost, 70, "the separator, the line and two newlines");
         assert_eq!(with.chars().count(), without.chars().count() + cost);
 
         for budget in [600, 800, 1000, 1200] {

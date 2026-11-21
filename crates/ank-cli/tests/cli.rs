@@ -10164,7 +10164,8 @@ fn context_json_carries_the_method_beside_the_criterion_and_null_without_one() {
 /// is the one output every executor reads, once per task, so it prints the
 /// criterion and then the method's text exactly as `ank skills <name>` prints
 /// it; a task designating none prints what `claim` always printed, and `--json`
-/// carries the same text under `method_body`, null without a method.
+/// carries the same text under `method_body`, a key absent without a method, so a
+/// caller claiming such a task reads the bytes it read before (ADR-ed3e14d0f991).
 #[test]
 fn claim_prints_the_criterion_then_the_method_text_and_nothing_without_one() {
     let r = Repo::new();
@@ -10210,7 +10211,7 @@ fn claim_prints_the_criterion_then_the_method_text_and_nothing_without_one() {
         format!("claimed {undesignated} undesignated -> HEAD\n")
     );
 
-    // The machine surface: the same text, and null on a task naming none.
+    // The machine surface: the same text, and no key on a task naming none.
     let json = stdout(&r.ank("claude-code@ank", &["skills", "tdd", "--json"]));
     let skill: serde_yaml::Value = serde_yaml::from_str(&json).unwrap();
     let out = r.ank("codex/1.0", &["release", &undesignated, "--reason", "r"]);
@@ -10224,8 +10225,9 @@ fn claim_prints_the_criterion_then_the_method_text_and_nothing_without_one() {
         let doc: serde_yaml::Value = serde_yaml::from_str(&stdout(&out)).unwrap();
         assert_eq!(doc["contract"].as_u64(), Some(1));
         assert_eq!(doc["method_body"].as_str(), expected, "{}", stdout(&out));
-        assert!(
+        assert_eq!(
             stdout(&out).contains("\"method_body\":"),
+            expected.is_some(),
             "{}",
             stdout(&out)
         );

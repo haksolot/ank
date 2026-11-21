@@ -2685,8 +2685,14 @@ fn run_with(
             .str("task", &acquired.id.to_string())
             .str("holder", &acquired.holder)
             .str("expires", &acquired.expires)
-            .strings("warnings", &warnings)
-            .opt_str("method_body", method_text.as_deref());
+            .strings("warnings", &warnings);
+        // Absent on a task naming no method, for the reason `claims_elsewhere`
+        // is absent below: a caller claiming such a task reads the bytes it read
+        // before (ADR-cfc74e53a744, ADR-ed3e14d0f991).
+        let doc = match &method_text {
+            Some(text) => doc.str("method_body", text),
+            None => doc,
+        };
         // **The key arrives with the facts and never without them.** A document
         // is free to gain a field within a contract version, and an empty array
         // on every claim would still be a byte a parser sees that it did not see
