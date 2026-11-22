@@ -455,13 +455,21 @@ fn with_origin_only_the_verbs_run_what_they_ran_before() {
         );
     }
 
-    // 27 since `done` archives the entries of the task it ends
-    // (ADR-302efb9c5e40): the clone now holds `.ank/archive/`, and over one
-    // `inspect` judges the archived files against HEAD, one `cat-file -p` of
-    // HEAD's archive tree and one `hash-object --stdin-paths`, as it did
-    // before for any corpus holding an archive (TASK-ed7990dab03c).
+    // 25, as before `done` archived the entries of the task it ends
+    // (ADR-302efb9c5e40). The clone now holds `.ank/archive/`, and judging it
+    // against HEAD cost 27 at 53a7db54: a `rev-parse --verify HEAD^{commit}`
+    // and a `cat-file -p` of HEAD's archive tree (TASK-ed7990dab03c). The tree
+    // travels in the `cat-file --batch` that reads the default branch and the
+    // archived paths in its `hash-object` (TASK-1a180fbf2009).
     let (out, calls) = c.traced("status-remote", AGENT, &["status", "--remote", "--json"]);
-    assert_eq!(calls.len(), 27, "status --remote --json: the git processes");
+    assert_eq!(calls.len(), 25, "status --remote --json: the git processes");
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c.first().map(String::as_str) == Some("cat-file")
+                && c.get(1).map(String::as_str) == Some("-p")),
+        "HEAD's archive tree is read in the batch: {calls:#?}"
+    );
     assert_eq!(
         shapes(&calls),
         vec!["ls-remote origin refs/ank/*".to_string()]

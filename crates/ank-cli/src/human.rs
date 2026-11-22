@@ -1380,7 +1380,11 @@ pub fn inspect_with(
     // judged by it the file restored with `git checkout` stayed a fault until
     // the cache was deleted again. The index answers for a move not committed.
     let (carried, head_changed) = if has_git && !archived_paths.is_empty() {
-        archived_against_head(repo, &archived_paths)
+        let branch = match &default_branch {
+            Some(Ok(branch)) => Some(branch.as_str()),
+            _ => None,
+        };
+        archived_against_head(repo, branch, &here, &archived_paths)
     } else {
         (BTreeSet::new(), BTreeSet::new())
     };
@@ -6419,6 +6423,15 @@ fn corpus_at(repo: &Repo, branch: &str) -> Result<BTreeMap<String, String>> {
     Ok(read)
 }
 
+thread_local! {
+    /// The blob HEAD records for each archived file, keyed by its path under
+    /// `.ank/`, as the last [`corpus_at`] read it. An archive HEAD does not
+    /// carry, or a HEAD on an unborn branch, is an empty map: both are git
+    /// answering `missing` in the batch.
+    static HEAD_ARCHIVE: std::cell::RefCell<HashMap<PathBuf, HashMap<String, String>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
 fn corpus_at_uncached(repo: &Repo, branch: &str) -> Result<BTreeMap<String, String>> {
     let rel = ank_relative(repo);
     let mut dirs = vec![format!("{rel}/{}", Store::ENTITIES_DIR)];
@@ -6428,12 +6441,31 @@ fn corpus_at_uncached(repo: &Repo, branch: &str) -> Result<BTreeMap<String, Stri
         }
     }
     let mut found: BTreeMap<String, String> = BTreeMap::new();
+    // **And HEAD's archive tree in the same process** (TASK-1a180fbf2009). The
+    // archive is judged against what HEAD records, and asking for that tree
+    // with a `cat-file -p` of its own, after a `rev-parse` to learn whether
+    // HEAD resolves, cost two processes on every inspection of a corpus that
+    // has closed one task. Asked only where there is an archive to judge.
+    let archive = format!("{rel}/{}", Store::ARCHIVE_DIR);
+    let also: Vec<String> = if repo.ank.join(Store::ARCHIVE_DIR).is_dir() {
+        vec![format!("HEAD:{archive}")]
+    } else {
+        Vec::new()
+    };
+    let (trees, head_archive) = git::trees_at_and(&repo.corpus, branch, &dirs, &also)?;
+    if !also.is_empty() {
+        let at_head: HashMap<String, String> = head_archive
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.is_blob())
+            .map(|e| (format!("{}/{}", Store::ARCHIVE_DIR, e.name), e.object))
+            .collect();
+        HEAD_ARCHIVE.with(|c| c.borrow_mut().insert(repo.corpus.clone(), at_head));
+    }
     // Every layout directory in one process: the order of `dirs` is the order
     // of precedence, and the batch answers in the order it was asked.
-    for entries in git::trees_at(&repo.corpus, branch, &dirs)?
-        .into_iter()
-        .flatten()
-    {
+    for entries in trees.into_iter().flatten() {
         for entry in entries {
             if !entry.is_blob() {
                 continue;
@@ -6469,28 +6501,57 @@ fn blobs_here(repo: &Repo, here: &BTreeMap<String, PathBuf>) -> Result<BTreeMap<
     // set of paths as well as the repository: a caller asking about a different
     // corpus is asking a different question, and the tests do exactly that
     // inside one process.
-    thread_local! {
-        static SEEN: std::cell::RefCell<HashMap<(PathBuf, Vec<String>), BTreeMap<String, String>>> =
-            std::cell::RefCell::new(HashMap::new());
-    }
-    let key = (
-        repo.corpus.clone(),
-        here.keys().cloned().collect::<Vec<_>>(),
-    );
-    if let Some(hit) = SEEN.with(|c| c.borrow().get(&key).cloned()) {
+    let key = blobs_key(repo, here);
+    if let Some(hit) = BLOBS_HERE.with(|c| c.borrow().get(&key).cloned()) {
         return Ok(hit);
     }
     let read = blobs_here_uncached(repo, here)?;
-    SEEN.with(|c| c.borrow_mut().insert(key, read.clone()));
+    BLOBS_HERE.with(|c| c.borrow_mut().insert(key, read.clone()));
     Ok(read)
+}
+
+type BlobsKey = (PathBuf, Vec<String>);
+
+thread_local! {
+    static BLOBS_HERE: std::cell::RefCell<HashMap<BlobsKey, BTreeMap<String, String>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+fn blobs_key(repo: &Repo, here: &BTreeMap<String, PathBuf>) -> BlobsKey {
+    (
+        repo.corpus.clone(),
+        here.keys().cloned().collect::<Vec<_>>(),
+    )
 }
 
 fn blobs_here_uncached(
     repo: &Repo,
     here: &BTreeMap<String, PathBuf>,
 ) -> Result<BTreeMap<String, String>> {
+    Ok(blobs_here_and(repo, here, &[])?.0)
+}
+
+/// What [`blobs_here`] answers, together with the blobs of `also`, more paths
+/// relative to the repository hashed in the **same** `hash-object` process
+/// (TASK-1a180fbf2009). The hot half is kept where [`blobs_here`] finds it, so
+/// the reader that asks next pays nothing.
+fn blobs_here_with(
+    repo: &Repo,
+    here: &BTreeMap<String, PathBuf>,
+    also: &[String],
+) -> Result<Vec<String>> {
+    let (hot, rest) = blobs_here_and(repo, here, also)?;
+    BLOBS_HERE.with(|c| c.borrow_mut().insert(blobs_key(repo, here), hot));
+    Ok(rest)
+}
+
+fn blobs_here_and(
+    repo: &Repo,
+    here: &BTreeMap<String, PathBuf>,
+    also: &[String],
+) -> Result<(BTreeMap<String, String>, Vec<String>)> {
     let ids: Vec<&String> = here.keys().collect();
-    let paths: Vec<String> = here
+    let hot: Vec<String> = here
         .values()
         .map(|p| {
             p.strip_prefix(&repo.corpus)
@@ -6499,10 +6560,11 @@ fn blobs_here_uncached(
                 .replace('\\', "/")
         })
         .collect();
+    let paths: Vec<String> = hot.iter().chain(also).cloned().collect();
     // No paths, no process. `hash-object --stdin-paths` handed an empty stream
     // answers nothing and costs a spawn to do it.
     if paths.is_empty() {
-        return Ok(BTreeMap::new());
+        return Ok((BTreeMap::new(), Vec::new()));
     }
 
     // **One process, whatever the corpus weighs** (TASK-2e2bac895056). This
@@ -6552,11 +6614,15 @@ fn blobs_here_uncached(
             ),
         ));
     }
-    Ok(objects
-        .into_iter()
-        .enumerate()
-        .map(|(n, object)| (ids[n].to_string(), object.to_string()))
-        .collect())
+    let rest: Vec<String> = objects[hot.len()..].iter().map(|o| o.to_string()).collect();
+    Ok((
+        objects[..hot.len()]
+            .iter()
+            .enumerate()
+            .map(|(n, object)| (ids[n].to_string(), object.to_string()))
+            .collect(),
+        rest,
+    ))
 }
 
 /// Whether this repository carries any commit at all.
@@ -6890,27 +6956,80 @@ fn maintain_proofs(
     Ok(())
 }
 
-/// The `.ank/` directory relative to the repository root, `/`-separated, as git
-/// wants it. Usually `.ank`, but the tree need not be laid out that way.
 /// The archived files, among `paths` (relative to `.ank/`), that HEAD carries,
 /// and those of them whose bytes differ from the blob HEAD records for them
 /// (TASK-77df1446260f).
 ///
-/// Two processes whatever the archive weighs (ADR-cc65f1388a71): HEAD's tree
-/// of the archive directory in one `cat-file`, which names the blob of every
-/// file in it, and `hash-object --stdin-paths` for the working copies, which
-/// applies the conversion the commit did, as [`blobs_here`] explains. A file
-/// HEAD does not carry is a move not yet committed, and only the index can
-/// answer for it. Any failure answers nothing: the index digest still stands.
-fn archived_against_head(repo: &Repo, paths: &[String]) -> (BTreeSet<String>, BTreeSet<String>) {
+/// **No process of its own** where the default branch resolves
+/// (TASK-1a180fbf2009, ADR-cc65f1388a71): HEAD's tree of the archive directory
+/// travels in the `cat-file --batch` [`corpus_at`] opens to read that branch,
+/// and the working copies are hashed in the `hash-object --stdin-paths` that
+/// [`blobs_here`] runs over the hot corpus, which applies the conversion the
+/// commit did. Both readings are ones the inspection pays for anyway. Where
+/// the branch does not resolve, HEAD is asked on its own, in the two processes
+/// this used to cost every time. A file HEAD does not carry is a move not yet
+/// committed, and only the index can answer for it. Any failure answers
+/// nothing: the index digest still stands.
+fn archived_against_head(
+    repo: &Repo,
+    branch: Option<&str>,
+    here: &BTreeMap<String, PathBuf>,
+    paths: &[String],
+) -> (BTreeSet<String>, BTreeSet<String>) {
     let none = (BTreeSet::new(), BTreeSet::new());
     let rel = ank_relative(repo);
-    let dir = format!("{rel}/{}", Store::ARCHIVE_DIR);
-    let Ok(Some(listing)) = git::file_at(&repo.corpus, "HEAD", &dir) else {
+    let batched = branch
+        .filter(|b| corpus_at(repo, b).is_ok())
+        .and_then(|_| HEAD_ARCHIVE.with(|c| c.borrow().get(&repo.corpus).cloned()));
+    let shared = batched.is_some();
+    let at_head = match batched {
+        Some(at_head) => at_head,
+        None => {
+            let dir = format!("{rel}/{}", Store::ARCHIVE_DIR);
+            let Ok(Some(listing)) = git::file_at(&repo.corpus, "HEAD", &dir) else {
+                return none;
+            };
+            head_listing(&listing)
+        }
+    };
+    let asked: Vec<&String> = paths.iter().filter(|p| at_head.contains_key(*p)).collect();
+    let carried: BTreeSet<String> = asked.iter().map(|p| p.to_string()).collect();
+    if asked.is_empty() {
+        return (carried, BTreeSet::new());
+    }
+    let files: Vec<String> = asked.iter().map(|p| format!("{rel}/{p}")).collect();
+    let here_now = if shared {
+        // A file `hash-object` cannot open fails the whole process, and the
+        // hot corpus with it. Such a file answered nothing before it shared
+        // the process, and answers nothing now, without costing the hot half
+        // its comparison.
+        if !files.iter().all(|f| repo.corpus.join(f).is_file()) {
+            return none;
+        }
+        blobs_here_with(repo, here, &files)
+    } else {
+        hash_paths(repo, &files)
+    };
+    let Ok(here_now) = here_now else {
         return none;
     };
-    // `<mode> SP <type> SP <object>TAB<name>`, git's tree format as `cat-file
-    // -p` prints it.
+    // One object per path, in order; a disagreement is a framing error, and
+    // pairing on it would attribute one file's hash to another.
+    if here_now.len() != asked.len() {
+        return none;
+    }
+    let changed = asked
+        .into_iter()
+        .zip(here_now)
+        .filter(|(p, object)| at_head.get(*p) != Some(object))
+        .map(|(p, _)| p.clone())
+        .collect();
+    (carried, changed)
+}
+
+/// The blobs of an archive tree as `cat-file -p` prints it, `<mode> SP <type>
+/// SP <object>TAB<name>`, keyed by path under `.ank/`.
+fn head_listing(listing: &str) -> HashMap<String, String> {
     let mut at_head: HashMap<String, String> = HashMap::new();
     for line in listing.lines() {
         let Some((meta, name)) = line.split_once('\t') else {
@@ -6924,42 +7043,34 @@ fn archived_against_head(repo: &Repo, paths: &[String]) -> (BTreeSet<String>, BT
             at_head.insert(format!("{}/{name}", Store::ARCHIVE_DIR), object.to_string());
         }
     }
-    let asked: Vec<&String> = paths.iter().filter(|p| at_head.contains_key(*p)).collect();
-    let carried: BTreeSet<String> = asked.iter().map(|p| p.to_string()).collect();
-    if asked.is_empty() {
-        return (carried, BTreeSet::new());
-    }
-    let input: String = asked.iter().map(|p| format!("{rel}/{p}\n")).collect();
-    let Ok(out) = git::output_with_stdin(
+    at_head
+}
+
+/// `paths`, relative to the repository, hashed in one `hash-object
+/// --stdin-paths`, one object per path in order.
+fn hash_paths(repo: &Repo, paths: &[String]) -> Result<Vec<String>> {
+    let input: String = paths.iter().map(|p| format!("{p}\n")).collect();
+    let out = git::output_with_stdin(
         &repo.corpus,
         &["hash-object", "--stdin-paths"],
         input.as_bytes(),
-    ) else {
-        return none;
-    };
+    )?;
     if !out.status.success() {
-        return none;
+        return Err(CliError::new(
+            ExitCode::Environment,
+            "git hash-object --stdin-paths failed",
+        ));
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let here: Vec<&str> = text
+    Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .collect();
-    // One object per path, in order; a disagreement is a framing error, and
-    // pairing on it would attribute one file's hash to another.
-    if here.len() != asked.len() {
-        return none;
-    }
-    let changed = asked
-        .into_iter()
-        .zip(here)
-        .filter(|(p, object)| at_head.get(*p).map(String::as_str) != Some(*object))
-        .map(|(p, _)| p.clone())
-        .collect();
-    (carried, changed)
+        .map(str::to_string)
+        .collect())
 }
 
+/// The `.ank/` directory relative to the repository root, `/`-separated, as git
+/// wants it. Usually `.ank`, but the tree need not be laid out that way.
 fn ank_relative(repo: &Repo) -> String {
     repo.ank
         .strip_prefix(&repo.corpus)
