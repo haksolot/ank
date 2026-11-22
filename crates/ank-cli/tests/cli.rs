@@ -28445,12 +28445,22 @@ fn kill_pid(pid: u32) {
 /// killed, and the answer is a message naming `case`, what the process had
 /// printed so far and those survivors: the next hang says what it was waiting
 /// on, where the one in run 44943400576 said nothing (TASK-70554fc18369).
+/// What [`bounded_output`] answers when the bound ran out.
+struct Cut {
+    /// The case, what was printed so far and the survivors, for a failure.
+    said: String,
+    /// From the spawn to the moment the bound fired, before the survivors
+    /// were listed and killed: those cost process creations, which a Windows
+    /// runner pays for at a rate no wall can name (CLAUDE.md).
+    at: std::time::Duration,
+}
+
 fn bounded_output(
     mut command: Command,
     case: &str,
     fixture: &Path,
     bound: std::time::Duration,
-) -> Result<Output, String> {
+) -> Result<Output, Cut> {
     use std::io::Read;
     use std::sync::{Arc, Mutex};
 
@@ -28493,6 +28503,7 @@ fn bounded_output(
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 
+    let at = started.elapsed();
     let alive = survivors(child.id(), fixture);
     for p in &alive {
         kill_pid(p.pid);
@@ -28504,7 +28515,7 @@ fn bounded_output(
         .iter()
         .map(|p| format!("  {} (parent {}) {}\n", p.pid, p.ppid, p.args))
         .collect();
-    Err(format!(
+    let said = format!(
         "{case}: no answer after {}s, {}; killed.\n\
          stdout so far:\n{}\nstderr so far:\n{}\n\
          processes alive under the fixture ({}):\n{listed}",
@@ -28516,7 +28527,8 @@ fn bounded_output(
         text(&out),
         text(&err),
         alive.len(),
-    ))
+    );
+    Err(Cut { said, at })
 }
 
 /// A `done` with nothing of [`bounded_output`] standing over it would wait as
@@ -28527,18 +28539,18 @@ fn a_done_that_never_answers_is_cut_at_the_bound_with_what_was_running() {
     let verifiers = "verifiers:\n  first:\n    run: \"sleep 86400\"\n    timeout: 24h\n";
     let r = jobs_fixture(Some(1), verifiers, &["first"]);
     let case = "\"sleep 86400\" (sequential, verifier_jobs 1)";
-    let started = std::time::Instant::now();
-    let said = bounded_output(
+    // Five seconds, so that a loaded runner has spawned sh before the cut;
+    // the listing and the kills after it are not timed.
+    let Cut { said, at } = bounded_output(
         r.ank_invocation("claude-code@ank", &["done"], &r.0),
         case,
         &r.0,
-        std::time::Duration::from_secs(3),
+        std::time::Duration::from_secs(5),
     )
     .expect_err("a done whose verifier sleeps a day answered");
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(10),
-        "the bound took {:?}: {said}",
-        started.elapsed()
+        at < std::time::Duration::from_secs(10),
+        "the bound fired after {at:?}: {said}"
     );
     assert!(said.starts_with(case), "{said}");
     assert!(said.contains("ank had not exited"), "{said}");
@@ -28577,7 +28589,7 @@ fn bounded_done(r: &Repo, case: &str) -> Output {
         &r.0,
         DONE_BOUND,
     )
-    .unwrap_or_else(|why| panic!("{why}"))
+    .unwrap_or_else(|cut| panic!("{}", cut.said))
 }
 
 #[test]
