@@ -812,6 +812,29 @@ impl Index {
         Self::open_as(ank, true)
     }
 
+    /// Runs `read` on this index asked for the archive, and hands it back as
+    /// it was asked (TASK-d0d8b76b413b).
+    ///
+    /// **One opening, widened, rather than a second one.** A verb that already
+    /// holds the index and needs the archive's half of an answer -- `status`
+    /// and `review` through `inspect` -- used to open it again with the
+    /// archive, which is a second connection, a second schema check and a
+    /// second walk of the hot corpus for the one directory the first did not
+    /// walk (ADR-f3d1dea65d84). The refresh here walks the archive with the
+    /// hot corpus it already vouched for, and the flag is put back after, so
+    /// every query the caller makes once `read` returns answers exactly what
+    /// it answered before: archived rows stay invisible to an index not asked
+    /// for them.
+    pub fn with_archive<R>(&mut self, read: impl FnOnce(&Index) -> Result<R>) -> Result<R> {
+        if self.archive {
+            return read(self);
+        }
+        self.archive = true;
+        let answer = self.refresh().and_then(|_| read(self));
+        self.archive = false;
+        answer
+    }
+
     fn open_as(ank: &Path, archive: bool) -> Result<Index> {
         let mut index = Self::open_raw(ank)?;
         index.archive = archive;

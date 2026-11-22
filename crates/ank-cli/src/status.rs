@@ -85,7 +85,7 @@ pub fn run(
         Some(_) => "stays on origin",
     };
 
-    let index = Index::open(&repo.ank)?;
+    let mut index = Index::open(&repo.ank)?;
     let rows = index.all()?;
 
     // **Every live claim in the repository, the caller's and everybody
@@ -378,7 +378,7 @@ pub fn run(
     let verdict = corpus_verdict(
         repo,
         cfg,
-        &index,
+        &mut index,
         &rows,
         &plane,
         default_branch.as_deref(),
@@ -835,7 +835,7 @@ pub fn run(
 fn corpus_verdict(
     repo: &Repo,
     cfg: &Config,
-    index: &Index,
+    index: &mut Index,
     rows: &[Row],
     plane: &context::Plane,
     default_branch: Option<&str>,
@@ -850,7 +850,7 @@ fn corpus_verdict(
     }
     // `prune: false`. A reader does not sanitise the coordination plane
     // underneath everyone else, which is the rule `context` already follows.
-    let report = human::inspect_with(repo, cfg, None, false, remotes)?;
+    let report = human::inspect_with(repo, cfg, None, false, remotes, Some(&mut *index))?;
     let halves = report.clone().halves();
     let verdict = Verdict {
         faults: report.faults(),

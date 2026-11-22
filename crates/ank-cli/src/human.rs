@@ -779,7 +779,7 @@ pub fn check(
         }
         remotes
     });
-    let mut report = inspect_with(repo, cfg, path.as_deref(), !strict, origin)?;
+    let mut report = inspect_with(repo, cfg, path.as_deref(), !strict, origin, None)?;
     check_config_bounds(repo, bounds, &mut report);
     check_verifier_cwds(repo, cfg, &mut report);
     if inv.has("--peers") {
@@ -837,7 +837,7 @@ fn kind_flag(inv: &Invocation) -> Result<Option<Kind>> {
 /// `prune` is a parameter so `review` can reuse the inspection without touching
 /// the coordination plane: reporting is safe from anywhere, deleting is not.
 pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Result<Report> {
-    inspect_with(repo, cfg, path, prune, None)
+    inspect_with(repo, cfg, path, prune, None, None)
 }
 
 /// [`inspect`], handed what origin and `ank` fetch when the caller has already
@@ -846,12 +846,17 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
 /// `status` reads it for a line of its own and for the key its cached verdict
 /// hangs on, and a verb asks git a question once (ADR-cc65f1388a71): `None`
 /// means nobody asked yet, and the inspection asks.
+///
+/// `index` is the one the caller already opened, on the same rule: a verb
+/// opens the index once (TASK-d0d8b76b413b), and `None` means the inspection
+/// opens its own, with the archive, when the corpus holds one.
 pub fn inspect_with(
     repo: &Repo,
     cfg: &Config,
     path: Option<&str>,
     prune: bool,
     remotes: Option<crate::init::Remotes>,
+    index: Option<&mut Index>,
 ) -> Result<Report> {
     let store = Store::new(&repo.ank);
     let mut report = Report::default();
@@ -1059,14 +1064,30 @@ pub fn inspect_with(
     let mut archived_paths: Vec<String> = Vec::new();
     let mut index_changed: BTreeSet<String> = BTreeSet::new();
     if repo.ank.join(Store::ARCHIVE_DIR).is_dir() {
-        let index = Index::open_with_archive(&repo.ank)?;
-        archived_entries = index.archived_entries()?;
-        // Counted only over the whole corpus: a perimeter is decided from a
-        // parsed entity's scope, and an archived one is not parsed here.
-        if path.is_none() {
-            archived_creations = index.archived_creations()?;
-        }
-        for (rel, digest) in index.archived_digests()? {
+        // **The caller's index, widened, when it holds one** (TASK-d0d8b76b413b):
+        // a verb that already opened the index pays no second opening for the
+        // archive's half of the inspection.
+        let read = |index: &Index| -> Result<_> {
+            // Counted only over the whole corpus: a perimeter is decided from
+            // a parsed entity's scope, and an archived one is not parsed here.
+            let creations = if path.is_none() {
+                index.archived_creations()?
+            } else {
+                Vec::new()
+            };
+            Ok((
+                index.archived_entries()?,
+                creations,
+                index.archived_digests()?,
+            ))
+        };
+        let (entries, creations, digests) = match index {
+            Some(index) => index.with_archive(read)?,
+            None => read(&Index::open_with_archive(&repo.ank)?)?,
+        };
+        archived_entries = entries;
+        archived_creations = creations;
+        for (rel, digest) in digests {
             archived_paths.push(rel.clone());
             let Ok(bytes) = std::fs::read(repo.ank.join(&rel)) else {
                 report.findings.push(Finding::fault(
@@ -7124,8 +7145,11 @@ pub fn review(
     out: &mut dyn Write,
 ) -> Result<ExitCode> {
     let path = crate::context::perimeter(inv, repo)?;
-    let report = inspect(repo, cfg, path.as_deref(), false)?;
-    let index = Index::open(&repo.ank)?;
+    // Opened before the inspection and handed to it, so the verb opens the
+    // index once over a corpus holding an archive as over one holding none
+    // (TASK-d0d8b76b413b).
+    let mut index = Index::open(&repo.ank)?;
+    let report = inspect_with(repo, cfg, path.as_deref(), false, None, Some(&mut index))?;
     // Already walked once by `inspect`, above: a second `ls-files` for the same
     // answer would be a process for nothing (ADR-cc65f1388a71's invariance is
     // about the corpus's size, not about asking git the same question twice).

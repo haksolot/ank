@@ -5,7 +5,7 @@ slug: status-and-review-open-the-index-once-in-a-corpu
 title: status and review open the index once in a corpus that holds an archive
 created: 2026-11-21T22:54:53Z
 author: haksolot@vmi3223161
-status: open
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/status.rs
@@ -19,8 +19,57 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
+proof:
+  - type: test
+    ref: local/e3b0c44298fc@633e905
+    tree: scope/392ff8c3bdea
+    criteria: c3b89ad4a43f
+    verifier: fmt-check@695ca51e4ab9
+    via: verifier
+  - type: test
+    ref: local/2d71e13ed8a1@d21f5c8
+    tree: scope/392ff8c3bdea
+    criteria: c3b89ad4a43f
+    verifier: test-ank-core@835b758e7ce5
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-73e2-claim-method
+  - type: test
+    ref: local/ac98e3dd493a@d21f5c8
+    tree: scope/392ff8c3bdea
+    criteria: c3b89ad4a43f
+    verifier: test-ank-contract@0af4f641583a
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-73e2-claim-method
+  - type: test
+    ref: local/e0693ff88389@d21f5c8
+    tree: scope/392ff8c3bdea
+    criteria: c3b89ad4a43f
+    verifier: test-ank-daemon@5bd3959f3ef9
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-73e2-claim-method
+  - type: test
+    ref: local/4ca6eb3b6759@633e905
+    tree: scope/392ff8c3bdea
+    criteria: c3b89ad4a43f
+    verifier: test-ank-mcp@9352d5d025bc
+    via: verifier
+  - type: test
+    ref: local/867721973884@633e905
+    tree: scope/392ff8c3bdea
+    criteria: c3b89ad4a43f
+    verifier: test-ank-tui@d5ab50cd6075
+    via: verifier
+  - type: test
+    ref: local/8a5c48d0030a@633e905
+    tree: scope/392ff8c3bdea
+    criteria: c3b89ad4a43f
+    verifier: test-ank-cli@f3a5da7d2d74
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Issue #832, found by the worker of TASK-ed7990dab03c on 2026-11-21 and measured on a lab corpus, index opens before and after one `ank close`:
