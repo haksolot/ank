@@ -9,7 +9,9 @@ identity](claims.md).
 
 ## What the agent is taught
 
-`skill/SKILL.md` is the contract an agent loads, and six siblings sit beside it.
+The contract is what `ank skills ank` prints, and the installed stub,
+`skill/SKILL.md`, tells an agent to run it. Six siblings sit beside the
+contract, and `ank skills <name>` prints each.
 Five carry a policy each, planning, drift audit, the autonomous loop, test-first
 implementation and diagnosis, loaded when the activity calls for them. The sixth,
 `ank-herdr`, teaches the agent that runs the others from a herdr-core terminal rather than
@@ -136,7 +138,7 @@ one place the planes touch is `accept`, and it touches them by writing a ref,
 
 ## Running agents from herdr
 
-`skill/herdr` (`ank-herdr`) is the policy for running this page from a single
+`skill/herdr.md` (`ank-herdr`) is the policy for running this page from a single
 orchestrating agent inside a herdr-core terminal
 (ADR-2fc9b88cc0bd). The orchestrator claims nothing: it reads `ank context`,
 `ank graph` and `ank status`, names the pairs of ready tasks whose scopes

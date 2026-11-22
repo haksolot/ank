@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "0daa79d2dda5"
+  revision: "61e3f7298630"
 ---
 
 # ank
@@ -39,9 +39,10 @@ This file is the contract. Each activity has a skill of its own that carries the
     ank-diagnose work a defect back to its cause, and close it with a regression test
     ank-herdr    orchestrate several agents in parallel from a herdr-core terminal
 
-Load them when the activity calls for them. A claimed task may name its method,
-the one to load before the first edit, and `ank context` prints it beneath the
-criterion. Everything below suffices on its own to execute work.
+`ank skills <name>` prints each one when the activity calls for it, `ank
+skills tdd` for ank-tdd. A claimed task may name its method: `ank claim` prints
+its text after the criterion, and `ank context` names the command that prints
+it again. Everything below suffices on its own to execute work.
 
 ## The verbs
 
@@ -141,5 +142,5 @@ Exit codes carry meaning, and errors always name the exact next command:
 
     npx skills add haksolot/ank
 
-The skill says how to use ank; it does not install the binary. Releases carry
+That installs a stub naming `ank skills ank`; it does not install the binary. Releases carry
 one for Linux, macOS and Windows.

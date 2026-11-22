@@ -49,11 +49,13 @@ cutting it into tickets, driving the implementation test-first, reviewing before
 merge. The skill is the method, and the agent is held to it while it works.
 
 Ank ships methods too, and holds the other end of them. Seven skills travel
-inside the binary, built from `skill/`: the contract every agent loads, in
-`skill/SKILL.md`, and six siblings beside it, in `skill/*/SKILL.md`. Five of
-them teach one activity of the work each, in `skill/plan`, `skill/drift`,
-`skill/loop`, `skill/tdd` and `skill/diagnose`, and `skill/herdr` teaches the
-agent orchestrating the others from a herdr-core terminal. A task may name any
+inside the binary, built from `skill/`: the contract every agent reads, in
+`skill/ank.md`, and six siblings beside it, in `skill/<name>.md`. Five of
+them teach one activity of the work each, in `skill/plan.md`, `skill/drift.md`,
+`skill/loop.md`, `skill/tdd.md` and `skill/diagnose.md`, and `skill/herdr.md`
+teaches the agent orchestrating the others from a herdr-core terminal. The one
+file installed is `skill/SKILL.md`, a stub that names `ank skills ank`, so the
+text an agent follows comes from the binary it runs. A task may name any
 sibling, and planning designates one of the five. `ank new --method tdd` writes the designation into it, `ank claim`
 prints the sibling's text after the criterion, `ank context` names it with the
 command that prints it, `ank skills tdd`, and `ank skills` counts designations
@@ -74,15 +76,15 @@ not ship writes a skill for it, and ank still verifies only the outcome.
 
 ## What it costs to run
 
-Two numbers, each beside its source. The seven skills cost 334 tokens in every
-session, which is their frontmatter: the `name` and `description` a harness keeps
-loaded from the start, the body being read when a skill is invoked. That is 38
-tokens for the contract and 41 to 57 for each sibling, counted with `cl100k_base`
-over the seven `SKILL.md` under `skill/` by this command, run at the root of the
+Two numbers, each beside its source. The installed stub costs 38 tokens in
+every session, which is its frontmatter: the `name` and `description` a harness
+keeps loaded from the start, the body being read when the skill is invoked. The
+contract and the methods add nothing to that, because the binary prints them on
+demand. Counted with `cl100k_base` by this command, run at the root of the
 repository with `tiktoken` installed:
 
 ```sh
-python3 -c 'import glob,re,tiktoken; e=tiktoken.get_encoding("cl100k_base"); n=[len(e.encode("".join(re.findall(r"^(?:name|description): .*\n", open(p).read().split("---\n")[1], re.M)))) for p in ["skill/SKILL.md", *sorted(glob.glob("skill/*/SKILL.md"))]]; print(n, sum(n))'
+python3 -c 'import re,tiktoken; e=tiktoken.get_encoding("cl100k_base"); print(len(e.encode("".join(re.findall(r"^(?:name|description): .*\n", open("skill/SKILL.md").read().split("---\n")[1], re.M)))))'
 ```
 
 And orientation is bounded at 8000 characters, the `context_budget` that

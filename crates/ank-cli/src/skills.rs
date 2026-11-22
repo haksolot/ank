@@ -49,11 +49,10 @@ pub const NONE: &str =
 /// The names a task's `method` may hold: one per sibling skill this binary
 /// carries, and never the contract (§3, ADR-a8f9c603a0e7).
 ///
-/// **The name is the sibling's directory under `skill/`**, `tdd` for
+/// **The name is the sibling's file under `skill/`**, `tdd` for
 /// `skill/tdd.md`, and not the `ank-tdd` its frontmatter declares. It is
 /// derived here from the frontmatter, which is what [`Embedded`] carries: every
-/// sibling is named `ank-<directory>`, which the Agent Skills format and the
-/// plugin manifest both hold it to, so stripping the prefix gives the directory
+/// sibling is named `ank-<file stem>`, so stripping the prefix gives the file
 /// back without a second list to keep in step. The contract is `ank` with no
 /// prefix to strip, and it is not a method: it is the skill every session
 /// loads, and a recommendation that names it recommends nothing.
@@ -665,15 +664,15 @@ mod tests {
     }
 
     /// What the binary carries, measured against the tree it was built from:
-    /// one method per sibling directory under `skill/`, and the contract none.
+    /// one method per `skill/<name>.md` but the contract and the stub.
     #[test]
-    fn the_methods_are_the_sibling_directories_and_never_the_contract() {
+    fn the_methods_are_the_sibling_files_and_never_the_contract() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skill");
         let mut dirs: Vec<String> = std::fs::read_dir(&root)
             .unwrap()
-            .map(|e| e.unwrap().path())
-            .filter(|p| p.join("SKILL.md").is_file())
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter_map(|n| n.strip_suffix(".md").map(str::to_string))
+            .filter(|n| n != "SKILL" && n != "ank")
             .collect();
         dirs.sort();
         assert!(!dirs.is_empty(), "no sibling under {}", root.display());

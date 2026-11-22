@@ -99,7 +99,7 @@ Whichever you took, check it answers:
 
 Three components: the version, the commit it was built from, and **the revision
 of the skill it was built alongside**. The commit tells you whether your binary
-predates the behaviour you are reading about. The revision is the value `skill/SKILL.md` carries under
+predates the behaviour you are reading about. The revision is the value the installed stub, `skill/SKILL.md`, carries under
 `metadata.revision`, so an agent that has loaded the skill can compare it with
 the one its tool prints, and see for itself that its instructions predate its
 binary. Worth checking when the skill came from a clone and the binary from a
@@ -216,30 +216,30 @@ is [`ANK_UPDATE_REPOSITORY`](environment.md#ank_update_repository).
 
 ## The skills
 
-Seven plain markdown files, one per skill, each the only copy in git. Every
-route below points at it, or, for the binary, carries the copy its build read,
-so nobody keeps a second copy in step by hand.
+One file is installed, `skill/SKILL.md`, a stub of about twenty lines. It
+carries the description that makes a harness load it in a repository holding
+`.ank/`, and one instruction: run `ank skills ank` and read what it prints. The
+binary serves the rest, so an installed copy holds nothing a release changes.
 
-    ank           skill/SKILL.md           the contract
-    ank-plan      skill/plan/SKILL.md      interview a goal into ADRs, specs and tasks
-    ank-drift     skill/drift/SKILL.md     audit decisions against the code
-    ank-loop      skill/loop/SKILL.md      work the backlog autonomously
-    ank-tdd       skill/tdd/SKILL.md       drive an implementation test-first
-    ank-diagnose  skill/diagnose/SKILL.md  work a defect back to its cause
-    ank-herdr     skill/herdr/SKILL.md     orchestrate several agents from a herdr-core terminal
+Seven skills live under `skill/` as plain markdown, each the only copy in git,
+and the build embeds them all:
 
-[`skill/SKILL.md`](https://github.com/haksolot/ank/blob/main/skill/SKILL.md) is
-the one an agent loads by default, and it stands alone: why ank is shaped as it
-is, the verbs grouped by the moment each is used, and the rules that bind every
-agent. It names each sibling so an agent reaching for an activity knows what to
-load, and works whether or not they are installed. The five activity policies,
+    ank           skill/ank.md       the contract
+    ank-plan      skill/plan.md      interview a goal into ADRs, specs and tasks
+    ank-drift     skill/drift.md     audit decisions against the code
+    ank-loop      skill/loop.md      work the backlog autonomously
+    ank-tdd       skill/tdd.md       drive an implementation test-first
+    ank-diagnose  skill/diagnose.md  work a defect back to its cause
+    ank-herdr     skill/herdr.md     orchestrate several agents from a herdr-core terminal
+
+The contract is why ank is shaped as it is, the verbs grouped by the moment each
+is used, and the rules that bind every agent. The five activity policies,
 `ank-plan`, `ank-drift`, `ank-loop`, `ank-tdd` and `ank-diagnose`, carry one
-activity each and load when it calls for them. The sixth sibling, `ank-herdr`,
-is for the agent that runs the others: its description triggers only inside a
-herdr-core terminal. What an agent does with them once installed is [Multi-agent
-work](multi-agent.md).
+activity each, and `ank claim` prints the one a task names after its criterion.
+`ank-herdr` is for the agent that runs the others, inside a herdr-core terminal.
+What an agent does with them is [Multi-agent work](multi-agent.md).
 
-The routes:
+The routes for the stub:
 
     ank skills --install                      from the binary you installed, nothing cloned
     npx skills add haksolot/ank               a machine with node and no ank
@@ -248,27 +248,25 @@ The routes:
 
 ### From the binary
 
-The build embeds the seven files, so the binary in your hand already carries the
-skills written for it. `ank skills` lists them, with the revision each file
-declares. The revisions below are the ones this page was written against; yours
-are whatever `ank --version` names:
+`ank skills` lists the seven skills the build embeds, with the revision each
+file declares. The revisions below are the ones this page was written against;
+yours are whatever your build read:
 
 <!-- replay bare -->
 
     $ ank skills
-    ank           0d916cc3d9a5  Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
-    ank-diagnose  b5d9c0b96462  Work a defect back to its cause before changing anything, and close it with a regression test. Use when a claimed task's criterion names a defect in a repository with a .ank/ directory.
+    ank           61e3f7298630  Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
+    ank-diagnose  98cd5d5badff  Work a defect back to its cause before changing anything, and close it with a regression test. Use when a claimed task's criterion names a defect in a repository with a .ank/ directory.
     ank-drift     36cf5808e95e  Audit the decisions in .ank/ against the current code and report what no longer holds. Use when asked whether ADRs, specs, or tasks are still accurate, after a milestone, or when the corpus and the code seem to disagree.
-    ank-herdr     a0567f7f382a  Orchestrate several ank agents in parallel, each on its own task, worktree and branch. Use only inside a herdr-core terminal, when asked to fan ank tasks out across agents in a repository with a .ank/ directory.
-    ank-loop      9f00f607cdb8  Work through the open tasks in .ank/ without supervision, one claim at a time. Use when asked to work the backlog, chain tasks, or run autonomously in a repository with a .ank/ directory.
-    ank-plan      83130b664c7e  Interview a goal into decisions and tasks recorded in .ank/. Use when someone brings a feature, change, or problem to plan before implementation in a repository with a .ank/ directory.
-    ank-tdd       96d151e6812e  Drive an implementation test-first, red before green, against a claimed task's frozen criterion. Use when implementing a task in a repository with a .ank/ directory.
+    ank-herdr     0bce41153716  Orchestrate several ank agents in parallel, each on its own task, worktree and branch. Use only inside a herdr-core terminal, when asked to fan ank tasks out across agents in a repository with a .ank/ directory.
+    ank-loop      1e28b752916a  Work through the open tasks in .ank/ without supervision, one claim at a time. Use when asked to work the backlog, chain tasks, or run autonomously in a repository with a .ank/ directory.
+    ank-plan      34bbc5f04464  Interview a goal into decisions and tasks recorded in .ank/. Use when someone brings a feature, change, or problem to plan before implementation in a repository with a .ank/ directory.
+    ank-tdd       5c0133123d36  Drive an implementation test-first, red before green, against a claimed task's frozen criterion. Use when implementing a task in a repository with a .ank/ directory.
 
 One line per file: the name, the revision that file declares, and the whole
-description. The revisions are the build's, which is what makes them comparable
-with the one `--version` printed. Run inside a corpus, the same verb prints a
-second block under that listing, which [Multi-agent
-work](multi-agent.md#the-methods-a-corpus-uses) reads.
+description. Run inside a corpus, the same verb prints a second block under that
+listing, which [Multi-agent work](multi-agent.md#the-methods-a-corpus-uses)
+reads.
 
 `ank skills <name>` prints one of them whole, by the name in that first column or
 without its `ank-` prefix: `ank skills ank` is the contract, `ank skills tdd` the
@@ -277,20 +275,19 @@ contract lists verbs it prints the lines `ank help` prints for them, so the tabl
 has one source, and it names `ank-herdr` inside a herdr-core terminal, where
 `HC_TERMINAL_ID` is set. `ank help` ends on the line naming it.
 
-`ank skills --install` writes them into a new directory under the temporary
-directory and hands that directory to the `skills` CLI below, without asking:
-the flag is the consent. It prints two lines of its own, `wrote 7 skills to
-<directory>` and `running: npx skills add <directory> -y`; everything after them
-is the `skills` CLI's own report of the seven skills it found and where it
-linked each one. The `-y` answers that CLI's question of which skills and which
-agents: all of them, from an agent's session or from your own terminal alike.
+`ank skills --install` writes the stub, as `ank/SKILL.md`, into a new directory
+under the temporary directory and hands that directory to the `skills` CLI
+below, without asking: the flag is the consent. It prints two lines of its own,
+`wrote the ank skill to <directory>` and `running: npx skills add <directory>
+-y`; everything after them is the `skills` CLI's own report of where it linked
+the stub. The `-y` answers that CLI's question of which agents: all of them,
+from an agent's session or from your own terminal alike.
 
-The files are the binary's, so they match the build `ank --version` names.
-`npx` itself goes online to fetch the `skills` CLI the first
-time it has none cached. That CLI installs copies into `.agents/skills` of the
-directory it ran from, and they outlive the temporary
-directory. Without `npx` on your `PATH`, the verb prints the directory it wrote
-and the command to run later, and exits 0.
+`npx` itself goes online to fetch the `skills` CLI the first time it has none
+cached. That CLI installs copies into `.agents/skills` of the directory it ran
+from, and they outlive the temporary directory. Without `npx` on your `PATH`,
+the verb prints the directory it wrote and the command to run later, and exits
+0.
 
 ### The `skills` CLI
 
@@ -300,15 +297,14 @@ to a single copy. Ask it what it found before you let it install:
 
     npx skills add haksolot/ank --list
 
-It clones the repository and lists the seven skills it found, each with its
-description. Drop `--list` to install them all, or name one with `--skill`. That
-route installs the skills and leaves the binary to you.
+It clones the repository and lists the stub, the one file under `skill/` named
+`SKILL.md`. That route installs the stub and leaves the binary to you, and the
+stub then asks for a binary to run.
 
-This is the widest route and the least anchored one. It finds the skills through
-its own recursive scan, since `skill/` is outside the directories it looks in by
-name, so it works because the fallback works. If a future version of that CLI
-narrows its search, this route breaks first, and the hand copy below is the
-answer.
+It finds the stub through its own recursive scan, since `skill/` is outside the
+directories it looks in by name, so it works because the fallback works. If a
+future version of that CLI narrows its search, this route breaks first, and the
+hand copy below is the answer.
 
 ### Claude Code, as a plugin
 
@@ -317,34 +313,24 @@ This repository serves as its own marketplace:
     /plugin marketplace add haksolot/ank
     /plugin install ank@ank
 
-Then ask what it costs, the question worth asking of anything loaded on every
-session:
+The manifest lists `./skill` and no other directory, so the plugin carries the
+stub alone. Ask what it costs, the question worth asking of anything loaded on
+every session:
 
     claude plugin details ank
 
-It prints the plugin's component inventory, the seven skills and zero agents,
-hooks or servers, then a projected token cost per skill, split into always-on
-and on-invoke. Nothing of the plugin runs unless you call `ank` yourself, and
-the counts are estimates that move with the skill files and with whatever does
-the counting.
-
-**Read the two columns as what they are.** Always-on is one description per
-skill, paid by every session whether or not anything fires; on-invoke is a body,
-paid by the session that wanted it. Splitting the teaching moved cost from the
-second column to the first: an agent executing a task skips the planning
-policy, and every session pays a little more to know the policies exist. The
-ceiling on the bodies holds anyway, because the by-hand route copies whole files
-into harnesses that may load all of it every session.
+It prints the plugin's component inventory and a projected token cost, split
+into always-on and on-invoke. Always-on is the stub's description, paid by every
+session; on-invoke is its body, paid by the session that wanted it, and the
+contract it names is paid for when `ank skills ank` runs. Nothing of the plugin
+runs unless you call `ank` yourself, and the counts are estimates that move with
+the files and with whatever does the counting.
 
 ### By hand
 
-Each skill is one file with nothing generated in it. Where no route above fits
-your harness, copy `skill/SKILL.md` into whatever it loads and you have lost
-nothing. Copy
-`skill/plan/SKILL.md`, `skill/drift/SKILL.md`, `skill/loop/SKILL.md`,
-`skill/tdd/SKILL.md` and `skill/diagnose/SKILL.md` beside it for the activity
-policies, and `skill/herdr/SKILL.md` for orchestrating agents from a herdr-core terminal,
-or keep the contract alone, which stands on its own.
+Where no route above fits your harness, copy `skill/SKILL.md` into whatever it
+loads. It holds nothing generated, and everything it points at comes from the
+binary.
 
 ## The Claude Code hook
 
