@@ -28346,7 +28346,7 @@ struct Proc {
 /// `ps` on Unix, `Win32_Process` on Windows.
 fn process_table() -> Vec<Proc> {
     #[cfg(windows)]
-    let out = Command::new("powershell")
+    let out = spawn("powershell")
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -28357,7 +28357,7 @@ fn process_table() -> Vec<Proc> {
         .stdin(Stdio::null())
         .output();
     #[cfg(not(windows))]
-    let out = Command::new("ps")
+    let out = spawn("ps")
         .args(["-A", "-o", "pid=", "-o", "ppid=", "-o", "args="])
         .stdin(Stdio::null())
         .output();
@@ -28422,14 +28422,14 @@ fn survivors(root: u32, fixture: &Path) -> Vec<Proc> {
 
 fn kill_pid(pid: u32) {
     #[cfg(windows)]
-    let _ = Command::new("taskkill")
+    let _ = spawn("taskkill")
         .args(["/T", "/F", "/PID", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
     #[cfg(not(windows))]
-    let _ = Command::new("kill")
+    let _ = spawn("kill")
         .args(["-KILL", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
