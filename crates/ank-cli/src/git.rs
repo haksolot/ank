@@ -1699,19 +1699,38 @@ impl TreeEntry {
 /// the one the header's own object name states in hex, which keeps a SHA-256
 /// repository read as correctly as a SHA-1 one.
 pub fn trees_at(cwd: &Path, rev: &str, paths: &[String]) -> Result<Vec<Option<Vec<TreeEntry>>>> {
-    if paths.is_empty() {
-        return Ok(Vec::new());
+    Ok(trees_at_and(cwd, rev, paths, &[])?.0)
+}
+
+/// [`trees_at`], and in the same process the trees `also` names, each spelt
+/// `<rev>:<path>` in full (TASK-1a180fbf2009).
+///
+/// Only `rev` is resolved first. A name in `also` whose revision does not
+/// resolve -- `HEAD` on an unborn branch -- is a path git reports missing, so
+/// it answers `None` like any absent path and costs no `rev-parse` of its own:
+/// a caller that needs to tell the two apart asks [`trees_at`] instead.
+pub fn trees_at_and(
+    cwd: &Path,
+    rev: &str,
+    paths: &[String],
+    also: &[String],
+) -> Result<(Vec<Option<Vec<TreeEntry>>>, Vec<Option<Vec<TreeEntry>>>)> {
+    if paths.is_empty() && also.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
     }
-    if !resolves(cwd, rev)? {
+    if !paths.is_empty() && !resolves(cwd, rev)? {
         return Err(CliError::new(
             ExitCode::Environment,
             format!("branch {rev} not found in this repository"),
         )
         .with_hint(format!("git fetch origin {rev}")));
     }
-    let names: Vec<String> = paths.iter().map(|p| format!("{rev}:{p}")).collect();
-    let answers = cat_file_batch_raw(cwd, &names)?;
-    Ok(answers
+    let names: Vec<String> = paths
+        .iter()
+        .map(|p| format!("{rev}:{p}"))
+        .chain(also.iter().cloned())
+        .collect();
+    let mut answers: Vec<Option<Vec<TreeEntry>>> = cat_file_batch_raw(cwd, &names)?
         .into_iter()
         .map(|answer| match answer {
             Some((object, kind, body)) if kind == "tree" => {
@@ -1719,7 +1738,12 @@ pub fn trees_at(cwd: &Path, rev: &str, paths: &[String]) -> Result<Vec<Option<Ve
             }
             _ => None,
         })
-        .collect())
+        .collect();
+    // A batch that failed outright answers nothing at all; aligned, the two
+    // halves are then both empty of answers rather than shifted.
+    answers.resize(names.len(), None);
+    let rest = answers.split_off(paths.len());
+    Ok((answers, rest))
 }
 
 /// The entries of a raw tree object whose hashes are `hash_len` bytes long.

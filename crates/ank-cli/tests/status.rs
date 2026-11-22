@@ -1744,3 +1744,140 @@ fn five_worktrees_under_five_identities_are_arbitrated_and_counted_at_level_0() 
 fn five_worktrees_under_five_identities_are_arbitrated_and_counted_at_level_1_over_file() {
     the_plane_under_concurrency(Level::One);
 }
+
+/// A corpus whose first task was claimed and closed through the binary, so
+/// that `done` moved its entries into `.ank/archive/entities/`, and the close
+/// committed: the state every corpus that has closed one task is in
+/// (ADR-302efb9c5e40).
+fn with_a_committed_archive() -> Corpus {
+    let c = Corpus::new();
+    let head = c.git(&["rev-parse", "HEAD"]);
+    let task = id(0);
+    for args in [
+        vec!["claim", task.as_str()],
+        vec!["log", task.as_str(), "a first note"],
+        vec!["log", task.as_str(), "a second note"],
+        vec!["done", "--proof", &format!("commit:{head}")],
+    ] {
+        let out = c.ank(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "ank {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    c.git(&["add", "-A"]);
+    c.git(&["commit", "-qm", "close"]);
+    c
+}
+
+/// The archived files, relative to the repository, in name order.
+fn archived_files(c: &Corpus) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(c.0.join(".ank/archive/entities"))
+        .expect("done archives the entries of the task it ends")
+        .map(|e| e.unwrap().path())
+        .collect();
+    found.sort();
+    found
+}
+
+/// `check` judges the archive against HEAD in the processes it already starts
+/// (TASK-1a180fbf2009).
+///
+/// HEAD's tree of the archive directory used to be one `cat-file -p` of its
+/// own, and the archived files one `hash-object --stdin-paths` beside the one
+/// that hashes the hot corpus, both after a `rev-parse --verify HEAD^{commit}`
+/// asked only to learn whether HEAD resolves: 19 processes on this fixture at
+/// 53a7db54, and 16 once the tree travels in the `cat-file --batch` that reads
+/// the default branch, where an unborn HEAD is a path reported missing, and the
+/// archived paths in the hot ones' `hash-object`.
+#[test]
+fn check_judges_the_archive_against_head_in_the_processes_it_already_starts() {
+    let c = with_a_committed_archive();
+    assert!(
+        archived_files(&c).len() >= 3,
+        "the fixture archives the task's entries"
+    );
+    c.json(&["check", "--json"]);
+    let (started, _) = c.git_processes(&["check", "--json"]);
+    let count = |p: &dyn Fn(&str) -> bool| started.iter().filter(|a| p(a)).count();
+    assert_eq!(
+        count(&|a| a.starts_with("cat-file -p HEAD:")),
+        0,
+        "HEAD's archive tree is read in the batch already open: {started:#?}"
+    );
+    assert_eq!(
+        count(&|a| a == "hash-object --stdin-paths"),
+        1,
+        "the archived paths are hashed with the hot ones: {started:#?}"
+    );
+    assert_eq!(
+        count(&|a| a.starts_with("rev-parse --verify --quiet 'HEAD^{commit}'")),
+        0,
+        "whether HEAD resolves is the batch's answer: {started:#?}"
+    );
+    assert_eq!(started.len(), 16, "check: the git processes {started:#?}");
+}
+
+/// An archived file altered and another deleted in the work tree are judged as
+/// they were before the archive travelled in the batches (TASK-1a180fbf2009),
+/// on the default branch, with a default branch that names no commit, and on
+/// an unborn HEAD: the two states where HEAD's tree used to be asked after a
+/// `rev-parse` of its own, and is now a path the batch reports missing or is
+/// asked on its own. Each stdout is a literal measured on 53a7db54, the
+/// altered file's name aside, which is an identifier minted per run.
+#[test]
+fn an_archived_file_altered_and_one_deleted_are_the_findings_they_were() {
+    let c = with_a_committed_archive();
+    // Once, so the closed task's claim ref is pruned and what follows reads
+    // one plane.
+    c.json(&["check", "--json"]);
+    let files = archived_files(&c);
+    let name = files[0].file_name().unwrap().to_string_lossy().to_string();
+    let mut altered = std::fs::read_to_string(&files[0]).unwrap();
+    altered.push_str("edited after the close\n");
+    std::fs::write(&files[0], altered).unwrap();
+    std::fs::remove_file(&files[1]).unwrap();
+    let check = |c: &Corpus| {
+        c.json(&["check", "--json"])
+            .replace(&name, "<altered>")
+            .trim_end()
+            .to_string()
+    };
+    let changed = r#"{"level":"fault","kind":"archive-changed","subject":"archive/entities/<altered>","message":"archived file changed: its bytes no longer match the blob HEAD holds, and an archived entity is never edited (git checkout -- .ank/archive/entities/<altered> restores it)","note":[],"charge":[],"owed":true}"#;
+    let unattested = r#"{"level":"signal","kind":"unattested-proof","subject":"TASK-100000000000","message":"done with no test proof: nothing external anchors it (ank attest TASK-100000000000 --proof test:<run-id> --detached)","note":[],"charge":[],"owed":true}"#;
+    let authorless = r#"{"level":"signal","kind":"authorless","subject":"corpus","message":"8 entities predate the author field: the burst and self-blocking signals skip them","note":[],"charge":[],"owed":false}"#;
+    let signers = r#"{"level":"signal","kind":"no-signers","subject":"signers","message":"no ratification key declared: permissions are advisory, not enforced (§8)","note":[],"charge":[],"owed":false}"#;
+    let uncompared = r#"{"level":"signal","kind":"drift-uncompared","subject":"corpus","message":"nosuch names no commit here, so this corpus was not compared against the default branch (git fetch origin nosuch)","note":[],"charge":[],"owed":true}"#;
+    let head = r#"{"contract":1,"faults":1,"signals":3,"unowed":2,"tasks":8,"adr":0,"hot_files":8,"plane_bytes":0,"pruned":[],"findings":["#;
+
+    assert_eq!(
+        check(&c),
+        format!("{head}{changed},{unattested},{authorless},{signers}]}}"),
+        "on the default branch"
+    );
+
+    let config = c.0.join(".ank/config.yml");
+    let main = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        main.replace("default_branch: main", "default_branch: nosuch"),
+    )
+    .unwrap();
+    assert_eq!(
+        check(&c),
+        format!("{head}{changed},{authorless},{uncompared},{signers}]}}"),
+        "with a default branch that names no commit"
+    );
+    std::fs::write(&config, &main).unwrap();
+
+    c.git(&["symbolic-ref", "HEAD", "refs/heads/unborn"]);
+    // HEAD carries no tree, so only the index answers for the archive.
+    let by_index = changed.replace("the blob HEAD holds", "the digest the index holds");
+    assert_eq!(
+        check(&c),
+        format!("{head}{by_index},{unattested},{authorless},{signers}]}}"),
+        "on an unborn HEAD"
+    );
+}
