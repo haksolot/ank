@@ -7,7 +7,6 @@ created: 2026-10-02T12:39:28Z
 author: claude-code/opus-5.5+plan
 status: done
 scope:
-  - skill/herdr/**
   - crates/ank-cli/tests/skill.rs
   - crates/ank-cli/tests/golden-json/skills.json
   - .claude-plugin/plugin.json
@@ -15,6 +14,7 @@ scope:
   - docs/install.md
   - docs/alternatives.md
   - CLAUDE.md
+  - skill/herdr.md
 blocked_by: []
 done_criteria: |
   skill/herdr/SKILL.md exists with name ank-herdr, a metadata.revision equal to its body hash, a description under 300 characters that names the herdr pane as its only trigger, and a body within 180 lines and 1500 words. Through the binary, ank skills lists ank-herdr with that revision, and ank skills --install writes it beside the other siblings. A test in skill.rs holds the body to a line for each of these points: stop unless HERDR_ENV is 1; herdr's syntax comes from herdr --skill; the orchestrator claims nothing and records no load; only ready tasks with disjoint scopes run together, read from ank context, ank graph and ank status, and colliding pairs are named; one worktree, branch and ANK_AGENT per worker, with ANK_AGENT and TMPDIR exported in the pane before the agent starts; a worker told to wait stops, and needs a new prompt once its blocker lands; branches land one at a time; a worker's worktree is removed when its branch has landed; accept is described and never invited. The existing sibling tests (revision, one page, defers to the contract, no load recorded, plugin manifest) pass with herdr among the siblings. .claude-plugin/plugin.json lists ./skill/herdr, and docs/multi-agent.md, docs/install.md, docs/alternatives.md and CLAUDE.md name the sixth sibling.
@@ -35,7 +35,7 @@ proof:
     verifier: fmt-check@5ca6d10bcd55
     via: verifier
 schema: 4
-version: 3
+version: 4
 ---
 
 Under ADR-55449b7f4f8f, which amends ADR-e4a5a8873fe3.
