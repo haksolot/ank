@@ -255,7 +255,7 @@ yours are whatever your build read:
 <!-- replay bare -->
 
     $ ank skills
-    ank           61e3f7298630  Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
+    ank           94a3d055fc30  Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
     ank-diagnose  98cd5d5badff  Work a defect back to its cause before changing anything, and close it with a regression test. Use when a claimed task's criterion names a defect in a repository with a .ank/ directory.
     ank-drift     36cf5808e95e  Audit the decisions in .ank/ against the current code and report what no longer holds. Use when asked whether ADRs, specs, or tasks are still accurate, after a milestone, or when the corpus and the code seem to disagree.
     ank-herdr     0bce41153716  Orchestrate several ank agents in parallel, each on its own task, worktree and branch. Use only inside a herdr-core terminal, when asked to fan ank tasks out across agents in a repository with a .ank/ directory.

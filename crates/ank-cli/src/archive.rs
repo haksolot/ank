@@ -17,7 +17,6 @@
 
 use crate::cli::{Invocation, Result};
 use crate::config::Config;
-use crate::git;
 use crate::index::Index;
 use crate::json::Obj;
 use crate::repo::Repo;
@@ -47,21 +46,14 @@ pub struct Hot<'a> {
 /// accepted amendment names it** (ADR-9ee76b578257): an amendment leaves the ADR
 /// it amends binding for everything it does not touch, and moving that ADR out
 /// of the hot corpus would leave the amendment naming a file nobody reads. An
-/// entry is
-/// cold when its subject is: a superseded document, a task done on the default
-/// branch, or an entity the archive already holds, since an entry never
-/// outlives its subject in the hot corpus. A task is never cold.
+/// entry is cold when its subject is: a superseded document, a task done or
+/// closed **in this tree**, or an entity the archive already holds, since an
+/// entry never outlives its subject in the hot corpus. A task is never cold.
 ///
-/// `done_on_default` answers for a task only, and is asked only of a task this
-/// working tree already reads as done and that some entry is about: a task done
-/// here and not yet on the default branch has entries that are still being
-/// read where the work is, and asking the branch about every task would be a
-/// question per entity.
-pub fn cold(
-    hot: &[Hot],
-    archived: &BTreeSet<String>,
-    done_on_default: &dyn Fn(&EntityId) -> bool,
-) -> Vec<EntityId> {
+/// No branch is asked (ADR-302efb9c5e40): the entry and the status that makes
+/// it cold travel in one change, so every tree is consistent with itself, and
+/// `done` and `close` move what this rule names in the act that makes it cold.
+pub fn cold(hot: &[Hot], archived: &BTreeSet<String>) -> Vec<EntityId> {
     let amended: BTreeSet<&EntityId> = hot
         .iter()
         .filter(|h| h.kind == EntityKind::Adr && h.status == "accepted")
@@ -74,13 +66,11 @@ pub fn cold(
         .filter(|h| !amended.contains(h.id))
         .map(|h| h.id)
         .collect();
-    let done_here: BTreeSet<&EntityId> = hot
+    let finished: BTreeSet<&EntityId> = hot
         .iter()
-        .filter(|h| h.kind == EntityKind::Task && h.status == "done")
+        .filter(|h| h.kind == EntityKind::Task && matches!(h.status, "done" | "closed"))
         .map(|h| h.id)
         .collect();
-    let mut finished: BTreeSet<&EntityId> = BTreeSet::new();
-    let mut asked: BTreeSet<&EntityId> = BTreeSet::new();
     let mut out: Vec<EntityId> = documents.iter().map(|id| (*id).clone()).collect();
     for entry in hot.iter().filter(|h| h.kind == EntityKind::Log) {
         let Some(subject) = entry.about else {
@@ -88,12 +78,7 @@ pub fn cold(
         };
         let subject_cold = documents.contains(subject)
             || archived.contains(&subject.to_string())
-            || (done_here.contains(subject) && {
-                if asked.insert(subject) && done_on_default(subject) {
-                    finished.insert(subject);
-                }
-                finished.contains(subject)
-            });
+            || finished.contains(subject);
         if subject_cold {
             out.push(entry.id.clone());
         }
@@ -102,22 +87,7 @@ pub fn cold(
     out
 }
 
-/// The tasks [`cold`] may ask the default branch about: done here, and the
-/// subject of at least one entry. What a caller preloads in one batch.
-pub fn candidate_tasks<'a>(hot: &[Hot<'a>]) -> BTreeSet<&'a EntityId> {
-    let done_here: BTreeSet<&EntityId> = hot
-        .iter()
-        .filter(|h| h.kind == EntityKind::Task && h.status == "done")
-        .map(|h| h.id)
-        .collect();
-    hot.iter()
-        .filter(|h| h.kind == EntityKind::Log)
-        .filter_map(|h| h.about)
-        .filter(|s| done_here.contains(s))
-        .collect()
-}
-
-pub fn run(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<ExitCode> {
+pub fn run(inv: &Invocation, repo: &Repo, _cfg: &Config, out: &mut dyn Write) -> Result<ExitCode> {
     let store = Store::new(&repo.ank);
     // The walking index: what is read is the hot corpus, which is exactly the
     // set a move is chosen from.
@@ -147,30 +117,7 @@ pub fn run(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> 
         .map(|id| id.to_string())
         .collect();
 
-    // **Done on the default branch, read in one process** (ADR-cc65f1388a71):
-    // every task the rule may ask about is preloaded in one batch, and the
-    // question per task is then answered from memory. Without a repository, or
-    // with a default branch that does not resolve, no task is done there, and
-    // what is cold is the superseded documents and the entries about them.
-    let branch = git::usable_here(&repo.corpus)
-        .then(|| {
-            git::resolve_default_branch(
-                cfg.default_branch.as_deref(),
-                git::origin_head(&repo.corpus).ok().flatten().as_deref(),
-            )
-            .ok()
-        })
-        .flatten();
-    if let Some(branch) = &branch {
-        let paths: Vec<(String, Option<String>)> = candidate_tasks(&hot)
-            .into_iter()
-            .flat_map(|id| crate::human::entity_rel_paths(repo, id))
-            .map(|path| (path, None))
-            .collect();
-        let _ = git::preload_at(&repo.corpus, branch, &paths);
-    }
-    let done_on_default = |id: &EntityId| crate::human::done_on(repo, branch.as_deref(), id);
-    let cold = cold(&hot, &archived, &done_on_default);
+    let cold = cold(&hot, &archived);
 
     let dry_run = inv.has("--dry-run");
     if !dry_run {

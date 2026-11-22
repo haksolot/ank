@@ -136,13 +136,10 @@ fn an_edited_archived_file_stays_a_fault_after_the_index_is_deleted() {
         &dir,
         &["done", "--proof", &format!("commit:{}", head.trim())],
     );
+    // done moved the entries of the task it ended into the archive
+    // (ADR-302efb9c5e40), and they land with the change carrying the close.
     run("git", &dir, &["add", "-A"]);
     run("git", &dir, &["commit", "-q", "-m", "done"]);
-
-    // The entries of a task done on the default branch are cold.
-    run(ANK, &dir, &["archive"]);
-    run("git", &dir, &["add", "-A"]);
-    run("git", &dir, &["commit", "-q", "-m", "archive"]);
     let cold = dir.join(".ank/archive/entities");
     let mut moved: Vec<PathBuf> = fs::read_dir(&cold)
         .unwrap()

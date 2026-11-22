@@ -455,8 +455,13 @@ fn with_origin_only_the_verbs_run_what_they_ran_before() {
         );
     }
 
+    // 27 since `done` archives the entries of the task it ends
+    // (ADR-302efb9c5e40): the clone now holds `.ank/archive/`, and over one
+    // `inspect` judges the archived files against HEAD, one `cat-file -p` of
+    // HEAD's archive tree and one `hash-object --stdin-paths`, as it did
+    // before for any corpus holding an archive (TASK-ed7990dab03c).
     let (out, calls) = c.traced("status-remote", AGENT, &["status", "--remote", "--json"]);
-    assert_eq!(calls.len(), 25, "status --remote --json: the git processes");
+    assert_eq!(calls.len(), 27, "status --remote --json: the git processes");
     assert_eq!(
         shapes(&calls),
         vec!["ls-remote origin refs/ank/*".to_string()]
