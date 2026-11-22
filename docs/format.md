@@ -76,8 +76,10 @@ a fault rather than a change to take in. That digest is recorded in
 `index.db.<N>` and in no file, which is the one place the cache is load-bearing; the section on
 what is derived says what deleting it costs.
 
-A writer moves files there with `ank archive` and never by hand; the move
-commits nothing, and what the hot corpus holds is settled by a human reading a
+A writer moves files there through the CLI and never by hand: `done` and
+`close` move the entries of the task they end, an entry about a finished task is
+written there, and `ank archive` moves the rest of what is cold. No move
+commits anything, and what the hot corpus holds is settled by a human reading a
 diff.
 
 **The previous layouts, and the window for them.** Corpora written before the

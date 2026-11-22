@@ -2666,7 +2666,8 @@ pub const COMMANDS: &[CommandSpec] = &[
             "an entity the archive already holds: a move never chooses between two copies",
         )],
         notes: &[
-            "an entry is cold with its subject: a superseded document, a task done on the default branch, or an entity already archived",
+            "an entry is cold with its subject: a superseded document, a task done or closed in this tree, or an entity already archived",
+            "done and close archive the entries of the task they end, so this verb moves what predates that and what supersession retires",
             "a task is never moved, and an archived file is never rewritten: check verifies it by digest",
             "--dry-run prints the same list and moves nothing",
             "it writes files and never commits: git add -A .ank, commit, and land it by pull request",

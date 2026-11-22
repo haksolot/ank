@@ -223,9 +223,16 @@ no `supersedes:` line, and `check` says nothing about the pair.
 
 ## Archiving what is cold
 
-`ank archive` moves what is cold into `.ank/archive/entities/`: superseded
-documents, and every entry whose subject is cold, meaning a superseded document
-or a task done on the default branch (ADR-467ce7e9cda1). `check` names the verb
+An entry about a task is cold once the task is done or closed in the tree it
+sits in, and it leaves the hot corpus on its own: `done` and `close` move every
+entry about the task they end into `.ank/archive/entities/` in the same act,
+their own closing entry included, and an entry written about a finished task
+afterwards, by `attest` or `amend`, is born there (ADR-302efb9c5e40). Nothing is
+committed: the move lands with the change that carries the close.
+
+`ank archive` moves what that leaves cold: superseded documents, every entry
+whose subject is one, and the entries of a task finished before the rule
+(ADR-467ce7e9cda1). `check` names the verb
 in one signal when the hot corpus holds any of it. Like `accept`, it decides what
 the corpus is, so a human runs it, and like `accept` it commits nothing: it
 renames files and stops. Unlike `accept`, it writes no ref, so the move exists
@@ -245,8 +252,6 @@ once it lands, and the commit and its pull request are yours.
 `git switch -c archive/<date>` puts you on the branch, so here `gh` resolves the
 pull request from where you stand and the bare `gh pr merge` works.
 
-Run it from a branch cut from the default branch and level with it: an entry is
-cold when its task is done *on the default branch*, which is what the verb reads,
-so a local default branch that is behind leaves entries hot that could have
-moved. An archived file is never edited afterwards; `check` verifies it against
+Run it from a branch cut from the default branch and level with it, so the list
+it reads is the corpus the pull request lands on. An archived file is never edited afterwards; `check` verifies it against
 the digest it arrived with and reports a changed one as a fault.
