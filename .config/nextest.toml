@@ -88,6 +88,21 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 
 # The cold-readers test runs twenty rounds under CI and prints one line per
 # round (TASK-4a819896815a); shown on a pass, so the count is in the job log.
+#
+# **It alone is terminated at 1200s, 60s times 20** (TASK-3dcf8cfc2111); every
+# other test keeps the 600s above. The eight green windows-latest runs of main
+# 44956360201 to 44972253757 passed it in 264.186s to 434.725s, a mean of 13.2s
+# to 21.7s a round, and run 44946110653 (445778b3) killed it at 600.261s after
+# 18 of its 20 rounds, 33.3s a round, and turned main red over a corpus-only
+# merge. That run had the smallest corpus and the smallest suite of the nine;
+# its neighbours ran two to three times slower than in the green runs, so what
+# varies is the runner, not the work (LOG-0d7c31c20159). 600s was 1.4 times
+# the slowest pass; 1200s is 2.8 times it, 1.8 times the 667s the red run's
+# pace would have taken over twenty rounds, and still turns a hang red inside
+# the job. The twenty rounds stay, because they
+# are what catches a rare refusal; what one round costs on Windows is
+# TASK-0ba558fe7b4b.
 [[profile.ci.overrides]]
 filter = 'package(ank-cli) & binary(integration) & test(=cli::concurrent_readers_of_a_cold_corpus_of_this_size_all_answer)'
 success-output = "final"
+slow-timeout = { period = "60s", terminate-after = 20 }

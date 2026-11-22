@@ -5,7 +5,7 @@ slug: the-cold-readers-test-has-a-bound-of-its-own-mea
 title: The cold-readers test has a bound of its own, measured against its Windows passes
 created: 2026-11-22T08:09:56Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - .config/nextest.toml
 blocked_by: []
@@ -14,7 +14,7 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Why
