@@ -7,10 +7,10 @@ created: 2026-09-02T13:55:27Z
 author: claude-code/fable-5
 status: done
 scope:
-  - skill/tdd/**
   - skill/SKILL.md
   - crates/ank-cli/tests/skill.rs
   - .claude-plugin/**
+  - skill/tdd.md
 blocked_by: [TASK-88b0e120e235]
 done_criteria: |
   skill/tdd/SKILL.md exists, opens by stating the ank contract applies, teaches the red-green loop against a task's frozen done_criteria, and names the forbidden anti-patterns: tautological tests, horizontal slicing, testing the implementation rather than the behaviour. It declares metadata.revision as the hash of its own body and tests/skill.rs recomputes it. The body stays within 180 lines and 1500 words. .claude-plugin/plugin.json and skill/SKILL.md list the sibling. cargo test --workspace passes.
@@ -24,7 +24,7 @@ proof:
     verifier: cargo-test@f14aeab36e1b
     via: verifier
 schema: 4
-version: 3
+version: 4
 ---
 
 Blocked on the citation sweep because the sibling is only legal once

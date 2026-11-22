@@ -9968,16 +9968,17 @@ fn new_refuses_a_verifier_that_config_does_not_declare() {
 // The method a task names (ADR-a8f9c603a0e7, TASK-e0d72ec220a1)
 // ---------------------------------------------------------------------------
 
-/// The siblings this binary carries, as `--method` spells them: the directory
-/// names under `skill/`, which the build embeds. Read from the tree rather than
-/// listed, so a sibling added beside the others is one this suite expects.
+/// The siblings this binary carries, as `--method` spells them: the stems of
+/// `skill/<name>.md` but the contract and the stub, which the build embeds.
+/// Read from the tree rather than listed, so a sibling added beside the others
+/// is one this suite expects.
 fn sibling_directories() -> Vec<String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skill");
     let mut dirs: Vec<String> = std::fs::read_dir(&root)
         .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.join("SKILL.md").is_file())
-        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter_map(|n| n.strip_suffix(".md").map(str::to_string))
+        .filter(|n| n != "SKILL" && n != "ank")
         .collect();
     dirs.sort();
     assert!(dirs.contains(&"diagnose".to_string()), "{dirs:?}");

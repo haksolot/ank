@@ -7,8 +7,8 @@ created: 2026-09-15T09:21:13Z
 author: claude-code/fable-5.1+distributed-review
 status: done
 scope:
-  - skill/loop/SKILL.md
   - skill/SKILL.md
+  - skill/loop.md
 blocked_by: [TASK-53a8f5ca2539]
 done_criteria: |
   skill/loop/SKILL.md names ank context --since as the read at the top of every turn once a claim is held, and states what it does not replace: the full ank context before a claim is taken. skill/SKILL.md lists the flag in the line that teaches context. crates/ank-cli/tests/skill.rs stays green.
@@ -28,7 +28,7 @@ proof:
     verifier: fmt-check@5ca6d10bcd55
     via: verifier
 schema: 4
-version: 3
+version: 4
 ---
 
 Follows TASK-53a8f5ca2539. A flag the skill does not teach is a flag an agent

@@ -208,7 +208,7 @@ fn inside_a_corpus_the_agent_is_served_its_status_and_the_contract_pointer() {
         "additionalContext does not hold what `ank status` prints.\nstatus:\n{status}\ncontext:\n{context}"
     );
     assert!(context.contains("ank context"), "{context}");
-    assert!(context.contains("ank skill"), "{context}");
+    assert!(context.contains("ank skills ank"), "{context}");
 }
 
 #[test]
