@@ -17,13 +17,12 @@ constraint: |
 enforced_by:
   - crates/ank-cli/tests/cli.rs#new_refuses_a_method_the_binary_does_not_carry_naming_the_ones_it_does
   - crates/ank-cli/tests/cli.rs#context_names_the_method_after_the_claim_done_ignores_it_and_amend_replaces_it
-  - crates/ank-cli/tests/skill.rs#every_executing_sibling_records_its_load_once_after_the_claim
 ratified: c5d285f77ee8
 verified:
   - by: claude-code/fable-5.1+ratify
     at: 2026-09-13T09:57:04Z
 schema: 4
-version: 3
+version: 4
 ---
 
 ## Context

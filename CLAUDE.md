@@ -9,9 +9,11 @@ reached through the CLI and never by opening the files.
 the corpus does not. `ank context <path>` serves the decisions and rules that
 bind a perimeter, in full, before you touch it; `ank find --type spec` reaches
 the specification; `ank show <id>` prints any entity whole. How to work is
-taught by the skills in `skill/`: the contract in `skill/SKILL.md`, and one
-policy per activity beside it (ank-plan, ank-drift, ank-loop, ank-tdd,
-ank-diagnose, and ank-herdr for orchestrating agents from a herdr-core terminal).
+taught by the skills in `skill/`, which the binary prints: the contract, `ank
+skills ank`, from `skill/ank.md`, and one policy per activity beside it, `ank
+skills <name>` from `skill/<name>.md` (plan, drift, loop, tdd, diagnose, and
+herdr for orchestrating agents from a herdr-core terminal). `skill/SKILL.md` is
+the stub that gets installed, and it names `ank skills ank`.
 
 ## Commands
 

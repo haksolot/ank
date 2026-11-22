@@ -49,11 +49,10 @@ pub const NONE: &str =
 /// The names a task's `method` may hold: one per sibling skill this binary
 /// carries, and never the contract (§3, ADR-a8f9c603a0e7).
 ///
-/// **The name is the sibling's directory under `skill/`**, `tdd` for
-/// `skill/tdd/SKILL.md`, and not the `ank-tdd` its frontmatter declares. It is
+/// **The name is the sibling's file under `skill/`**, `tdd` for
+/// `skill/tdd.md`, and not the `ank-tdd` its frontmatter declares. It is
 /// derived here from the frontmatter, which is what [`Embedded`] carries: every
-/// sibling is named `ank-<directory>`, which the Agent Skills format and the
-/// plugin manifest both hold it to, so stripping the prefix gives the directory
+/// sibling is named `ank-<file stem>`, so stripping the prefix gives the file
 /// back without a second list to keep in step. The contract is `ank` with no
 /// prefix to strip, and it is not a method: it is the skill every session
 /// loads, and a recommendation that names it recommends nothing.
@@ -115,7 +114,7 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
         if inv.has("--install") {
             return Err(CliError::new(
                 ExitCode::Generic,
-                format!("--install writes every skill, and takes no name: '{name}'"),
+                format!("--install writes the stub alone, and takes no name: '{name}'"),
             )
             .with_hint("ank skills --install"));
         }
@@ -132,7 +131,7 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
             )
             .with_hint("ank skills --json"));
         }
-        return run_over(EMBEDDED, true, out);
+        return run_over(EMBEDDED, STUB, true, out);
     }
     let rates = match corpus(inv, cwd)? {
         Some(repo) => Some(rates(&repo, &methods())?),
@@ -142,7 +141,7 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
         let _ = writeln!(out, "{}", document(EMBEDDED, rates.as_deref()));
         return Ok(ExitCode::Ok);
     }
-    run_over(EMBEDDED, false, out)?;
+    run_over(EMBEDDED, STUB, false, out)?;
     if let Some(rates) = rates.filter(|r| !r.is_empty()) {
         let _ = write!(
             out,
@@ -469,7 +468,17 @@ fn document(skills: &[Embedded], rates: Option<&[Rate]>) -> String {
         .finish()
 }
 
-fn run_over(skills: &[Embedded], install: bool, out: &mut dyn Write) -> Result<ExitCode> {
+/// The catalogue, or with `install` the stub written and handed to npx.
+///
+/// **`--install` writes the stub alone** (ADR-cfc74e53a744): the one file that
+/// triggers and names `ank skills ank`, so nothing installed carries what a
+/// release changes. The contract and the methods stay in the binary.
+fn run_over(
+    skills: &[Embedded],
+    stub: Option<&[u8]>,
+    install: bool,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
     if skills.is_empty() {
         let _ = writeln!(out, "{NONE}");
         return Ok(ExitCode::Ok);
@@ -478,9 +487,13 @@ fn run_over(skills: &[Embedded], install: bool, out: &mut dyn Write) -> Result<E
         let _ = write!(out, "{}", listing(skills));
         return Ok(ExitCode::Ok);
     }
-    let dir = write_all(skills)?;
+    let Some(stub) = stub else {
+        let _ = writeln!(out, "{NONE}");
+        return Ok(ExitCode::Ok);
+    };
+    let dir = write_stub(stub)?;
     let shown = dir.display().to_string();
-    let _ = writeln!(out, "wrote {} skills to {shown}", skills.len());
+    let _ = writeln!(out, "wrote the {CONTRACT} skill to {shown}");
 
     let Some(npx) = npx_on_path() else {
         // Not a failure, and exit 0 is the decision (ADR-e1d750884b82): the
@@ -549,18 +562,18 @@ fn listing(skills: &[Embedded]) -> String {
 }
 
 /// A new directory under the platform's temporary directory, holding
-/// `<name>/SKILL.md` for every skill.
+/// `ank/SKILL.md`, the stub, and nothing else.
 ///
 /// Named after the frontmatter, because that is what a harness calls a skill
 /// and what the Agent Skills format requires the directory to match. Created
 /// fresh rather than reused: a directory that already held files from another
 /// build would hand npx a mixture of two.
-fn write_all(skills: &[Embedded]) -> Result<PathBuf> {
+fn write_stub(stub: &[u8]) -> Result<PathBuf> {
     let base = std::env::temp_dir();
     let unwritable = |e: std::io::Error, path: &Path| {
         CliError::new(
             ExitCode::Environment,
-            format!("cannot write the skills to {}: {e}", path.display()),
+            format!("cannot write the skill to {}: {e}", path.display()),
         )
         .with_hint("set TMPDIR (TEMP on Windows) to a directory this user can write")
     };
@@ -582,12 +595,10 @@ fn write_all(skills: &[Embedded]) -> Result<PathBuf> {
             Err(e) => return Err(unwritable(e, &candidate)),
         }
     };
-    for skill in skills {
-        let sub = dir.join(skill.name);
-        std::fs::create_dir(&sub).map_err(|e| unwritable(e, &sub))?;
-        let file = sub.join("SKILL.md");
-        std::fs::write(&file, skill.content).map_err(|e| unwritable(e, &file))?;
-    }
+    let sub = dir.join(CONTRACT);
+    std::fs::create_dir(&sub).map_err(|e| unwritable(e, &sub))?;
+    let file = sub.join("SKILL.md");
+    std::fs::write(&file, stub).map_err(|e| unwritable(e, &file))?;
     Ok(dir)
 }
 
@@ -646,22 +657,22 @@ mod tests {
     fn a_build_with_no_skills_answers_one_line() {
         for install in [false, true] {
             let mut out = Vec::new();
-            let code = run_over(&[], install, &mut out).expect("nothing to refuse");
+            let code = run_over(&[], None, install, &mut out).expect("nothing to refuse");
             assert_eq!(code, ExitCode::Ok);
             assert_eq!(String::from_utf8(out).unwrap(), format!("{NONE}\n"));
         }
     }
 
     /// What the binary carries, measured against the tree it was built from:
-    /// one method per sibling directory under `skill/`, and the contract none.
+    /// one method per `skill/<name>.md` but the contract and the stub.
     #[test]
-    fn the_methods_are_the_sibling_directories_and_never_the_contract() {
+    fn the_methods_are_the_sibling_files_and_never_the_contract() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skill");
         let mut dirs: Vec<String> = std::fs::read_dir(&root)
             .unwrap()
-            .map(|e| e.unwrap().path())
-            .filter(|p| p.join("SKILL.md").is_file())
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter_map(|n| n.strip_suffix(".md").map(str::to_string))
+            .filter(|n| n != "SKILL" && n != "ank")
             .collect();
         dirs.sort();
         assert!(!dirs.is_empty(), "no sibling under {}", root.display());

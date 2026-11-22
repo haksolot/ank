@@ -7,7 +7,6 @@ created: 2026-11-02T10:37:24Z
 author: claude-code/opus-5.5+plan
 status: done
 scope:
-  - skill/herdr/SKILL.md
   - skill/SKILL.md
   - crates/ank-cli/tests/skill.rs
   - crates/ank-cli/tests/golden-json/skills.json
@@ -16,6 +15,7 @@ scope:
   - docs/alternatives.md
   - CLAUDE.md
   - .claude-plugin/**
+  - skill/herdr.md
 blocked_by: []
 done_criteria: |
   Through the binary and the files it carries: skill/herdr/SKILL.md stops when HC_TERMINAL_ID is unset and defers syntax to hc --skill; it says a worker's ANK_AGENT, TMPDIR and PATH are set in the command that starts it, because a worker inherits the herdr-core server's environment. No file under skill/, docs/, crates/ank-cli/tests/ or CLAUDE.md names HERDR_ENV, herdr --skill or a herdr pane. No file outside .ank/ cites ADR-55449b7f4f8f in its long or 9-character form; those citations name ADR-2fc9b88cc0bd. crates/ank-cli/tests/skill.rs asserts each of these, and ank skills prints the new ank-herdr description.
@@ -68,7 +68,7 @@ proof:
     verifier: test-ank-cli@f3a5da7d2d74
     via: verifier
 schema: 4
-version: 3
+version: 4
 ---
 
 ADR-2fc9b88cc0bd supersedes ADR-55449b7f4f8f: the maintainer's sessions run in
