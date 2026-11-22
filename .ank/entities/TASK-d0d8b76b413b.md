@@ -5,7 +5,7 @@ slug: status-and-review-open-the-index-once-in-a-corpu
 title: status and review open the index once in a corpus that holds an archive
 created: 2026-11-21T22:54:53Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/status.rs
@@ -20,7 +20,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 Issue #832, found by the worker of TASK-ed7990dab03c on 2026-11-21 and measured on a lab corpus, index opens before and after one `ank close`:

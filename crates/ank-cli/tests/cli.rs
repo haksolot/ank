@@ -25506,6 +25506,72 @@ fn entity_reads(lines: &[String]) -> Vec<&String> {
     lines.iter().filter(|l| l.starts_with("entity ")).collect()
 }
 
+fn index_opens(lines: &[String]) -> Vec<&String> {
+    lines.iter().filter(|l| l.starts_with("index ")).collect()
+}
+
+/// **`status` and `review` open the index once over a corpus holding an
+/// archive, as they do over one holding none** (TASK-d0d8b76b413b,
+/// ADR-f3d1dea65d84). Every corpus with a finished task holds one since `done`
+/// and `close` archive the entries of the task they end, and `inspect` used to
+/// open the index a second time to read it. Counted with the read trace, and
+/// `status` on a cold verdict, which is the run that pays the inspection.
+#[test]
+fn status_and_review_open_the_index_once_over_a_corpus_holding_an_archive() {
+    const AGENT: &str = "claude-code@ank";
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.seed_task("TASK-000000000002", Some("Another criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let (out, _) = traced_reads(&r, AGENT, &["status"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !r.0.join(".ank/archive").exists(),
+        "the fixture is archived already"
+    );
+    let mut without = Vec::new();
+    for verb in ["status", "review"] {
+        let (out, lines) = traced_reads(&r, AGENT, &[verb]);
+        assert_eq!(code(&out), 0, "{verb}: {}", stderr(&out));
+        without.push(index_opens(&lines).len());
+    }
+    assert_eq!(without, [1, 1], "the baseline without an archive moved");
+
+    let out = r.ank(AGENT, &["close", ID, "--reason", "not needed after all"]);
+    assert_eq!(code(&out), 0, "close: {}", stderr(&out));
+    let held = std::fs::read_dir(r.0.join(".ank/archive/entities"))
+        .map(|d| d.count())
+        .unwrap_or(0);
+    assert!(
+        held >= 1,
+        "close archived nothing, so this test proves nothing"
+    );
+
+    // Three runs of status: the first on a cold verdict, which inspects, and
+    // the two after it on the verdict the first one kept.
+    for run in 0..3 {
+        let (out, lines) = traced_reads(&r, AGENT, &["status"]);
+        assert_eq!(code(&out), 0, "status: {}", stderr(&out));
+        assert_eq!(
+            index_opens(&lines).len(),
+            1,
+            "status run {run} over an archive opened the index {} times:\n{lines:#?}",
+            index_opens(&lines).len()
+        );
+    }
+    for run in 0..2 {
+        let (out, lines) = traced_reads(&r, AGENT, &["review"]);
+        assert_eq!(code(&out), 0, "review: {}", stderr(&out));
+        assert_eq!(
+            index_opens(&lines).len(),
+            1,
+            "review run {run} over an archive opened the index {} times:\n{lines:#?}",
+            index_opens(&lines).len()
+        );
+    }
+}
+
 /// A corpus of `n` open tasks under `src/**` and `k` ADRs accepted over it,
 /// committed, with the task `ID` among the tasks.
 fn weighed_corpus(n: usize, k: usize) -> Repo {

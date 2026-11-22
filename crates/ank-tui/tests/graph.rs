@@ -1236,20 +1236,16 @@ fn a_dumb_terminal_draws_the_graph_in_the_layouts_ascii_alphabet() {
 #[cfg(unix)]
 #[test]
 fn the_cursor_walks_the_rows_enter_opens_a_task_and_nothing_but_u_reads_the_graph_again() {
-    // **Six index opens for a wide pass, and two of them are status's and
-    // review's second.** The fixture closes a task, and `close` archives the
-    // entries of the task it ends (ADR-302efb9c5e40), so the corpus holds
-    // `.ank/archive/`, as every corpus with a finished task does, this
-    // repository's included. Over a corpus holding one, `status` and `review`
-    // each open the index a second time: `inspect`'s `open_with_archive`, which
-    // predates that rule. Measured with ANK_TRACE_READS, opens per verb before
-    // and after one close: find 1/1, status 1/2, review 1/2, graph 1/1
-    // (TASK-ed7990dab03c). `status` pays it only while its cached verdict is
-    // cold, measured 2, 1, 1 over three runs, so the opening costs six and the
-    // reload under `u` five: one per verb, plus review's second open, plus
-    // status's on the opening alone. The count is pinned at what it is.
-    const WIDE_PASS: usize = 6;
-    const WIDE_RELOAD: usize = 5;
+    // **Four index opens for a wide pass, one per verb: find, status, review
+    // and graph.** The fixture closes a task, and `close` archives the entries
+    // of the task it ends (ADR-302efb9c5e40), so the corpus holds
+    // `.ank/archive/`, as every corpus with a finished task does. `status` and
+    // `review` used to open the index a second time over one, `inspect`'s
+    // `open_with_archive`, and this count stood at six on the opening and
+    // five on the reload (TASK-ed7990dab03c). They now widen the index they
+    // already hold (TASK-d0d8b76b413b), so the archive costs no opening.
+    const WIDE_PASS: usize = 4;
+    const WIDE_RELOAD: usize = 4;
     let _one = ONE_AT_A_TIME
         .lock()
         .unwrap_or_else(|held| held.into_inner());
