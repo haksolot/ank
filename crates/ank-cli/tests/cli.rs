@@ -882,14 +882,21 @@ impl Repo {
     /// it, which is why a question about a ref can never be answered from a
     /// working tree.
     fn ank_at(&self, agent: &str, args: &[&str], repo: &Path) -> Output {
-        ank_command()
-            .args(args)
+        self.ank_invocation(agent, args, repo)
+            .output()
+            .expect("the binary must have been built")
+    }
+
+    /// The command [`Repo::ank_at`] runs, unstarted, for a caller that has to
+    /// bound how long it waits for it.
+    fn ank_invocation(&self, agent: &str, args: &[&str], repo: &Path) -> Command {
+        let mut c = ank_command();
+        c.args(args)
             .arg("--repo")
             .arg(repo)
             .env("ANK_AGENT", agent)
-            .current_dir(std::env::temp_dir())
-            .output()
-            .expect("the binary must have been built")
+            .current_dir(std::env::temp_dir());
+        c
     }
 
     /// A bare origin and a second clone of this repository, both carrying the
@@ -28323,6 +28330,268 @@ fn proof_entries_are_written_in_declared_order_as_a_sequential_run_writes_them()
     assert_eq!(block, proof_block(&sequential));
 }
 
+/// How long a `done` of the fixtures below may take before the test stops
+/// waiting for it. They pass in about 20s on windows-latest; run 44943400576
+/// waited 600s for one and said nothing of why (TASK-70554fc18369).
+const DONE_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// One process of the table, as `ps` or `Win32_Process` describe it.
+struct Proc {
+    pid: u32,
+    ppid: u32,
+    args: String,
+}
+
+/// Every process of the machine, read from the operating system's own table:
+/// `ps` on Unix, `Win32_Process` on Windows.
+fn process_table() -> Vec<Proc> {
+    #[cfg(windows)]
+    let out = spawn("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f \
+             $_.ProcessId, $_.ParentProcessId, $_.CommandLine }",
+        ])
+        .stdin(Stdio::null())
+        .output();
+    #[cfg(not(windows))]
+    let out = spawn("ps")
+        .args(["-A", "-o", "pid=", "-o", "ppid=", "-o", "args="])
+        .stdin(Stdio::null())
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.trim_start().splitn(2, char::is_whitespace);
+            let pid = words.next()?.parse().ok()?;
+            let rest = words.next()?.trim_start();
+            let mut words = rest.splitn(2, char::is_whitespace);
+            let ppid = words.next()?.parse().ok()?;
+            let args = words.next().unwrap_or("").trim().to_string();
+            Some(Proc { pid, ppid, args })
+        })
+        .collect()
+}
+
+/// Whether `pid` runs with its working directory under `dir`. Linux alone
+/// says so without a tool; elsewhere the parent links have to suffice.
+fn works_under(pid: u32, dir: &Path) -> bool {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).is_ok_and(|cwd| cwd.starts_with(dir))
+}
+
+/// The processes still alive that belong to one invocation: everything
+/// descending from `root` by parent links, which Windows keeps after the
+/// parent dies; everything whose working directory or command line lies under
+/// `fixture`, which is what a Unix orphan, adopted by init, still has.
+fn survivors(root: u32, fixture: &Path) -> Vec<Proc> {
+    let me = std::process::id();
+    // A word naming the fixture or a path inside it, and never another
+    // fixture whose name it prefixes: `ank-cli-it-7-4` is not `ank-cli-it-7-45`.
+    let named = fixture.to_string_lossy().to_string();
+    let names_fixture = |args: &str| {
+        args.split_whitespace().any(|w| {
+            let w = w.trim_matches('"');
+            w.strip_prefix(named.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '\\']))
+        })
+    };
+    let table = process_table();
+    let mut kept: Vec<u32> = vec![root];
+    loop {
+        let before = kept.len();
+        for p in &table {
+            if p.pid != me
+                && !kept.contains(&p.pid)
+                && (kept.contains(&p.ppid) || names_fixture(&p.args) || works_under(p.pid, fixture))
+            {
+                kept.push(p.pid);
+            }
+        }
+        if kept.len() == before {
+            break;
+        }
+    }
+    table
+        .into_iter()
+        .filter(|p| kept.contains(&p.pid))
+        .collect()
+}
+
+fn kill_pid(pid: u32) {
+    #[cfg(windows)]
+    let _ = spawn("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    #[cfg(not(windows))]
+    let _ = spawn("kill")
+        .args(["-KILL", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Runs `command` as `output()` would, waiting at most `bound` for it to exit
+/// and for its two pipes to close, which on Windows a descendant holding an
+/// inherited handle can delay past the exit.
+///
+/// Past the bound everything still alive under the invocation is listed, then
+/// killed, and the answer is a message naming `case`, what the process had
+/// printed so far and those survivors: the next hang says what it was waiting
+/// on, where the one in run 44943400576 said nothing (TASK-70554fc18369).
+/// What [`bounded_output`] answers when the bound ran out.
+struct Cut {
+    /// The case, what was printed so far and the survivors, for a failure.
+    said: String,
+    /// From the spawn to the moment the bound fired, before the survivors
+    /// were listed and killed: those cost process creations, which a Windows
+    /// runner pays for at a rate no wall can name (CLAUDE.md).
+    at: std::time::Duration,
+}
+
+fn bounded_output(
+    mut command: Command,
+    case: &str,
+    fixture: &Path,
+    bound: std::time::Duration,
+) -> Result<Output, Cut> {
+    use std::io::Read;
+    use std::sync::{Arc, Mutex};
+
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary must have been built");
+    let drain = |mut pipe: Box<dyn Read + Send>| {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let into = Arc::clone(&buf);
+        let reader = std::thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            while let Ok(n @ 1..) = pipe.read(&mut chunk) {
+                into.lock().unwrap().extend_from_slice(&chunk[..n]);
+            }
+        });
+        (buf, reader)
+    };
+    let (out, out_reader) = drain(Box::new(child.stdout.take().unwrap()));
+    let (err, err_reader) = drain(Box::new(child.stderr.take().unwrap()));
+
+    let started = std::time::Instant::now();
+    let mut status = None;
+    while started.elapsed() < bound {
+        if status.is_none() {
+            status = child.try_wait().expect("cannot wait for ank");
+        }
+        if status.is_some() && out_reader.is_finished() && err_reader.is_finished() {
+            let _ = (out_reader.join(), err_reader.join());
+            let take = |b: &Arc<Mutex<Vec<u8>>>| std::mem::take(&mut *b.lock().unwrap());
+            // Already reaped by `try_wait`, so this returns its status at once.
+            return Ok(Output {
+                status: child.wait().expect("cannot wait for ank"),
+                stdout: take(&out),
+                stderr: take(&err),
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let at = started.elapsed();
+    let alive = survivors(child.id(), fixture);
+    for p in &alive {
+        kill_pid(p.pid);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let text = |b: &Arc<Mutex<Vec<u8>>>| String::from_utf8_lossy(&b.lock().unwrap()).to_string();
+    let listed: String = alive
+        .iter()
+        .map(|p| format!("  {} (parent {}) {}\n", p.pid, p.ppid, p.args))
+        .collect();
+    let said = format!(
+        "{case}: no answer after {}s, {}; killed.\n\
+         stdout so far:\n{}\nstderr so far:\n{}\n\
+         processes alive under the fixture ({}):\n{listed}",
+        bound.as_secs(),
+        match status {
+            Some(s) => format!("ank exited ({s}) but its pipes stayed open"),
+            None => "ank had not exited".to_string(),
+        },
+        text(&out),
+        text(&err),
+        alive.len(),
+    );
+    Err(Cut { said, at })
+}
+
+/// A `done` with nothing of [`bounded_output`] standing over it would wait as
+/// long as its verifier: one that never exits is cut at the bound, named, and
+/// left with nothing running.
+#[test]
+fn a_done_that_never_answers_is_cut_at_the_bound_with_what_was_running() {
+    let verifiers = "verifiers:\n  first:\n    run: \"sleep 86400\"\n    timeout: 24h\n";
+    let r = jobs_fixture(Some(1), verifiers, &["first"]);
+    let case = "\"sleep 86400\" (sequential, verifier_jobs 1)";
+    // Five seconds, so that a loaded runner has spawned sh before the cut;
+    // the listing and the kills after it are not timed.
+    let Cut { said, at } = bounded_output(
+        r.ank_invocation("claude-code@ank", &["done"], &r.0),
+        case,
+        &r.0,
+        std::time::Duration::from_secs(5),
+    )
+    .expect_err("a done whose verifier sleeps a day answered");
+    assert!(
+        at < std::time::Duration::from_secs(10),
+        "the bound fired after {at:?}: {said}"
+    );
+    assert!(said.starts_with(case), "{said}");
+    assert!(said.contains("ank had not exited"), "{said}");
+    assert!(said.contains("stdout so far:"), "{said}");
+    assert!(said.contains("stderr so far:"), "{said}");
+    let listed = &said[said.find("processes alive").unwrap()..];
+    assert!(listed.contains("sleep 86400"), "{said}");
+    assert!(listed.contains(ANK), "{said}");
+
+    // Nothing the listing named is left running.
+    let pids: Vec<u32> = listed
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+        .collect();
+    let mut left = Vec::new();
+    for _ in 0..50 {
+        left = process_table()
+            .into_iter()
+            .filter(|p| pids.contains(&p.pid))
+            .map(|p| p.args)
+            .collect();
+        if left.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(left.is_empty(), "still running after the kill: {left:?}");
+}
+
+/// `ank done` in `r`, cut at [`DONE_BOUND`] with a failure naming `case`.
+fn bounded_done(r: &Repo, case: &str) -> Output {
+    bounded_output(
+        r.ank_invocation("claude-code@ank", &["done"], &r.0),
+        case,
+        &r.0,
+        DONE_BOUND,
+    )
+    .unwrap_or_else(|cut| panic!("{}", cut.said))
+}
+
 #[test]
 fn a_failing_verifier_answers_as_it_would_sequentially_and_leaves_nothing_running() {
     let cases: [(&str, &str, i32, &str); 3] = [
@@ -28350,7 +28619,7 @@ fn a_failing_verifier_answers_as_it_would_sequentially_and_leaves_nothing_runnin
             "verifiers:\n  first:\n    run: {run}\n{extra}  second:\n    run: {HEARTBEAT}\n"
         );
         let concurrent = jobs_fixture(Some(2), &verifiers, &["first", "second"]);
-        let out = concurrent.ank("claude-code@ank", &["done"]);
+        let out = bounded_done(&concurrent, &format!("{run} (concurrent, verifier_jobs 2)"));
         assert_eq!(code(&out), expected, "{run}: {}", stderr(&out));
         assert!(stderr(&out).contains(said), "{run}: {}", stderr(&out));
         let text = concurrent.task_text(JOBS_ID);
@@ -28362,7 +28631,7 @@ fn a_failing_verifier_answers_as_it_would_sequentially_and_leaves_nothing_runnin
         assert_nothing_beats(&concurrent);
 
         let sequential = jobs_fixture(Some(1), &verifiers, &["first", "second"]);
-        let seq = sequential.ank("claude-code@ank", &["done"]);
+        let seq = bounded_done(&sequential, &format!("{run} (sequential, verifier_jobs 1)"));
         assert_eq!(code(&seq), expected, "{run}: {}", stderr(&seq));
         assert_eq!(
             elapsed_masked(&refusal(&out)),
