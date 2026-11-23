@@ -667,13 +667,35 @@ jobs:
       # `npm install @haksolot/ank` resolves to. The smoke job reads the same
       # script, which is what keeps the rehearsal rehearsing: a flag chosen here
       # and not there would be a publish nobody had tried.
+      #
+      # Every package is looked up before any is published. One the registry
+      # already holds at this version is skipped, so a rerun after a partial
+      # publish completes the release instead of dying on the first package (a
+      # version, once published, can never be published again). One that does
+      # not exist on npm at all stops the job before anything is sent: Trusted
+      # Publishing can only publish to a package that names this workflow, it
+      # cannot create one, and v0.9.5 went out half-published because its new
+      # package was found only once the first one had been sent.
       - name: publish
         run: |
           set -e
           version="${GITHUB_REF_NAME#v}"
           tag=$(bash .github/scripts/npm-dist-tag.sh "$version")
           echo "publishing $version under $tag"
+          todo=""
           for p in ank-linux-x64-musl ank-linux-arm64-musl ank-darwin-arm64 ank-win32-x64 ank; do
+            name=$(node -p "require('./npm/$p/package.json').name")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already on npm, skipped"
+              continue
+            fi
+            if ! npm view "$name" name >/dev/null 2>&1; then
+              echo "::error::$name is not on npm: publish it once by hand and add release.yml as its Trusted Publisher, then rerun this job (docs/releasing.md)"
+              exit 1
+            fi
+            todo="$todo $p"
+          done
+          for p in $todo; do
             npm publish --access public --tag "$tag" "./npm/$p"
           done
 
