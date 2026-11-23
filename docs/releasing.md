@@ -114,11 +114,21 @@ OIDC permission denied for this action`, after the job has already signed its
 provenance, so the error reads as an authentication that succeeded. Managing
 dist-tags can stay off: `--tag` is applied by the publish itself.
 
+Trusted Publishing publishes to a package; it cannot create one. A new
+package, such as a new platform, is published once by hand (`npm login`, then
+`npm publish --access public ./npm/<package>` from an assembled tree) and given
+its Trusted Publisher before the tag that first ships it. `publish-npm` looks
+every package up before it sends anything, and stops, naming the package, when
+one does not exist on npm yet, so a forgotten one costs a rerun and not a
+half-published release.
+
 A refused publish fails `publish-npm` alone. The GitHub release still
 publishes, because the release page is the primary channel and npm a
-convenience on top of it. Re-run the failed job once npmjs.com is corrected:
-the rerun replays the workflow of the tagged commit, so a fix to `release.yml`
-itself reaches npm only with the next tag.
+convenience on top of it. Re-run the failed job once npmjs.com is corrected. A
+package the registry already holds at the tagged version is skipped, so the
+rerun publishes only what is missing. The rerun replays the workflow of the
+tagged commit, so a fix to `release.yml` itself reaches npm only with the next
+tag.
 
 ## After the release
 
